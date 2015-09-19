@@ -73,6 +73,14 @@ def prepare(payload, message):
     assert message.payload is payload
     message.pid = getattr(payload, 'pid', 0)
 
+def parse_zero_terminated_utf16(buf, offset):
+    s = offset
+    while True:
+        next_offset = buf.index(b'\0\0', s)
+        if next_offset % 2: s = next_offset + 1
+        else: break
+    return (buf[offset:next_offset].decode("utf-16-le"), next_offset + 2)
+
 class ComNegotiateRequest(smb_structs.ComNegotiateRequest):
     def __str__(self):
         lines = []
@@ -143,13 +151,8 @@ class ComSessionSetupAndxRequest(smb_structs.ComSessionSetupAndxRequest__NoSecur
 
         elts = {}
         for n in ["username", "domain", "nativeos", "nativelanman"]:
-            s = raw_offset
-            while True:
-                next_offset = message.raw_data.index(term, s)
-                if next_offset % 2: s = next_offset + 1
-                else: break
-            elts[n] = message.raw_data[raw_offset:next_offset].decode(encoding)
-            raw_offset = next_offset + len(term)
+            (elts[n], raw_offset) = parse_zero_terminated_utf16(message.raw_data,
+                                                                 raw_offset)
 
         self.max_buffer_size = max_buffer_size
         self.max_mpx_count = max_mpx_count
@@ -205,24 +208,17 @@ class ComTreeConnectAndxRequest(smb_structs.ComTreeConnectAndxRequest):
 
         self.password = message.data[:password_len].rstrip(b'\0').decode("utf-8")
 
-        offset = password_len
-        if (SMBMessage.HEADER_STRUCT_SIZE + len(message.parameters_data) +
-            password_len) % 2:
-            if message.data[password_len] != 0:
+        raw_offset = (SMBMessage.HEADER_STRUCT_SIZE + len(message.parameters_data) +
+                      2 + password_len)
+        if raw_offset % 2:
+            if message.data[raw_offset] != 0:
                 raise Exception("Was expecting null byte padding!")
-            offset += 1
+            raw_offset += 1
 
-        s = offset
-        while True:
-            share_name_offset = message.data.index(b'\0\0', s)
-            if (share_name_offset + SMBMessage.HEADER_STRUCT_SIZE +
-                len(message.parameters_data)) % 2:
-                s = share_name_offset + 1
-            else: break
-        self.path = message.data[offset:share_name_offset].decode('utf-16-le')
+        (self.path, raw_offset) = parse_zero_terminated_utf16(message.raw_data, raw_offset)
 
-        service_off = message.data.index(b'\0', share_name_offset + 2)
-        self.service = message.data[share_name_offset + 2:service_off].decode("ascii")
+        service_off = message.raw_data.index(b'\0', raw_offset)
+        self.service = message.raw_data[raw_offset:service_off].decode("ascii")
 
 class ComTreeConnectAndxResponse(smb_structs.ComTreeConnectAndxResponse):
     def __init__(self, **kw):

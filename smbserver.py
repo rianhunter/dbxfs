@@ -115,7 +115,7 @@ class ComNegotiateResponse(smb_structs.ComNegotiateResponse):
                                               self.max_number_vcs, self.max_buffer_size, self.max_raw_size,
                                               self.session_key, self.capabilities, self.system_time,
                                               self.server_time_zone, self.challenge_length)
-        message.data = b''
+        message.data = "\0".encode("utf-16-le")
 
 class ComSessionSetupAndxRequest(smb_structs.ComSessionSetupAndxRequest__NoSecurityExtension):
     def __init__(self):

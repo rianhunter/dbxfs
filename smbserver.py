@@ -43,7 +43,7 @@ class SMBMessage(smb_structs.SMBMessage):
         elif self.command == smb_structs.SMB_COM_TRANSACTION:
             self.payload = smb_structs.ComTransactionRequest()
         elif self.command == smb_structs.SMB_COM_TRANSACTION2:
-            self.payload = smb_structs.ComTransaction2Request()
+            self.payload = ComTransaction2Request()
         elif self.command == smb_structs.SMB_COM_OPEN_ANDX:
             self.payload = smb_structs.ComOpenAndxRequest()
         elif self.command == smb_structs.SMB_COM_NT_CREATE_ANDX:
@@ -263,6 +263,64 @@ class ComEchoResponse(smb_structs.ComEchoResponse):
         message.parameters_data = struct.pack("<H", self.sequence_number)
         message.data = self.data
 
+class ComTransaction2Request(smb_structs.ComTransaction2Request):
+    def __init__(self): pass
+
+    def decode(self, message):
+        (self.total_params_count, self.total_data_count,
+         self.max_params_count, self.max_data_count,
+         self.max_setup_count, _, self.flags, self.timeout,
+         _, params_bytes_len, params_bytes_offset, data_bytes_len,
+         data_bytes_offset, setup_words_len) = \
+            struct.unpack(self.PAYLOAD_STRUCT_FORMAT,
+                          message.parameters_data[:self.PAYLOAD_STRUCT_SIZE])
+
+        self.setup_bytes = message.parameters_data[self.PAYLOAD_STRUCT_SIZE:self.PAYLOAD_STRUCT_SIZE + setup_words_len * 2]
+
+        self.params_bytes = message.raw_data[params_bytes_offset:params_bytes_offset + params_bytes_len]
+        self.data_bytes = message.raw_data[data_bytes_offset:data_bytes_offset + data_bytes_len]
+
+class ComTransaction2Response(smb_structs.ComTransaction2Response):
+    def __init__(self, **kw):
+        for (k, v) in kw.items():
+            setattr(self, k, v)
+
+    def initMessage(self, message):
+        init_reply(self, message, smb_structs.SMB_COM_TRANSACTION2)
+
+    def prepare(self, message):
+        prepare(self, message)
+
+        assert not (len(self.setup_bytes) % 2)
+
+        data_offset = (message.HEADER_STRUCT_SIZE +
+                       struct.calcsize("<HHHHHHHHHBB") +
+                       len(self.setup_bytes) + 2)
+        params_bytes_offset = data_offset
+        if params_bytes_offset % 4:
+            params_bytes_offset += 4 - params_bytes_offset % 4
+
+        data_bytes_offset = params_bytes_offset + len(self.params_bytes)
+        if data_bytes_offset % 4:
+            data_bytes_offset += 4 - data_bytes_offset % 4
+
+        message.parameters_data = struct.pack("<HHHHHHHHHBB",
+                                              len(self.params_bytes),
+                                              len(self.data_bytes),
+                                              0,
+                                              len(self.params_bytes),
+                                              params_bytes_offset,
+                                              0,
+                                              len(self.data_bytes),
+                                              data_bytes_offset,
+                                              0, len(self.setup_bytes) // 2, 0)
+        message.parameters_data += self.setup_bytes
+
+        message.data = ((params_bytes_offset - data_offset) * b'\0' +
+                        self.params_bytes +
+                        (data_bytes_offset - (params_bytes_offset + len(self.params_bytes))) * b'\0' +
+                        self.data_bytes)
+
 def response_args_from_req(req, **kw):
     return dict(pid=req.pid, tid=req.tid,
                 uid=req.uid, mid=req.mid, **kw)
@@ -387,6 +445,15 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                                               sequence_number=0,
                                               data=req.payload.echo_data)
                 self.send_message(SMBMessage(ComEchoResponse(**args)))
+            elif req.command == smb_structs.SMB_COM_TRANSACTION2:
+
+                if len(req.payload.setup_bytes) % 2:
+                    raise Exception("bad setup bytes length!")
+                setup = struct.unpack("<%dH" % (len(req.payload.setup_bytes) / 2,),
+                                      req.payload.setup_bytes)
+                # go through another layer of parsing
+                if True:
+                    raise Exception("TRANS2 not supported!")
             else:
                 log.debug("%r", req)
                 raise Exception("not supported!")

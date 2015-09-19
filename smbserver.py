@@ -327,6 +327,7 @@ def response_args_from_req(req, **kw):
                 uid=req.uid, mid=req.mid, **kw)
 
 STATUS_NOT_FOUND = 0xc0000225
+STATUS_SMB_BAD_COMMAND = 0x160002
 
 SMB_TRANS2_FIND_FIRST2 = 0x1
 SMB_INFO_STANDARD = 0x1
@@ -571,10 +572,11 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                     if flags & SMB_FIND_CLOSE_AT_EOS:
                         del open_find_trans[sid]
                 else:
-                    raise Exception("TRANS2 not supported!")
+                    log.debug("%s", req)
+                    self.send_message(error_response(req, STATUS_SMB_BAD_COMMAND))
             else:
-                log.debug("%r", req)
-                raise Exception("not supported!")
+                log.debug("%s", req)
+                self.send_message(error_response(req, STATUS_SMB_BAD_COMMAND))
 
 def main(argv):
     logging.basicConfig(level=logging.DEBUG)

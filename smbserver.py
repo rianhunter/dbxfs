@@ -179,20 +179,17 @@ class ComSessionSetupAndxResponse(smb_structs.ComSessionSetupAndxResponse):
     def prepare(self, message):
         prepare(self, message)
 
-        security_blob = b''
-
         # this gets reset in SMBMessage.encode()
         message.pid = self.pid
 
         message.parameters_data = (self.DEFAULT_ANDX_PARAM_HEADER +
-                                   struct.pack('<HH',self.action, len(security_blob)))
+                                   struct.pack('<H',self.action))
 
         prefix = b''
-        if (SMBMessage.HEADER_STRUCT_SIZE + len(message.parameters_data) + 2 +
-            len(security_blob)) % 2:
+        if (SMBMessage.HEADER_STRUCT_SIZE + len(message.parameters_data) + 2):
             prefix = b'\0'
 
-        message.data = security_blob + prefix + b''.join([x.encode("utf-16-le") + b'\0\0'  for x in ["Unix", "DropboxFS", self.domain]])
+        message.data = prefix + b''.join([x.encode("utf-16-le") + b'\0\0'  for x in ["Unix", "DropboxFS", self.domain]])
 
 class ComTreeConnectAndxRequest(smb_structs.ComTreeConnectAndxRequest):
     def __init__(self): pass

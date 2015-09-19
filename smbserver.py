@@ -30,6 +30,36 @@ import smb.smb_structs as smb_structs
 
 log = logging.getLogger(__name__)
 
+class SMBMessage(smb_structs.SMBMessage):
+    # NB: default _decodePayload() assumes responses from servers
+    # since we are the server, we assume requests
+    def _decodePayload(self):
+        if self.isReply: return super()._decodePayload();
+
+        if self.command == smb_structs.SMB_COM_READ_ANDX:
+            self.payload = smb_structs.ComReadAndxRequest()
+        elif self.command == smb_structs.SMB_COM_WRITE_ANDX:
+            self.payload = smb_structs.ComWriteAndxRequest()
+        elif self.command == smb_structs.SMB_COM_TRANSACTION:
+            self.payload = smb_structs.ComTransactionRequest()
+        elif self.command == smb_structs.SMB_COM_TRANSACTION2:
+            self.payload = smb_structs.ComTransaction2Request()
+        elif self.command == smb_structs.SMB_COM_OPEN_ANDX:
+            self.payload = smb_structs.ComOpenAndxRequest()
+        elif self.command == smb_structs.SMB_COM_NT_CREATE_ANDX:
+            self.payload = smb_structs.ComNTCreateAndxRequest()
+        elif self.command == smb_structs.SMB_COM_TREE_CONNECT_ANDX:
+            self.payload = smb_structs.ComTreeConnectAndxRequest()
+        elif self.command == smb_structs.SMB_COM_ECHO:
+            self.payload = smb_structs.ComEchoRequest()
+        elif self.command == smb_structs.SMB_COM_SESSION_SETUP_ANDX:
+            self.payload = smb_structs.ComSessionSetupAndxRequest()
+        elif self.command == smb_structs.SMB_COM_NEGOTIATE:
+            self.payload = ComNegotiateRequest()
+
+        if self.payload:
+            self.payload.decode(self)
+
 class ComNegotiateRequest(smb_structs.ComNegotiateRequest):
     def __str__(self):
         lines = []
@@ -66,35 +96,6 @@ class ComNegotiateResponse(smb_structs.ComNegotiateResponse):
                                               self.server_time_zone, self.challenge_length)
         message.data = b''
 
-class SMBMessage(smb_structs.SMBMessage):
-    # NB: default _decodePayload() assumes responses from servers
-    # since we are the server, we assume requests
-    def _decodePayload(self):
-        if self.isReply: return super()._decodePayload();
-
-        if self.command == smb_structs.SMB_COM_READ_ANDX:
-            self.payload = smb_structs.ComReadAndxRequest()
-        elif self.command == smb_structs.SMB_COM_WRITE_ANDX:
-            self.payload = smb_structs.ComWriteAndxRequest()
-        elif self.command == smb_structs.SMB_COM_TRANSACTION:
-            self.payload = smb_structs.ComTransactionRequest()
-        elif self.command == smb_structs.SMB_COM_TRANSACTION2:
-            self.payload = smb_structs.ComTransaction2Request()
-        elif self.command == smb_structs.SMB_COM_OPEN_ANDX:
-            self.payload = smb_structs.ComOpenAndxRequest()
-        elif self.command == smb_structs.SMB_COM_NT_CREATE_ANDX:
-            self.payload = smb_structs.ComNTCreateAndxRequest()
-        elif self.command == smb_structs.SMB_COM_TREE_CONNECT_ANDX:
-            self.payload = smb_structs.ComTreeConnectAndxRequest()
-        elif self.command == smb_structs.SMB_COM_ECHO:
-            self.payload = smb_structs.ComEchoRequest()
-        elif self.command == smb_structs.SMB_COM_SESSION_SETUP_ANDX:
-            self.payload = smb_structs.ComSessionSetupAndxRequest()
-        elif self.command == smb_structs.SMB_COM_NEGOTIATE:
-            self.payload = ComNegotiateRequest()
-
-        if self.payload:
-            self.payload.decode(self)
 
 def decode_smb_message(message):
     i = SMBMessage()

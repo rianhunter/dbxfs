@@ -374,14 +374,22 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                                       native_file_system="FAT")
         self.send_message(SMBMessage(ComTreeConnectAndxResponse(**args)))
 
-        echo_req = self.read_message()
-        if echo_req.payload.echo_count > 1:
-            raise Exception("Echo count is too high: %r" % (req.payload.echo_count,))
+        while True:
+            req = self.read_message()
 
-        args = response_args_from_req(echo_req,
-                                      sequence_number=0,
-                                      data=echo_req.payload.echo_data)
-        self.send_message(SMBMessage(ComEchoResponse(**args)))
+            if req.command == smb_structs.SMB_COM_ECHO:
+                log.debug("echo...")
+                if req.payload.echo_count > 1:
+                    raise Exception("Echo count is too high: %r" %
+                                    (req.payload.echo_count,))
+
+                args = response_args_from_req(req,
+                                              sequence_number=0,
+                                              data=req.payload.echo_data)
+                self.send_message(SMBMessage(ComEchoResponse(**args)))
+            else:
+                log.debug("%r", req)
+                raise Exception("not supported!")
 
 def main(argv):
     logging.basicConfig(level=logging.DEBUG)

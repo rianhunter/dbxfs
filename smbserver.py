@@ -140,6 +140,10 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
         if negotiate_req.command != smb_structs.SMB_COM_NEGOTIATE:
             raise Exception("Got unexpected request: %s" % (negotiate_req,))
 
+        server_capabilities = (smb_structs.CAP_UNICODE |
+                               smb_structs.CAP_LARGE_FILES |
+                               smb_structs.CAP_STATUS32)
+
         # win32 time
         ts = time.time()
         win32_time = (int(ts) + 11644473600) * 10000000
@@ -154,7 +158,7 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
             max_buffer_size=2 ** 16 - 1, # this doesn't matter
             max_raw_size=2 ** 16 - 1, # this doesn't matter
             session_key=0, # can be anything, we don't use it
-            capabilities=0, # n/s yet
+            capabilities=server_capabilities,
             system_time=win32_time,
             server_time_zone=utc_offset,
             challenge_length=0,

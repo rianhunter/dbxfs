@@ -344,15 +344,14 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
             raise Exception("Got unexpected request: %s" % (session_setup_andx_req,))
 
         if tree_connect_andx_req.payload.service not in ("?????", "A:"):
-            response = error_response(tree_connect_andx_req,
-                                      STATUS_NOT_FOUND)
-        else:
-            args = response_args_from_req(tree_connect_andx_req,
-                                          optional_support=smb_structs.SMB_TREE_CONNECTX_SUPPORT_SEARCH,
-                                          service="A:",
-                                          native_file_system="FAT")
-            response = SMBMessage(ComTreeConnectAndxResponse(**args))
-        self.send_message(response)
+            raise Exception("We don't provide the requested service: %s" %
+                            (tree_connect_andx_req.payload.service,))
+
+        args = response_args_from_req(tree_connect_andx_req,
+                                      optional_support=smb_structs.SMB_TREE_CONNECTX_SUPPORT_SEARCH,
+                                      service="A:",
+                                      native_file_system="FAT")
+        self.send_message(SMBMessage(ComTreeConnectAndxResponse(**args)))
 
 def main(argv):
     logging.basicConfig(level=logging.DEBUG)

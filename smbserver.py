@@ -362,8 +362,8 @@ class NullPayload(smb_structs.Payload):
 def error_response(req, status):
     assert status, "Status must be an error!"
     m = SMBMessage(NullPayload(**response_args_from_req(req, command=req.command)))
-    m.message.status.internal_value = status
-    m.message.status.is_ntstatus = True
+    m.status.internal_value = status
+    m.status.is_ntstatus = True
     return m
 
 def decode_smb_message(message):

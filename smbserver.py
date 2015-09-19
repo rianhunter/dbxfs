@@ -420,6 +420,8 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
             server_time_zone=utc_offset,
             challenge_length=0,
         )
+        # Mac OS X client want the same tid/pid/uid back
+        args = response_args_from_req(negotiate_req, **args)
 
         negotiate_resp = smb_structs.SMBMessage(ComNegotiateResponse(**args))
         # TODO: set flags? status?

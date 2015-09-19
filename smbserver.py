@@ -187,7 +187,7 @@ class ComSessionSetupAndxResponse(smb_structs.ComSessionSetupAndxResponse):
                                    struct.pack('<HH',self.action, len(security_blob)))
 
         prefix = b''
-        if (SMBMessage.HEADER_STRUCT_SIZE + len(message.parameters_data) +
+        if (SMBMessage.HEADER_STRUCT_SIZE + len(message.parameters_data) + 2 +
             len(security_blob)) % 2:
             prefix = b'\0'
 

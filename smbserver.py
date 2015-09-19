@@ -228,7 +228,7 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
         ts = time.time()
         win32_time = (int(ts) + 11644473600) * 10000000
         utc_offset = int(-(datetime.fromtimestamp(ts) -
-                           datetime.utcfromtimestamp(ts)).total_seconds())
+                           datetime.utcfromtimestamp(ts)).total_seconds() / 60)
         args = dict(
             # TODO: catch this and throw a friendlier error
             dialect_index=negotiate_req.payload.dialects.index('NT LM 0.12'),

@@ -233,12 +233,12 @@ class ComTreeConnectAndxResponse(smb_structs.ComTreeConnectAndxResponse):
     def prepare(self, message):
         prepare(self, message)
 
-        self.parameters_data = struct.pack(self.PAYLOAD_STRUCT_FORMAT,
-                                           0xff, 0, 0,
-                                           self.optional_support)
+        message.parameters_data = struct.pack(self.PAYLOAD_STRUCT_FORMAT,
+                                              0xff, 0, 0,
+                                              self.optional_support)
 
         # NB A: means disk share
-        self.data = b'A:\0'
+        message.data = b'A:\0'
 
 class ComEchoRequest(smb_structs.ComEchoRequest):
     def decode(self, message):

@@ -53,7 +53,7 @@ class SMBMessage(smb_structs.SMBMessage):
         elif self.command == smb_structs.SMB_COM_ECHO:
             self.payload = smb_structs.ComEchoRequest()
         elif self.command == smb_structs.SMB_COM_SESSION_SETUP_ANDX:
-            self.payload = smb_structs.ComSessionSetupAndxRequest()
+            self.payload = ComSessionSetupAndxRequest()
         elif self.command == smb_structs.SMB_COM_NEGOTIATE:
             self.payload = ComNegotiateRequest()
 
@@ -108,6 +108,86 @@ class ComNegotiateResponse(smb_structs.ComNegotiateResponse):
                                               self.server_time_zone, self.challenge_length)
         message.data = b''
 
+class ComSessionSetupAndxRequest(smb_structs.ComSessionSetupAndxRequest__NoSecurityExtension):
+    def __init__(self):
+        pass
+
+    def decode(self, message):
+        andx_header = message.parameters_data[:self.DEFAULT_ANDX_PARAM_SIZE]
+        (andx_command, andx_reserved, andx_offset) = andx_header_o = struct.unpack(">BBH", andx_header)
+
+        # TODO: better andx parsing
+        if not (andx_command == 0xff and not andx_offset):
+            raise Exception("We don't support non-terminal ANDX parameter blocks yet...")
+
+        params = message.parameters_data[self.DEFAULT_ANDX_PARAM_SIZE:]
+        (max_buffer_size, max_mpx_count, vc_number,
+         session_key, length1, length2, reserved, capabilities) = params_o =struct.unpack(self.PAYLOAD_STRUCT_FORMAT, params)
+
+
+        is_unicode = message.flags2 & smb_structs.SMB_FLAGS2_UNICODE
+
+        case_insensitive_password = message.data[:length1].rstrip(b'\0').decode("ascii")
+        case_sensitive_password = message.data[length1:length1 + length2].rstrip(b'\0').decode("ascii")
+
+        # read padding
+        raw_offset = (SMBMessage.HEADER_STRUCT_SIZE + len(message.parameters_data) + 2 +
+                      length1 + length2)
+        if raw_offset % 2 and is_unicode:
+            if message.raw_data[raw_offset] != 0:
+                raise Exception("Was expecting null byte!: %r" % (message.raw_data[raw_offset],))
+            raw_offset += 1
+
+        term = b"\0\0" if is_unicode else b"\0"
+        encoding = "utf-16-le" if is_unicode else "ascii"
+
+        elts = {}
+        for n in ["username", "domain", "nativeos", "nativelanman"]:
+            s = raw_offset
+            while True:
+                next_offset = message.raw_data.index(term, s)
+                if next_offset % 2: s = next_offset + 1
+                else: break
+            elts[n] = message.raw_data[raw_offset:next_offset].decode(encoding)
+            raw_offset = next_offset + len(term)
+
+        self.max_buffer_size = max_buffer_size
+        self.max_mpx_count = max_mpx_count
+        self.vc_number = vc_number
+        self.session_key = session_key
+        self.capabilities = capabilities
+
+        self.password = (case_insensitive_password or case_sensitive_password)
+        self.username = elts['username']
+        self.domain = elts['domain']
+        self.native_os = elts['nativeos']
+        self.native_lan_man = elts['nativelanman']
+
+class ComSessionSetupAndxResponse(smb_structs.ComSessionSetupAndxResponse):
+    def __init__(self, **kw):
+        for (k, v) in kw.items():
+            setattr(self, k, v)
+
+    def initMessage(self, message):
+        init_reply(self, message, smb_structs.SMB_COM_SESSION_SETUP_ANDX)
+
+    def prepare(self, message):
+        prepare(self, message)
+
+        security_blob = b''
+
+        # this gets reset in SMBMessage.encode()
+        message.pid = self.pid
+
+        message.parameters_data = (self.DEFAULT_ANDX_PARAM_HEADER +
+                                   struct.pack('<HH',self.action, len(security_blob)))
+
+        prefix = b''
+        if (SMBMessage.HEADER_STRUCT_SIZE + len(message.parameters_data) +
+            len(security_blob)) % 2:
+            prefix = b'\0'
+
+        message.data = security_blob + prefix + b''.join([x.encode("utf-16-le") + b'\0\0'  for x in ["Unix", "DropboxFS", self.domain]])
 
 def decode_smb_message(message):
     i = SMBMessage()
@@ -168,6 +248,22 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
         # TODO: set flags? status?
 
         self.send_message(negotiate_resp)
+
+        session_setup_andx_req = self.read_message()
+        if session_setup_andx_req.command != smb_structs.SMB_COM_SESSION_SETUP_ANDX:
+            raise Exception("Got unexpected request: %s" % (session_setup_andx_req,))
+
+        if session_setup_andx_req.payload.capabilities & ~server_capabilities:
+            raise Exception("Client sent capabilities outside of the server posted caps")
+
+        args = dict(action=1,
+                    domain=session_setup_andx_req.payload.domain,
+                    pid=session_setup_andx_req.pid,
+                    tid=session_setup_andx_req.tid,
+                    uid=session_setup_andx_req.uid,
+                    mid=session_setup_andx_req.mid)
+        session_setup_andx_resp = SMBMessage(ComSessionSetupAndxResponse(**args))
+        self.send_message(session_setup_andx_resp)
 
 def main(argv):
     logging.basicConfig(level=logging.DEBUG)

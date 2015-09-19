@@ -17,6 +17,7 @@
 
 import os
 import logging
+import random
 import socketserver
 import struct
 import sys
@@ -327,6 +328,26 @@ def response_args_from_req(req, **kw):
 
 STATUS_NOT_FOUND = 0xc0000225
 
+SMB_TRANS2_FIND_FIRST2 = 0x1
+SMB_INFO_STANDARD = 0x1
+SMB_FIND_RETURN_RESUME_KEYS = 0x4
+SMB_FIND_CLOSE_AT_EOS = 0x2
+ATTR_DIRECTORY = 0x10
+
+def encode_smb_datetime(dt):
+    log.debug("date is %r", dt)
+    date = 0
+    date |= (dt.year - 1980) << 9
+    date |= (dt.month & 0xf) << 5
+    date |= dt.day & 0x1f
+    assert date < 2 ** 16
+    time = 0
+    time |= dt.hour << 11
+    time |= dt.minute << 5
+    time |= int(dt.second / 2)
+    assert time < 2 ** 16
+    return (date, time)
+
 class NullPayload(smb_structs.Payload):
     def __init__(self, **kw):
         for (k, v) in kw.items():
@@ -432,6 +453,9 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                                       native_file_system="FAT")
         self.send_message(SMBMessage(ComTreeConnectAndxResponse(**args)))
 
+        entries = [("foo", {"type": "directory"}),
+                   ("bar", {"type": "file", "size": 1})]
+        open_find_trans = {}
         while True:
             req = self.read_message()
 
@@ -452,7 +476,101 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                 setup = struct.unpack("<%dH" % (len(req.payload.setup_bytes) / 2,),
                                       req.payload.setup_bytes)
                 # go through another layer of parsing
-                if True:
+                if setup[0] == SMB_TRANS2_FIND_FIRST2:
+                    if req.payload.flags:
+                        raise Exception("Transaction 2 flags not supported!")
+
+                    fmt = "<HHHHI"
+                    fmt_size = struct.calcsize(fmt)
+                    (search_attributes, search_count,
+                     flags, information_level,
+                     search_storage_type) = struct.unpack("<HHHHI", req.payload.params_bytes[:fmt_size])
+                    filename = req.payload.params_bytes[fmt_size:].decode("utf-16-le")[:-1]
+
+                    if information_level != SMB_INFO_STANDARD:
+                        raise Exception("Find First Information level not supported!")
+
+                    include_resume_key = flags & SMB_FIND_RETURN_RESUME_KEYS
+
+                    # todo: actually implement this
+                    #       for now just send "foo" and "bar"
+                    entries_offset = 0
+                    num_entries_to_ret = min(len(entries) - entries_offset, search_count)
+
+                    entries_to_ret = entries[entries_offset:entries_offset + num_entries_to_ret]
+
+                    assert len(open_find_trans) <= 2 ** 16
+                    if len(open_find_trans) == 2 ** 16:
+                        raise Exception("Too many find first transactions open!")
+
+                    sid = random.randint(0, 2 ** 16)
+                    while sid in open_find_trans or sid == 0xffff:
+                        sid = random.randint(0, 2 ** 16)
+
+                    is_search_over = entries_offset + num_entries_to_ret == len(entries)
+
+                    offset = 0
+                    data = []
+                    for (i, (name, md)) in enumerate(entries[entries_offset:entries_offset + num_entries_to_ret], entries_offset):
+                        # SMB_INFO_STANDARD
+                        fmt = "<"
+                        args = []
+                        if include_resume_key:
+                            fmt += "I"
+                            args.append(i)
+                        fmt += "HHHHHHIIHB"
+                        name += '\0'
+                        file_name_encoded = name.encode("utf-16-le")
+
+
+                        (creation_date, creation_time) = encode_smb_datetime(datetime.now())
+                        (last_access_date, last_access_time) = encode_smb_datetime(datetime.now())
+                        (last_write_date, last_write_time) = encode_smb_datetime(datetime.now())
+
+                        if md["type"] == "directory":
+                            file_data_size = 0
+                        else:
+                            assert md["type"] == "file"
+                            file_data_size = md["size"]
+
+                        allocation_size = 4096
+                        attributes = (0 |
+                                      (ATTR_DIRECTORY if md["type"] == "directory" else 0))
+
+                        args.extend([creation_date, creation_time,
+                                     last_access_date, last_access_time,
+                                     last_write_date, last_write_time,
+                                     file_data_size, allocation_size,
+                                     attributes, len(file_name_encoded)])
+
+                        data.append(struct.pack(fmt, *args))
+                        offset += len(data[-1])
+                        if offset % 2:
+                            data.append(b' ')
+                            offset += 1
+                        data.append(file_name_encoded)
+                        offset += len(file_name_encoded)
+
+                    data_bytes = b''.join(data)
+                    last_name_offset = len(data_bytes) - len(data[-1])
+
+                    params_bytes = struct.pack("<HHHHH",
+                                               sid, num_entries_to_ret,
+                                               int(is_search_over),
+                                               0x0,
+                                               0 if is_search_over else
+                                               last_name_offset)
+
+                    args = response_args_from_req(req,
+                                                  setup_bytes=struct.pack("<H", SMB_TRANS2_FIND_FIRST2),
+                                                  params_bytes=params_bytes,
+                                                  data_bytes=data_bytes)
+                    self.send_message(SMBMessage(ComTransaction2Response(**args)))
+                    open_find_trans[sid] = {}
+
+                    if flags & SMB_FIND_CLOSE_AT_EOS:
+                        del open_find_trans[sid]
+                else:
                     raise Exception("TRANS2 not supported!")
             else:
                 log.debug("%r", req)

@@ -134,6 +134,7 @@ class ComSessionSetupAndxRequest(smb_structs.ComSessionSetupAndxRequest__NoSecur
 
 
         is_unicode = message.flags2 & smb_structs.SMB_FLAGS2_UNICODE
+        if not is_unicode: raise Exception("Only support unicode!")
 
         case_insensitive_password = message.data[:length1].rstrip(b'\0').decode("ascii")
         case_sensitive_password = message.data[length1:length1 + length2].rstrip(b'\0').decode("ascii")
@@ -196,6 +197,9 @@ class ComTreeConnectAndxRequest(smb_structs.ComTreeConnectAndxRequest):
     def __init__(self): pass
 
     def decode(self, message):
+        is_unicode = message.flags2 & smb_structs.SMB_FLAGS2_UNICODE
+        if not is_unicode: raise Exception("Only support unicode!")
+
         andx_header = message.parameters_data[:self.DEFAULT_ANDX_PARAM_SIZE]
         (andx_command, andx_reserved, andx_offset) = andx_header_o = struct.unpack(">BBH", andx_header)
 

@@ -51,7 +51,7 @@ class SMBMessage(smb_structs.SMBMessage):
         elif self.command == smb_structs.SMB_COM_TREE_CONNECT_ANDX:
             self.payload = ComTreeConnectAndxRequest()
         elif self.command == smb_structs.SMB_COM_ECHO:
-            self.payload = smb_structs.ComEchoRequest()
+            self.payload = ComEchoRequest()
         elif self.command == smb_structs.SMB_COM_SESSION_SETUP_ANDX:
             self.payload = ComSessionSetupAndxRequest()
         elif self.command == smb_structs.SMB_COM_NEGOTIATE:
@@ -242,6 +242,27 @@ class ComTreeConnectAndxResponse(smb_structs.ComTreeConnectAndxResponse):
         # NB A: means disk share
         self.data = b'A:\0'
 
+class ComEchoRequest(smb_structs.ComEchoRequest):
+    def decode(self, message):
+        fmt = '<H'
+        fmt_size = struct.calcsize(fmt)
+        (self.echo_count,) = struct.unpack(fmt, message.parameters_data[:fmt_size])
+        self.echo_data = message.data
+
+class ComEchoResponse(smb_structs.ComEchoResponse):
+    def __init__(self, **kw):
+        for (k, v) in kw.items():
+            setattr(self, k, v)
+
+    def initMessage(self, message):
+        init_reply(self, message, smb_structs.SMB_COM_ECHO)
+
+    def prepare(self, message):
+        prepare(self, message)
+
+        message.parameters_data = struct.pack("<H", self.sequence_number)
+        message.data = self.data
+
 def response_args_from_req(req, **kw):
     return dict(pid=req.pid, tid=req.tid,
                 uid=req.uid, mid=req.mid, **kw)
@@ -352,6 +373,15 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                                       service="A:",
                                       native_file_system="FAT")
         self.send_message(SMBMessage(ComTreeConnectAndxResponse(**args)))
+
+        echo_req = self.read_message()
+        if echo_req.payload.echo_count > 1:
+            raise Exception("Echo count is too high: %r" % (req.payload.echo_count,))
+
+        args = response_args_from_req(echo_req,
+                                      sequence_number=0,
+                                      data=echo_req.payload.echo_data)
+        self.send_message(SMBMessage(ComEchoResponse(**args)))
 
 def main(argv):
     logging.basicConfig(level=logging.DEBUG)

@@ -193,6 +193,26 @@ def response_args_from_req(req, **kw):
     return dict(pid=req.pid, tid=req.tid,
                 uid=req.uid, mid=req.mid, **kw)
 
+STATUS_NOT_FOUND = 0xc0000225
+
+class NullPayload(smb_structs.Payload):
+    def __init__(self, **kw):
+        for (k, v) in kw.items():
+            setattr(self, k, v)
+
+    def initMessage(self, message):
+        init_reply(self, message, self.command)
+
+    def prepare(self, message):
+        prepare(self, message)
+
+def error_response(req, status):
+    assert status, "Status must be an error!"
+    m = SMBMessage(NullPayload(**response_args_from_req(req, command=req.command)))
+    m.message.status.internal_value = status
+    m.message.status.is_ntstatus = True
+    return m
+
 def decode_smb_message(message):
     i = SMBMessage()
     i.decode(message)

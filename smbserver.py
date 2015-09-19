@@ -397,7 +397,9 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
 
         server_capabilities = (smb_structs.CAP_UNICODE |
                                smb_structs.CAP_LARGE_FILES |
-                               smb_structs.CAP_STATUS32)
+                               smb_structs.CAP_STATUS32 |
+                               smb_structs.CAP_NT_SMBS |
+                               smb_structs.CAP_NT_FIND)
 
         # win32 time
         ts = time.time()

@@ -49,7 +49,7 @@ class SMBMessage(smb_structs.SMBMessage):
         elif self.command == smb_structs.SMB_COM_NT_CREATE_ANDX:
             self.payload = smb_structs.ComNTCreateAndxRequest()
         elif self.command == smb_structs.SMB_COM_TREE_CONNECT_ANDX:
-            self.payload = smb_structs.ComTreeConnectAndxRequest()
+            self.payload = ComTreeConnectAndxRequest()
         elif self.command == smb_structs.SMB_COM_ECHO:
             self.payload = smb_structs.ComEchoRequest()
         elif self.command == smb_structs.SMB_COM_SESSION_SETUP_ANDX:
@@ -189,6 +189,59 @@ class ComSessionSetupAndxResponse(smb_structs.ComSessionSetupAndxResponse):
 
         message.data = security_blob + prefix + b''.join([x.encode("utf-16-le") + b'\0\0'  for x in ["Unix", "DropboxFS", self.domain]])
 
+class ComTreeConnectAndxRequest(smb_structs.ComTreeConnectAndxRequest):
+    def __init__(self): pass
+
+    def decode(self, message):
+        andx_header = message.parameters_data[:self.DEFAULT_ANDX_PARAM_SIZE]
+        (andx_command, andx_reserved, andx_offset) = andx_header_o = struct.unpack(">BBH", andx_header)
+
+        # TODO: better andx parsing
+        if not (andx_command == 0xff and not andx_offset):
+            raise Exception("We don't support non-terminal ANDX parameter blocks yet...")
+
+        (flags, password_len) = struct.unpack(self.PAYLOAD_STRUCT_FORMAT,
+                                              message.parameters_data[self.DEFAULT_ANDX_PARAM_SIZE:self.PAYLOAD_STRUCT_SIZE + self.DEFAULT_ANDX_PARAM_SIZE])
+
+        self.password = message.data[:password_len].rstrip(b'\0').decode("utf-8")
+
+        offset = password_len
+        if (SMBMessage.HEADER_STRUCT_SIZE + len(message.parameters_data) +
+            password_len) % 2:
+            if message.data[password_len] != 0:
+                raise Exception("Was expecting null byte padding!")
+            offset += 1
+
+        s = offset
+        while True:
+            share_name_offset = message.data.index(b'\0\0', s)
+            if (share_name_offset + SMBMessage.HEADER_STRUCT_SIZE +
+                len(message.parameters_data)) % 2:
+                s = share_name_offset + 1
+            else: break
+        self.path = message.data[offset:share_name_offset].decode('utf-16-le')
+
+        service_off = message.data.index(b'\0', share_name_offset + 2)
+        self.service = message.data[share_name_offset + 2:service_off].decode("ascii")
+
+class ComTreeConnectAndxResponse(smb_structs.ComTreeConnectAndxResponse):
+    def __init__(self, **kw):
+        for (k, v) in kw.items():
+            setattr(self, k, v)
+
+    def initMessage(self, message):
+        init_reply(self, message, smb_structs.SMB_COM_TREE_CONNECT_ANDX)
+
+    def prepare(self, message):
+        prepare(self, message)
+
+        self.parameters_data = struct.pack(self.PAYLOAD_STRUCT_FORMAT,
+                                           0xff, 0, 0,
+                                           self.optional_support)
+
+        # NB A: means disk share
+        self.data = b'A:\0'
+
 def response_args_from_req(req, **kw):
     return dict(pid=req.pid, tid=req.tid,
                 uid=req.uid, mid=req.mid, **kw)
@@ -285,6 +338,21 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                                       domain=session_setup_andx_req.payload.domain)
         session_setup_andx_resp = SMBMessage(ComSessionSetupAndxResponse(**args))
         self.send_message(session_setup_andx_resp)
+
+        tree_connect_andx_req = self.read_message()
+        if tree_connect_andx_req.command != smb_structs.SMB_COM_TREE_CONNECT_ANDX:
+            raise Exception("Got unexpected request: %s" % (session_setup_andx_req,))
+
+        if tree_connect_andx_req.payload.service not in ("?????", "A:"):
+            response = error_response(tree_connect_andx_req,
+                                      STATUS_NOT_FOUND)
+        else:
+            args = response_args_from_req(tree_connect_andx_req,
+                                          optional_support=smb_structs.SMB_TREE_CONNECTX_SUPPORT_SEARCH,
+                                          service="A:",
+                                          native_file_system="FAT")
+            response = SMBMessage(ComTreeConnectAndxResponse(**args))
+        self.send_message(response)
 
 def main(argv):
     logging.basicConfig(level=logging.DEBUG)

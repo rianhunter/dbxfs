@@ -60,6 +60,19 @@ class SMBMessage(smb_structs.SMBMessage):
         if self.payload:
             self.payload.decode(self)
 
+def init_reply(payload, message, command):
+    smb_structs.Payload.initMessage(payload, message)
+    message.command = command
+    message.flags = message.flags | smb_structs.SMB_FLAGS_REPLY
+    message.flags2 = message.flags2 & ~smb_structs.SMB_FLAGS2_EXTENDED_SECURITY
+    message.tid = getattr(payload, 'tid', 0)
+    message.uid = getattr(payload, 'uid', 0)
+    message.mid = getattr(payload, 'mid', 0)
+
+def prepare(payload, message):
+    assert message.payload is payload
+    message.pid = getattr(payload, 'pid', 0)
+
 class ComNegotiateRequest(smb_structs.ComNegotiateRequest):
     def __str__(self):
         lines = []
@@ -83,11 +96,10 @@ class ComNegotiateResponse(smb_structs.ComNegotiateResponse):
             setattr(self, k, v)
 
     def initMessage(self, message):
-        smb_structs.ComNegotiateResponse.initMessage(self, message)
-        message.command = smb_structs.SMB_COM_NEGOTIATE
+        init_reply(self, message, smb_structs.SMB_COM_NEGOTIATE)
 
     def prepare(self, message):
-        assert message.payload == self
+        prepare(self, message)
 
         message.parameters_data = struct.pack(self.PAYLOAD_STRUCT_FORMAT,
                                               self.dialect_index, self.security_mode, self.max_mpx_count,

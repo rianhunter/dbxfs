@@ -189,6 +189,10 @@ class ComSessionSetupAndxResponse(smb_structs.ComSessionSetupAndxResponse):
 
         message.data = security_blob + prefix + b''.join([x.encode("utf-16-le") + b'\0\0'  for x in ["Unix", "DropboxFS", self.domain]])
 
+def response_args_from_req(req, **kw):
+    return dict(pid=req.pid, tid=req.tid,
+                uid=req.uid, mid=req.mid, **kw)
+
 def decode_smb_message(message):
     i = SMBMessage()
     i.decode(message)
@@ -256,12 +260,9 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
         if session_setup_andx_req.payload.capabilities & ~server_capabilities:
             raise Exception("Client sent capabilities outside of the server posted caps")
 
-        args = dict(action=1,
-                    domain=session_setup_andx_req.payload.domain,
-                    pid=session_setup_andx_req.pid,
-                    tid=session_setup_andx_req.tid,
-                    uid=session_setup_andx_req.uid,
-                    mid=session_setup_andx_req.mid)
+        args = response_args_from_req(session_setup_andx_req,
+                                      action=1,
+                                      domain=session_setup_andx_req.payload.domain)
         session_setup_andx_resp = SMBMessage(ComSessionSetupAndxResponse(**args))
         self.send_message(session_setup_andx_resp)
 

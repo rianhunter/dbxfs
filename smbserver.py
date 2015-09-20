@@ -362,6 +362,7 @@ SMB_FIND_CLOSE_AT_EOS = 0x2
 ATTR_DIRECTORY = 0x10
 SMB_QUERY_FS_SIZE_INFO = 0x103
 SMB_QUERY_FS_ATTRIBUTE_INFO = 0x105
+SMB_QUERY_FILE_ALL_INFO = 0x107
 
 def encode_smb_datetime(dt):
     log.debug("date is %r", dt)
@@ -533,7 +534,49 @@ FS_INFO_GENERATORS = {
     SMB_QUERY_FS_ATTRIBUTE_INFO: generate_fs_attribute_info,
 }
 
+def generate_query_file_all_info(path, md):
+    dt = datetime.now()
+    creation_time = datetime_to_win32(dt)
+    last_access_time = datetime_to_win32(dt)
+    last_write_time = datetime_to_win32(dt)
+    last_change_time = datetime_to_win32(dt)
+    ext_file_attributes = (ATTR_DIRECTORY if md["type"] == "directory" else 0)
+    allocation_size = 4096
+
+    if md["type"] == "directory":
+        file_data_size = 0
+    else:
+        assert md["type"] == "file"
+        file_data_size = md["size"]
+
+    reserved = 0
+
+    number_of_links = 1
+    delete_pending = 0
+    directory = int(md["type"] == "directory")
+
+    ea_size = 0
+
+    encoded_file_name = (path + "\0").encode("utf-16-le")
+
+    buf = struct.pack("<QQQQLLQQLBBHLL",
+                      creation_time, last_access_time,
+                      last_write_time, last_change_time,
+                      ext_file_attributes,
+                      reserved, allocation_size,
+                      file_data_size,
+                      number_of_links,
+                      delete_pending,
+                      directory,
+                      reserved,
+                      ea_size,
+                      len(encoded_file_name))
+    buf += encoded_file_name
+
+    return (0, buf)
+
 QUERY_FILE_INFO_GENERATORS = {
+    SMB_QUERY_FILE_ALL_INFO: generate_query_file_all_info,
 }
 
 class SMBClientHandler(socketserver.BaseRequestHandler):

@@ -353,6 +353,7 @@ STATUS_NOT_FOUND = 0xc0000225
 STATUS_SMB_BAD_COMMAND = 0x160002
 
 SMB_TRANS2_FIND_FIRST2 = 0x1
+SMB_TRANS2_QUERY_FS_INFORMATION = 0x3
 SMB_INFO_STANDARD = 0x1
 SMB_FIND_FILE_BOTH_DIRECTORY_INFO = 0x104
 SMB_FIND_RETURN_RESUME_KEYS = 0x4
@@ -499,6 +500,9 @@ def generate_find_file_both_directory_info(idx, offset, flags, name, md, is_last
 INFO_GENERATORS = {
     SMB_INFO_STANDARD: generate_info_standard,
     SMB_FIND_FILE_BOTH_DIRECTORY_INFO: generate_find_file_both_directory_info,
+}
+
+FS_INFO_GENERATORS = {
 }
 
 class SMBClientHandler(socketserver.BaseRequestHandler):
@@ -659,6 +663,26 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
 
                     if flags & SMB_FIND_CLOSE_AT_EOS:
                         del open_find_trans[sid]
+                elif setup[0] == SMB_TRANS2_QUERY_FS_INFORMATION:
+                    if req.payload.flags:
+                        raise Exception("Transaction 2 flags not supported!")
+
+                    fmt = "<H"
+                    fmt_size = struct.calcsize(fmt)
+                    (information_level,) = struct.unpack(fmt, req.payload.params_bytes[:fmt_size])
+
+                    try:
+                        fs_info_generator = FS_INFO_GENERATORS[information_level]
+                    except KeyError:
+                        raise Exception("QUERY FS Information level not supported: %r" % (information_level,))
+
+                    data_bytes = fs_info_generator()
+
+                    args = response_args_from_req(req,
+                                                  setup_bytes=struct.pack("<H", SMB_TRANS2_QUERY_FS_INFORMATION),
+                                                  params_bytes=b'',
+                                                  data_bytes=data_bytes)
+                    self.send_message(SMBMessage(ComTransaction2Response(**args)))
                 else:
                     log.debug("%s", req)
                     self.send_message(error_response(req, STATUS_SMB_BAD_COMMAND))

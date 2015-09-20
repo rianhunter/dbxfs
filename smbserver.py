@@ -360,6 +360,7 @@ SMB_FIND_RETURN_RESUME_KEYS = 0x4
 SMB_FIND_CLOSE_AT_EOS = 0x2
 ATTR_DIRECTORY = 0x10
 SMB_QUERY_FS_SIZE_INFO = 0x103
+SMB_QUERY_FS_ATTRIBUTE_INFO = 0x105
 
 def encode_smb_datetime(dt):
     log.debug("date is %r", dt)
@@ -511,8 +512,24 @@ def generate_fs_size_info():
                        512, # bytes per sector
                        )
 
+FILE_CASE_SENSITIVE_SEARCH = 0x1
+FILE_CASE_PRESERVED_NAMES = 0x2
+FILE_UNICODE_ON_DISK = 0x4
+
+def generate_fs_attribute_info():
+    file_system_attributes = FILE_UNICODE_ON_DISK | FILE_CASE_PRESERVED_NAMES
+    max_file_name_length_in_bytes = 255 * 2
+    file_system_name = "what"
+    file_system_name_encoded = file_system_name.encode("utf-16-le")
+    header = struct.pack("<LlL",
+                         file_system_attributes,
+                         max_file_name_length_in_bytes,
+                         len(file_system_name_encoded))
+    return header + file_system_name_encoded
+
 FS_INFO_GENERATORS = {
     SMB_QUERY_FS_SIZE_INFO: generate_fs_size_info,
+    SMB_QUERY_FS_ATTRIBUTE_INFO: generate_fs_attribute_info,
 }
 
 class SMBClientHandler(socketserver.BaseRequestHandler):

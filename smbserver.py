@@ -671,11 +671,14 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                                               data=req.payload.echo_data)
                 self.send_message(SMBMessage(ComEchoResponse(**args)))
             elif req.command == smb_structs.SMB_COM_TRANSACTION2:
-
                 if len(req.payload.setup_bytes) % 2:
                     raise Exception("bad setup bytes length!")
                 setup = struct.unpack("<%dH" % (len(req.payload.setup_bytes) / 2,),
                                       req.payload.setup_bytes)
+
+                if req.payload.timeout:
+                    raise Exception("Transaction2 Delayed request not supported!")
+
                 # go through another layer of parsing
                 if setup[0] == SMB_TRANS2_FIND_FIRST2:
                     if req.payload.flags:

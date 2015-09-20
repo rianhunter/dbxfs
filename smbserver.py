@@ -383,6 +383,54 @@ def recv_all(sock, len_):
 def datetime_to_win32(dt):
     return (int(dt.timestamp()) + 11644473600) * 10000000
 
+def generate_info_standard(idx, offset, flags, name, md, _):
+    include_resume_key = flags & SMB_FIND_RETURN_RESUME_KEYS
+
+    # SMB_INFO_STANDARD
+    fmt = "<"
+    args = []
+    if include_resume_key:
+        fmt += "I"
+        args.append(idx)
+    fmt += "HHHHHHIIHB"
+    name += '\0'
+    file_name_encoded = name.encode("utf-16-le")
+
+    (creation_date, creation_time) = encode_smb_datetime(datetime.now())
+    (last_access_date, last_access_time) = encode_smb_datetime(datetime.now())
+    (last_write_date, last_write_time) = encode_smb_datetime(datetime.now())
+
+    if md["type"] == "directory":
+        file_data_size = 0
+    else:
+        assert md["type"] == "file"
+        file_data_size = md["size"]
+
+    allocation_size = 4096
+    attributes = (0 |
+                  (ATTR_DIRECTORY if md["type"] == "directory" else 0))
+
+    args.extend([creation_date, creation_time,
+                 last_access_date, last_access_time,
+                 last_write_date, last_write_time,
+                 file_data_size, allocation_size,
+                 attributes, len(file_name_encoded)])
+
+    bufs = []
+    bufs.append(struct.pack(fmt, *args))
+    offset += len(bufs[-1])
+    if offset % 2:
+        data.append(b' ')
+        offset += 1
+    bufs.append(file_name_encoded)
+    offset += len(bufs[-1])
+
+    return bufs
+
+INFO_GENERATORS = {
+    SMB_INFO_STANDARD: generate_info_standard,
+}
+
 class SMBClientHandler(socketserver.BaseRequestHandler):
     def read_message(self):
         data = self.request.recv(4)
@@ -492,10 +540,10 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                      search_storage_type) = struct.unpack("<HHHHI", req.payload.params_bytes[:fmt_size])
                     filename = req.payload.params_bytes[fmt_size:].decode("utf-16-le")[:-1]
 
-                    if information_level != SMB_INFO_STANDARD:
-                        raise Exception("Find First Information level not supported!")
-
-                    include_resume_key = flags & SMB_FIND_RETURN_RESUME_KEYS
+                    try:
+                        info_generator = INFO_GENERATORS[information_level]
+                    except KeyError:
+                        raise Exception("Find First Information level not supported: %r" % (information_level,))
 
                     # todo: actually implement this
                     #       for now just send "foo" and "bar"
@@ -517,44 +565,10 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                     offset = 0
                     data = []
                     for (i, (name, md)) in enumerate(entries[entries_offset:entries_offset + num_entries_to_ret], entries_offset):
-                        # SMB_INFO_STANDARD
-                        fmt = "<"
-                        args = []
-                        if include_resume_key:
-                            fmt += "I"
-                            args.append(i)
-                        fmt += "HHHHHHIIHB"
-                        name += '\0'
-                        file_name_encoded = name.encode("utf-16-le")
-
-
-                        (creation_date, creation_time) = encode_smb_datetime(datetime.now())
-                        (last_access_date, last_access_time) = encode_smb_datetime(datetime.now())
-                        (last_write_date, last_write_time) = encode_smb_datetime(datetime.now())
-
-                        if md["type"] == "directory":
-                            file_data_size = 0
-                        else:
-                            assert md["type"] == "file"
-                            file_data_size = md["size"]
-
-                        allocation_size = 4096
-                        attributes = (0 |
-                                      (ATTR_DIRECTORY if md["type"] == "directory" else 0))
-
-                        args.extend([creation_date, creation_time,
-                                     last_access_date, last_access_time,
-                                     last_write_date, last_write_time,
-                                     file_data_size, allocation_size,
-                                     attributes, len(file_name_encoded)])
-
-                        data.append(struct.pack(fmt, *args))
-                        offset += len(data[-1])
-                        if offset % 2:
-                            data.append(b' ')
-                            offset += 1
-                        data.append(file_name_encoded)
-                        offset += len(file_name_encoded)
+                        bufs = info_generator(i, offset, flags, name, md,
+                                              i == len(entries) - 1)
+                        data.extend(bufs)
+                        offset += sum(map(len, bufs))
 
                     data_bytes = b''.join(data)
                     last_name_offset = len(data_bytes) - len(data[-1])

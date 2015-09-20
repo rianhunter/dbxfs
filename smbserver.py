@@ -380,6 +380,9 @@ def recv_all(sock, len_):
         toret.append(b)
     return b''.join(toret)
 
+def datetime_to_win32(dt):
+    return (int(dt.timestamp()) + 11644473600) * 10000000
+
 class SMBClientHandler(socketserver.BaseRequestHandler):
     def read_message(self):
         data = self.request.recv(4)
@@ -402,10 +405,10 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                                smb_structs.CAP_NT_FIND)
 
         # win32 time
-        ts = time.time()
-        win32_time = (int(ts) + 11644473600) * 10000000
-        utc_offset = int(-(datetime.fromtimestamp(ts) -
-                           datetime.utcfromtimestamp(ts)).total_seconds() / 60)
+        now = datetime.now()
+        win32_time = datetime_to_win32(now)
+        utc_offset = int(-(now -
+                           datetime.utcfromtimestamp(now.timestamp())).total_seconds() / 60)
         args = dict(
             # TODO: catch this and throw a friendlier error
             dialect_index=negotiate_req.payload.dialects.index('NT LM 0.12'),

@@ -359,6 +359,7 @@ SMB_FIND_FILE_BOTH_DIRECTORY_INFO = 0x104
 SMB_FIND_RETURN_RESUME_KEYS = 0x4
 SMB_FIND_CLOSE_AT_EOS = 0x2
 ATTR_DIRECTORY = 0x10
+SMB_QUERY_FS_SIZE_INFO = 0x103
 
 def encode_smb_datetime(dt):
     log.debug("date is %r", dt)
@@ -502,7 +503,16 @@ INFO_GENERATORS = {
     SMB_FIND_FILE_BOTH_DIRECTORY_INFO: generate_find_file_both_directory_info,
 }
 
+def generate_fs_size_info():
+    return struct.pack("<QQII",
+                       2 ** 64 - 1, # total allocation units
+                       0, # total free allocation units
+                       16384, # sectors per allocation unit
+                       512, # bytes per sector
+                       )
+
 FS_INFO_GENERATORS = {
+    SMB_QUERY_FS_SIZE_INFO: generate_fs_size_info,
 }
 
 class SMBClientHandler(socketserver.BaseRequestHandler):

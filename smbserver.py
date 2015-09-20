@@ -328,6 +328,7 @@ STATUS_SMB_BAD_COMMAND = 0x160002
 
 SMB_TRANS2_FIND_FIRST2 = 0x1
 SMB_INFO_STANDARD = 0x1
+SMB_FIND_FILE_BOTH_DIRECTORY_INFO = 0x104
 SMB_FIND_RETURN_RESUME_KEYS = 0x4
 SMB_FIND_CLOSE_AT_EOS = 0x2
 ATTR_DIRECTORY = 0x10
@@ -427,8 +428,51 @@ def generate_info_standard(idx, offset, flags, name, md, _):
 
     return bufs
 
+def generate_find_file_both_directory_info(idx, offset, flags, name, md, is_last):
+    fmt = "<IIQQQQQQIIIBB"
+
+    encoded_file_name = (name + "\0").encode("utf-16-le")
+    fmt_size = struct.calcsize(fmt)
+    SHORT_NAME_SIZE = 24
+
+    next_entry_offset = (0
+                         if is_last else
+                         fmt_size + SHORT_NAME_SIZE + len(encoded_file_name))
+
+    now = datetime.now()
+
+    if md["type"] == "directory":
+        file_data_size = 0
+    else:
+        assert md["type"] == "file"
+        file_data_size = md["size"]
+
+    allocation_size = 4096
+    ext_file_attributes = (ATTR_DIRECTORY if md["type"] == "directory" else 0)
+    ea_size = 0
+
+    buf = struct.pack(fmt, next_entry_offset, 0,
+                      datetime_to_win32(now),
+                      datetime_to_win32(now),
+                      datetime_to_win32(now),
+                      datetime_to_win32(now),
+                      file_data_size,
+                      allocation_size,
+                      ext_file_attributes,
+                      len(encoded_file_name),
+                      ea_size,
+                      0, 0)
+
+    bufs = []
+    bufs.append(buf)
+    bufs.append(b'\0' * 24)
+    bufs.append(encoded_file_name)
+
+    return bufs
+
 INFO_GENERATORS = {
     SMB_INFO_STANDARD: generate_info_standard,
+    SMB_FIND_FILE_BOTH_DIRECTORY_INFO: generate_find_file_both_directory_info,
 }
 
 class SMBClientHandler(socketserver.BaseRequestHandler):

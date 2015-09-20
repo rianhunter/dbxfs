@@ -31,6 +31,8 @@ import smb.smb_structs as smb_structs
 
 log = logging.getLogger(__name__)
 
+SMB_COM_QUERY_INFORMATION_DISK = 0x80
+
 class SMBMessage(smb_structs.SMBMessage):
     # NB: default _decodePayload() assumes responses from servers
     # since we are the server, we assume requests
@@ -57,6 +59,8 @@ class SMBMessage(smb_structs.SMBMessage):
             self.payload = ComSessionSetupAndxRequest()
         elif self.command == smb_structs.SMB_COM_NEGOTIATE:
             self.payload = ComNegotiateRequest()
+        elif self.command == SMB_COM_QUERY_INFORMATION_DISK:
+            self.payload = ComQueryInformationDiskRequest()
 
         if self.payload:
             self.payload.decode(self)
@@ -318,6 +322,28 @@ class ComTransaction2Response(smb_structs.ComTransaction2Response):
                         self.params_bytes +
                         (data_bytes_offset - (params_bytes_offset + len(self.params_bytes))) * b'\0' +
                         self.data_bytes)
+
+class ComQueryInformationDiskRequest(smb_structs.Payload):
+    def decode(self, message):
+        pass
+
+class ComQueryInformationDiskResponse(smb_structs.Payload):
+    def __init__(self, **kw):
+        for (k, v) in kw.items():
+            setattr(self, k, v)
+
+    def initMessage(self, message):
+        init_reply(self, message, SMB_COM_QUERY_INFORMATION_DISK)
+
+    def prepare(self, message):
+        prepare(self, message)
+
+        message.parameters_data = struct.pack("<HHHHH",
+                                              self.total_units,
+                                              self.blocks_per_unit,
+                                              self.block_size,
+                                              self.free_units,
+                                              0)
 
 def response_args_from_req(req, **kw):
     return dict(pid=req.pid, tid=req.tid,
@@ -636,6 +662,14 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                 else:
                     log.debug("%s", req)
                     self.send_message(error_response(req, STATUS_SMB_BAD_COMMAND))
+            elif req.command == SMB_COM_QUERY_INFORMATION_DISK:
+                args = response_args_from_req(req,
+                                              total_units=2 ** 16 - 1,
+                                              blocks_per_unit=16384,
+                                              block_size=512,
+                                              free_units=0
+                )
+                self.send_message(SMBMessage(ComQueryInformationDiskResponse(**args)))
             else:
                 log.debug("%s", req)
                 self.send_message(error_response(req, STATUS_SMB_BAD_COMMAND))

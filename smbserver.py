@@ -354,6 +354,7 @@ STATUS_SMB_BAD_COMMAND = 0x160002
 
 SMB_TRANS2_FIND_FIRST2 = 0x1
 SMB_TRANS2_QUERY_FS_INFORMATION = 0x3
+SMB_TRANS2_QUERY_PATH_INFORMATION = 0x5
 SMB_INFO_STANDARD = 0x1
 SMB_FIND_FILE_BOTH_DIRECTORY_INFO = 0x104
 SMB_FIND_RETURN_RESUME_KEYS = 0x4
@@ -532,6 +533,9 @@ FS_INFO_GENERATORS = {
     SMB_QUERY_FS_ATTRIBUTE_INFO: generate_fs_attribute_info,
 }
 
+QUERY_FILE_INFO_GENERATORS = {
+}
+
 class SMBClientHandler(socketserver.BaseRequestHandler):
     def read_message(self):
         data = self.request.recv(4)
@@ -708,6 +712,48 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                     args = response_args_from_req(req,
                                                   setup_bytes=struct.pack("<H", SMB_TRANS2_QUERY_FS_INFORMATION),
                                                   params_bytes=b'',
+                                                  data_bytes=data_bytes)
+                    self.send_message(SMBMessage(ComTransaction2Response(**args)))
+                elif setup[0] == SMB_TRANS2_QUERY_PATH_INFORMATION:
+                    if req.payload.flags:
+                        raise Exception("Transaction 2 flags not supported!")
+
+                    (information_level,) = struct.unpack("<H",
+                                                         req.payload.params_bytes[:2])
+
+                    try:
+                        query_path_info_generator = QUERY_FILE_INFO_GENERATORS[information_level]
+                    except KeyError:
+                        raise Exception("QUERY PATH Information level not supported: %r" % (information_level,))
+
+                    path = req.payload.params_bytes[6:].decode("utf-16-le").rstrip("\0")
+
+                    if path[:1] != '\\':
+                        raise Exception("bad path: %r" % (path,))
+
+                    components = path[:2].split("\\")
+                    if components == ['']:
+                        components = []
+
+                    parent = {"type": "directory",
+                              "children": entries}
+                    real_comps = []
+                    for comp in components:
+                        for (name, md) in parent["children"]:
+                            if name.lower() == comp.lower():
+                                real_comps.append(name)
+                                parent = md
+                                break
+                    path = '\\' + '\\'.join(real_comps)
+                    md = parent
+
+                    setup_bytes = struct.pack("<H", SMB_TRANS2_QUERY_PATH_INFORMATION)
+                    (ea_error_offset, data_bytes) = query_path_info_generator(path, md)
+                    params_bytes = struct.pack("<H", ea_error_offset)
+
+                    args = response_args_from_req(req,
+                                                  setup_bytes=setup_bytes,
+                                                  params_bytes=params_bytes,
                                                   data_bytes=data_bytes)
                     self.send_message(SMBMessage(ComTransaction2Response(**args)))
                 else:

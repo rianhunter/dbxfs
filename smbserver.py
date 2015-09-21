@@ -656,6 +656,25 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
 
         entries = [("foo", {"type": "directory"}),
                    ("bar", {"type": "file", "size": 1})]
+
+        def get_file(path):
+            components = path[1:].split("\\")
+            if components == ['']:
+                components = []
+
+            parent = {"type": "directory",
+                      "children": entries}
+            real_comps = []
+            for comp in components:
+                for (name, md) in parent["children"]:
+                    if name.lower() == comp.lower():
+                        real_comps.append(name)
+                        parent = md
+                        break
+                else:
+                    return None
+            return ('\\' if not real_comps else real_comps[-1], parent)
+
         open_find_trans = {}
         while True:
             req = self.read_message()
@@ -708,27 +727,14 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                     if is_directory_search:
                         comps = comps[:-1]
 
-                    # find path to return
-                    parent = {"type": "directory",
-                              "children": entries}
-                    real_comps = []
-                    for comp in comps:
-                        for (name, md) in parent["children"]:
-                            if name.lower() == comp.lower():
-                                real_comps.append(name)
-                                parent = md
-                                break
-                        else:
-                            parent = None
-                            break
-                    md = parent
+                    (filename, md) = get_file('\\' + '\\'.join(comps)) or (None, None)
 
                     if md is None:
                         cur_entries = []
                     elif is_directory_search:
                         cur_entries = md["children"]
                     else:
-                        cur_entries = [(real_comps[-1], md)]
+                        cur_entries = [(filename, md)]
 
                     # todo: actually implement this
                     #       for now just send "foo" and "bar"
@@ -810,34 +816,19 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
 
                     path = req.payload.params_bytes[6:].decode("utf-16-le").rstrip("\0")
 
-                    if path[:1] != '\\':
-                        raise Exception("bad path: %r" % (path,))
+                    (filename, md) = get_file(path) or (None, None)
+                    if md is None:
+                        self.send_message(error_response(req, STATUS_NOT_FOUND))
+                    else:
+                        setup_bytes = struct.pack("<H", SMB_TRANS2_QUERY_PATH_INFORMATION)
+                        (ea_error_offset, data_bytes) = query_path_info_generator(filename, md)
+                        params_bytes = struct.pack("<H", ea_error_offset)
 
-                    components = path[:2].split("\\")
-                    if components == ['']:
-                        components = []
-
-                    parent = {"type": "directory",
-                              "children": entries}
-                    real_comps = []
-                    for comp in components:
-                        for (name, md) in parent["children"]:
-                            if name.lower() == comp.lower():
-                                real_comps.append(name)
-                                parent = md
-                                break
-                    path = '\\' + '\\'.join(real_comps)
-                    md = parent
-
-                    setup_bytes = struct.pack("<H", SMB_TRANS2_QUERY_PATH_INFORMATION)
-                    (ea_error_offset, data_bytes) = query_path_info_generator(path, md)
-                    params_bytes = struct.pack("<H", ea_error_offset)
-
-                    args = response_args_from_req(req,
-                                                  setup_bytes=setup_bytes,
-                                                  params_bytes=params_bytes,
-                                                  data_bytes=data_bytes)
-                    self.send_message(SMBMessage(ComTransaction2Response(**args)))
+                        args = response_args_from_req(req,
+                                                      setup_bytes=setup_bytes,
+                                                      params_bytes=params_bytes,
+                                                      data_bytes=data_bytes)
+                        self.send_message(SMBMessage(ComTransaction2Response(**args)))
                 else:
                     log.debug("%s", req)
                     self.send_message(error_response(req, STATUS_SMB_BAD_COMMAND))

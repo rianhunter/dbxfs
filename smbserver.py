@@ -815,7 +815,12 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                                       native_file_system="FAT")
         self.send_message(SMBMessage(ComTreeConnectAndxResponse(**args)))
 
-        entries = [("foo", {"type": "directory"}),
+        entries = [("foo", {"type": "directory",
+                            "children" : [
+                                ("baz", {"type": "file", "data": b"YOOOO"}),
+                                ("quux", {"type": "directory"}),
+                            ]
+                            }),
                    ("bar", {"type": "file", "data": b"f"})]
 
         def get_file(path):

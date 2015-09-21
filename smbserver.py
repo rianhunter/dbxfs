@@ -964,6 +964,9 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                         else:
                             cur_entries = [(filename, md)]
 
+                        if not cur_entries:
+                            raise ProtocolError(STATUS_NO_SUCH_FILE)
+
                         # todo: actually implement this
                         #       for now just send "foo" and "bar"
                         entries_offset = 0

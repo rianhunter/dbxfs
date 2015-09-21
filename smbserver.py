@@ -499,6 +499,7 @@ SMB_INFO_STANDARD = 0x1
 SMB_FIND_FILE_BOTH_DIRECTORY_INFO = 0x104
 SMB_FIND_RETURN_RESUME_KEYS = 0x4
 SMB_FIND_CLOSE_AT_EOS = 0x2
+SMB_FIND_CLOSE_AFTER_REQUEST = 0x1
 ATTR_DIRECTORY = 0x10
 ATTR_NORMAL = 0x80
 SMB_QUERY_FS_SIZE_INFO = 0x103
@@ -1005,7 +1006,8 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                     self.send_message(SMBMessage(ComTransaction2Response(**args)))
                     open_find_trans[sid] = {}
 
-                    if is_search_over and flags & SMB_FIND_CLOSE_AT_EOS:
+                    if (is_search_over and flags & SMB_FIND_CLOSE_AT_EOS or
+                        flags & SMB_FIND_CLOSE_AFTER_REQUEST):
                         del open_find_trans[sid]
                 elif setup[0] == SMB_TRANS2_QUERY_FS_INFORMATION:
                     if req.payload.flags:

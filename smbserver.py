@@ -1043,7 +1043,7 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
 
                     (filename, md) = get_file(path) or (None, None)
                     if md is None:
-                        self.send_message(error_response(req, STATUS_NOT_FOUND))
+                        self.send_message(error_response(req, STATUS_NO_SUCH_FILE))
                     else:
                         setup_bytes = struct.pack("<H", SMB_TRANS2_QUERY_PATH_INFORMATION)
                         (ea_error_offset, data_bytes) = query_path_info_generator(filename, md)

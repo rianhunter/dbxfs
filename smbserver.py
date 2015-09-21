@@ -823,6 +823,8 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                       "children": entries}
             real_comps = []
             for comp in components:
+                if parent["type"] != "directory":
+                    return None
                 for (name, md) in parent["children"]:
                     if name.lower() == comp.lower():
                         real_comps.append(name)

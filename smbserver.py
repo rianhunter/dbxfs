@@ -61,6 +61,8 @@ class SMBMessage(smb_structs.SMBMessage):
             self.payload = ComNegotiateRequest()
         elif self.command == SMB_COM_QUERY_INFORMATION_DISK:
             self.payload = ComQueryInformationDiskRequest()
+        elif self.command == smb_structs.SMB_COM_CLOSE:
+            self.payload = ComCloseRequest()
 
         if self.payload:
             self.payload.decode(self)
@@ -450,6 +452,26 @@ class ComReadAndxResponse(smb_structs.ComReadAndxResponse):
                                               reserved, reserved)
 
         message.data = (b'\0' if pad else b'') + self.data
+
+class ComCloseRequest(smb_structs.ComCloseRequest):
+    def __init__(self): pass
+
+    def decode(self, message):
+        (self.fid,
+         self.last_modified_time) = struct.unpack("<HL", message.parameters_data)
+
+class ComCloseResponse(smb_structs.Payload):
+    def __init__(self, **kw):
+        for (k, v) in kw.items():
+            setattr(self, k, v)
+
+    def initMessage(self, message):
+        init_reply(self, message, smb_structs.SMB_COM_CLOSE)
+
+    def prepare(self, message):
+        prepare(self, message)
+        message.parameters_data = b''
+        message.data = b''
 
 def response_args_from_req(req, **kw):
     return dict(pid=req.pid, tid=req.tid,
@@ -1101,6 +1123,18 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                     args = response_args_from_req(req, data=buf)
                     response = SMBMessage(ComReadAndxResponse(**args))
                     self.send_message(response)
+                except ProtocolError as e:
+                    self.send_message(error_response(req, e.error))
+            elif req.command == smb_structs.SMB_COM_CLOSE:
+                request = req.payload
+                try:
+                    try:
+                        del open_files[request.fid]
+                    except KeyError:
+                        raise ProtocolError(STATUS_INVALID_HANDLE)
+
+                    args = response_args_from_req(req)
+                    self.send_message(SMBMessage(ComCloseResponse(**args)))
                 except ProtocolError as e:
                     self.send_message(error_response(req, e.error))
             else:

@@ -791,19 +791,6 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
 
         self.send_message(negotiate_resp)
 
-        session_setup_andx_req = self.read_message()
-        if session_setup_andx_req.command != smb_structs.SMB_COM_SESSION_SETUP_ANDX:
-            raise Exception("Got unexpected request: %s" % (session_setup_andx_req,))
-
-        if session_setup_andx_req.payload.capabilities & ~server_capabilities:
-            raise Exception("Client sent capabilities outside of the server posted caps")
-
-        args = response_args_from_req(session_setup_andx_req,
-                                      action=1,
-                                      domain=session_setup_andx_req.payload.domain)
-        session_setup_andx_resp = SMBMessage(ComSessionSetupAndxResponse(**args))
-        self.send_message(session_setup_andx_resp)
-
         entries = [("foo", {"type": "directory",
                             "children" : [
                                 ("baz", {"type": "file", "data": b"YOOOO"}),
@@ -832,6 +819,8 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                     return None
             return ('\\' if not real_comps else real_comps[-1], parent)
 
+        INVALID_UIDS = (0x0, 0xfffe)
+        open_uids = set()
         INVALID_TIDS = (0x0, 0xffff)
         open_tids = set()
         INVALID_SIDS = (0xffff,)
@@ -853,7 +842,23 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
         while True:
             req = self.read_message()
 
-            if req.command == smb_structs.SMB_COM_TREE_CONNECT_ANDX:
+            if req.command == smb_structs.SMB_COM_SESSION_SETUP_ANDX:
+                try:
+                    if req.payload.capabilities & ~server_capabilities:
+                        raise ProtocolError(STATUS_NOT_SUPPORTED)
+
+                    uid = create_id(open_uids, INVALID_UIDS)
+                    open_uids.add(uid)
+
+                    args = response_args_from_req(req,
+                                                  action=1,
+                                                  domain=req.payload.domain)
+                    args['uid'] = uid
+                    response = SMBMessage(ComSessionSetupAndxResponse(**args))
+                    self.send_message(response)
+                except ProtocolError as e:
+                    self.send_message(error_response(req, e.error))
+            elif req.command == smb_structs.SMB_COM_TREE_CONNECT_ANDX:
                 try:
                     if req.payload.flags & TREE_CONNECT_ANDX_DISCONNECT_TID:
                         try:

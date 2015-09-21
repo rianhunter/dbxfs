@@ -740,7 +740,7 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                     self.send_message(SMBMessage(ComTransaction2Response(**args)))
                     open_find_trans[sid] = {}
 
-                    if flags & SMB_FIND_CLOSE_AT_EOS:
+                    if is_search_over and flags & SMB_FIND_CLOSE_AT_EOS:
                         del open_find_trans[sid]
                 elif setup[0] == SMB_TRANS2_QUERY_FS_INFORMATION:
                     if req.payload.flags:

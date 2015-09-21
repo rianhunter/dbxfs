@@ -914,7 +914,7 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                         self.send_message(SMBMessage(ComTransaction2Response(**args)))
                 else:
                     log.debug("%s", req)
-                    self.send_message(error_response(req, STATUS_SMB_BAD_COMMAND))
+                    self.send_message(error_response(req, STATUS_NOT_SUPPORTED))
             elif req.command == SMB_COM_QUERY_INFORMATION_DISK:
                 args = response_args_from_req(req,
                                               total_units=2 ** 16 - 1,
@@ -1033,7 +1033,7 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                     self.send_message(error_response(req, e.error))
             else:
                 log.debug("%s", req)
-                self.send_message(error_response(req, STATUS_SMB_BAD_COMMAND))
+                self.send_message(error_response(req, STATUS_NOT_SUPPORTED))
 
 def main(argv):
     logging.basicConfig(level=logging.DEBUG)

@@ -410,6 +410,8 @@ STATUS_NO_SUCH_FILE = 0xc000000f
 STATUS_TOO_MANY_OPENED_FILES = 0xc000011f
 STATUS_FILE_IS_A_DIRECTORY = 0xc00000ba
 STATUS_SHARING_VIOLATION = 0xc0000043
+STATUS_INVALID_HANDLE = 0xc0000008
+STATUS_ACCESS_DENIED = 0xc0000022
 
 SMB_TRANS2_FIND_FIRST2 = 0x1
 SMB_TRANS2_QUERY_FS_INFORMATION = 0x3
@@ -443,6 +445,8 @@ FILE_OPEN = 0x1
 
 FILE_DELETE_ON_CLOSE = 0x1000
 FILE_OPEN_BY_FILE_ID = 0x2000
+
+FILE_NON_DIRECTORY_FILE = 0x40
 
 FILE_SHARE_READ = 0x1
 
@@ -660,6 +664,10 @@ def generate_query_file_all_info(path, md):
 QUERY_FILE_INFO_GENERATORS = {
     SMB_QUERY_FILE_ALL_INFO: generate_query_file_all_info,
 }
+
+class ProtocolError(Exception):
+    def __init__(self, error):
+        self.error = error
 
 class SMBClientHandler(socketserver.BaseRequestHandler):
     def read_message(self):
@@ -924,13 +932,7 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                 )
                 self.send_message(SMBMessage(ComQueryInformationDiskResponse(**args)))
             elif req.command == smb_structs.SMB_COM_NT_CREATE_ANDX:
-                processed = False
-
                 request = req.payload
-
-                class ProtocolError(Exception):
-                    def __init__(self, error):
-                        self.error = error
 
                 try:
                     if (request.flags &
@@ -975,7 +977,7 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
 
                     # verify share access
                     # find other files
-                    for (fid, open_md) in open_files:
+                    for (fid, open_md) in open_files.items():
                         if open_md['path'].lower() == file_path.lower():
                             if not (open_md['share'] and is_sharing):
                                 raise ProtocolError(STATUS_SHARING_VIOLATION)

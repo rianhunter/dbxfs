@@ -40,7 +40,7 @@ class SMBMessage(smb_structs.SMBMessage):
         if self.isReply: return super()._decodePayload();
 
         if self.command == smb_structs.SMB_COM_READ_ANDX:
-            self.payload = smb_structs.ComReadAndxRequest()
+            self.payload = ComReadAndxRequest()
         elif self.command == smb_structs.SMB_COM_WRITE_ANDX:
             self.payload = smb_structs.ComWriteAndxRequest()
         elif self.command == smb_structs.SMB_COM_TRANSACTION:
@@ -399,6 +399,58 @@ class ComNTCreateAndxResponse(smb_structs.ComNTCreateAndxResponse):
                                               self.directory)
         message.data = b''
 
+class ComReadAndxRequest(smb_structs.ComReadAndxRequest):
+    def __init__(self): pass
+
+    def decode(self, message):
+        fmt = "<BBHHLHHLH"
+        fmt_size = struct.calcsize(fmt)
+        (andx_command, _, andx_offset,
+         self.fid, self.offset,
+         self.max_return_bytes_count,
+         self.min_return_bytes_count,
+         self.timeout,
+         self.remaining) = struct.unpack("<BBHHLHHLH", message.parameters_data[:fmt_size])
+
+        if len(message.parameters_data) > fmt_size:
+            (offset_high,) = struct.unpack("<L", message.parameters_data[fmt_size:])
+            self.offset = (offset_high << 32) | self.offset
+
+        # TODO: better andx parsing
+        if not (andx_command == 0xff and not andx_offset):
+            raise Exception("We don't support non-terminal ANDX parameter blocks yet...")
+
+class ComReadAndxResponse(smb_structs.ComReadAndxResponse):
+    def __init__(self, **kw):
+        for (k, v) in kw.items():
+            setattr(self, k, v)
+
+    def initMessage(self, message):
+        init_reply(self, message, smb_structs.SMB_COM_READ_ANDX)
+
+    def prepare(self, message):
+        prepare(self, message)
+
+        fmt = "<BBHHHHHHHHHHH"
+        parameters_size = struct.calcsize(fmt)
+
+        offset = message.HEADER_STRUCT_SIZE + parameters_size + 2
+        pad = False
+        if offset % 2:
+            pad = True
+            offset += 1
+
+        reserved = 0
+        message.parameters_data = struct.pack(fmt,
+                                              0xff, 0, reserved,
+                                              reserved, reserved,
+                                              reserved,
+                                              len(self.data), offset,
+                                              reserved, reserved, reserved,
+                                              reserved, reserved)
+
+        message.data = (b'\0' if pad else b'') + self.data
+
 def response_args_from_req(req, **kw):
     return dict(pid=req.pid, tid=req.tid,
                 uid=req.uid, mid=req.mid, **kw)
@@ -745,7 +797,7 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
         self.send_message(SMBMessage(ComTreeConnectAndxResponse(**args)))
 
         entries = [("foo", {"type": "directory"}),
-                   ("bar", {"type": "file", "size": 1})]
+                   ("bar", {"type": "file", "size": 1, "data": b"f"})]
 
         def get_file(path):
             components = path[1:].split("\\")
@@ -1030,6 +1082,24 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                                                   nm_pipe_status=0,
                                                   directory=directory)
                     response = SMBMessage(ComNTCreateAndxResponse(**args))
+                    self.send_message(response)
+                except ProtocolError as e:
+                    self.send_message(error_response(req, e.error))
+            elif req.command == smb_structs.SMB_COM_READ_ANDX:
+                request = req.payload
+                try:
+                    try:
+                        fid_md = open_files[request.fid]
+                    except KeyError:
+                        raise ProtocolError(STATUS_INVALID_HANDLE)
+
+                    (name, md) = get_file(fid_md['path'])
+                    assert md is not None
+
+                    buf = md["data"][request.offset:request.offset + request.max_return_bytes_count]
+
+                    args = response_args_from_req(req, data=buf)
+                    response = SMBMessage(ComReadAndxResponse(**args))
                     self.send_message(response)
                 except ProtocolError as e:
                     self.send_message(error_response(req, e.error))

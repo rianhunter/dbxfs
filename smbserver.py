@@ -914,146 +914,149 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                                               data=req.payload.echo_data)
                 self.send_message(SMBMessage(ComEchoResponse(**args)))
             elif req.command == smb_structs.SMB_COM_TRANSACTION2:
-                verify_uid(req)
-                verify_tid(req)
+                try:
+                    verify_uid(req)
+                    verify_tid(req)
 
-                if len(req.payload.setup_bytes) % 2:
-                    raise Exception("bad setup bytes length!")
-                setup = struct.unpack("<%dH" % (len(req.payload.setup_bytes) / 2,),
-                                      req.payload.setup_bytes)
+                    if len(req.payload.setup_bytes) % 2:
+                        raise Exception("bad setup bytes length!")
+                    setup = struct.unpack("<%dH" % (len(req.payload.setup_bytes) / 2,),
+                                          req.payload.setup_bytes)
 
-                if req.payload.timeout:
-                    raise Exception("Transaction2 Delayed request not supported!")
+                    if req.payload.timeout:
+                        raise Exception("Transaction2 Delayed request not supported!")
 
-                # go through another layer of parsing
-                if setup[0] == SMB_TRANS2_FIND_FIRST2:
-                    if req.payload.flags:
-                        raise Exception("Transaction 2 flags not supported!")
+                    # go through another layer of parsing
+                    if setup[0] == SMB_TRANS2_FIND_FIRST2:
+                        if req.payload.flags:
+                            raise Exception("Transaction 2 flags not supported!")
 
-                    fmt = "<HHHHI"
-                    fmt_size = struct.calcsize(fmt)
-                    (search_attributes, search_count,
-                     flags, information_level,
-                     search_storage_type) = struct.unpack("<HHHHI", req.payload.params_bytes[:fmt_size])
-                    filename = req.payload.params_bytes[fmt_size:].decode("utf-16-le")[:-1]
+                        fmt = "<HHHHI"
+                        fmt_size = struct.calcsize(fmt)
+                        (search_attributes, search_count,
+                         flags, information_level,
+                         search_storage_type) = struct.unpack("<HHHHI", req.payload.params_bytes[:fmt_size])
+                        filename = req.payload.params_bytes[fmt_size:].decode("utf-16-le")[:-1]
 
-                    try:
-                        info_generator = INFO_GENERATORS[information_level]
-                    except KeyError:
-                        raise Exception("Find First Information level not supported: %r" % (information_level,))
+                        try:
+                            info_generator = INFO_GENERATORS[information_level]
+                        except KeyError:
+                            raise Exception("Find First Information level not supported: %r" % (information_level,))
 
-                    comps = filename[1:].split("\\")
-                    for c in comps[:-1]:
-                        if '*' in c or '?' in c:
+                        comps = filename[1:].split("\\")
+                        for c in comps[:-1]:
+                            if '*' in c or '?' in c:
+                                raise Exception("unsupported search path: %r" % (filename,))
+
+                        if '*' in comps[-1] and comps[-1] not in ["*", "*.*", ""]:
                             raise Exception("unsupported search path: %r" % (filename,))
 
-                    if '*' in comps[-1] and comps[-1] not in ["*", "*.*", ""]:
-                        raise Exception("unsupported search path: %r" % (filename,))
+                        is_directory_search = comps[-1] in ["*", "*.*", ""]
+                        if is_directory_search:
+                            comps = comps[:-1]
 
-                    is_directory_search = comps[-1] in ["*", "*.*", ""]
-                    if is_directory_search:
-                        comps = comps[:-1]
+                        (filename, md) = get_file('\\' + '\\'.join(comps)) or (None, None)
 
-                    (filename, md) = get_file('\\' + '\\'.join(comps)) or (None, None)
+                        if md is None:
+                            cur_entries = []
+                        elif is_directory_search:
+                            cur_entries = get_children(md)
+                        else:
+                            cur_entries = [(filename, md)]
 
-                    if md is None:
-                        cur_entries = []
-                    elif is_directory_search:
-                        cur_entries = get_children(md)
-                    else:
-                        cur_entries = [(filename, md)]
+                        # todo: actually implement this
+                        #       for now just send "foo" and "bar"
+                        entries_offset = 0
+                        num_entries_to_ret = min(len(cur_entries) - entries_offset, search_count)
 
-                    # todo: actually implement this
-                    #       for now just send "foo" and "bar"
-                    entries_offset = 0
-                    num_entries_to_ret = min(len(cur_entries) - entries_offset, search_count)
+                        entries_to_ret = cur_entries[entries_offset:entries_offset + num_entries_to_ret]
 
-                    entries_to_ret = cur_entries[entries_offset:entries_offset + num_entries_to_ret]
+                        sid = create_id(open_find_trans, INVALID_SIDS)
 
-                    sid = create_id(open_find_trans, INVALID_SIDS)
+                        is_search_over = entries_offset + num_entries_to_ret == len(cur_entries)
 
-                    is_search_over = entries_offset + num_entries_to_ret == len(cur_entries)
+                        offset = 0
+                        data = []
+                        for (i, (name, md)) in enumerate(entries_to_ret):
+                            bufs = info_generator(i, offset, flags, name, md,
+                                                  i == len(cur_entries) - 1)
+                            data.extend(bufs)
+                            offset += sum(map(len, bufs))
 
-                    offset = 0
-                    data = []
-                    for (i, (name, md)) in enumerate(entries_to_ret):
-                        bufs = info_generator(i, offset, flags, name, md,
-                                              i == len(cur_entries) - 1)
-                        data.extend(bufs)
-                        offset += sum(map(len, bufs))
+                        data_bytes = b''.join(data)
+                        last_name_offset = (0
+                                            if not num_entries_to_ret else
+                                            len(data_bytes) - len(data[-1]))
 
-                    data_bytes = b''.join(data)
-                    last_name_offset = (0
-                                        if not num_entries_to_ret else
-                                        len(data_bytes) - len(data[-1]))
-
-                    params_bytes = struct.pack("<HHHHH",
-                                               sid, num_entries_to_ret,
-                                               int(is_search_over),
-                                               0x0,
-                                               0 if is_search_over else
-                                               last_name_offset)
-
-                    args = response_args_from_req(req,
-                                                  setup_bytes=struct.pack("<H", SMB_TRANS2_FIND_FIRST2),
-                                                  params_bytes=params_bytes,
-                                                  data_bytes=data_bytes)
-                    self.send_message(SMBMessage(ComTransaction2Response(**args)))
-                    open_find_trans[sid] = {}
-
-                    if (is_search_over and flags & SMB_FIND_CLOSE_AT_EOS or
-                        flags & SMB_FIND_CLOSE_AFTER_REQUEST):
-                        del open_find_trans[sid]
-                elif setup[0] == SMB_TRANS2_QUERY_FS_INFORMATION:
-                    if req.payload.flags:
-                        raise Exception("Transaction 2 flags not supported!")
-
-                    fmt = "<H"
-                    fmt_size = struct.calcsize(fmt)
-                    (information_level,) = struct.unpack(fmt, req.payload.params_bytes[:fmt_size])
-
-                    try:
-                        fs_info_generator = FS_INFO_GENERATORS[information_level]
-                    except KeyError:
-                        raise Exception("QUERY FS Information level not supported: %r" % (information_level,))
-
-                    data_bytes = fs_info_generator()
-
-                    args = response_args_from_req(req,
-                                                  setup_bytes=struct.pack("<H", SMB_TRANS2_QUERY_FS_INFORMATION),
-                                                  params_bytes=b'',
-                                                  data_bytes=data_bytes)
-                    self.send_message(SMBMessage(ComTransaction2Response(**args)))
-                elif setup[0] == SMB_TRANS2_QUERY_PATH_INFORMATION:
-                    if req.payload.flags:
-                        raise Exception("Transaction 2 flags not supported!")
-
-                    (information_level,) = struct.unpack("<H",
-                                                         req.payload.params_bytes[:2])
-
-                    try:
-                        query_path_info_generator = QUERY_FILE_INFO_GENERATORS[information_level]
-                    except KeyError:
-                        raise Exception("QUERY PATH Information level not supported: %r" % (information_level,))
-
-                    path = req.payload.params_bytes[6:].decode("utf-16-le").rstrip("\0")
-
-                    (filename, md) = get_file(path) or (None, None)
-                    if md is None:
-                        self.send_message(error_response(req, STATUS_NO_SUCH_FILE))
-                    else:
-                        setup_bytes = struct.pack("<H", SMB_TRANS2_QUERY_PATH_INFORMATION)
-                        (ea_error_offset, data_bytes) = query_path_info_generator(filename, md)
-                        params_bytes = struct.pack("<H", ea_error_offset)
+                        params_bytes = struct.pack("<HHHHH",
+                                                   sid, num_entries_to_ret,
+                                                   int(is_search_over),
+                                                   0x0,
+                                                   0 if is_search_over else
+                                                   last_name_offset)
 
                         args = response_args_from_req(req,
-                                                      setup_bytes=setup_bytes,
+                                                      setup_bytes=struct.pack("<H", SMB_TRANS2_FIND_FIRST2),
                                                       params_bytes=params_bytes,
                                                       data_bytes=data_bytes)
                         self.send_message(SMBMessage(ComTransaction2Response(**args)))
-                else:
-                    log.debug("%s", req)
-                    self.send_message(error_response(req, STATUS_NOT_SUPPORTED))
+                        open_find_trans[sid] = {}
+
+                        if (is_search_over and flags & SMB_FIND_CLOSE_AT_EOS or
+                            flags & SMB_FIND_CLOSE_AFTER_REQUEST):
+                            del open_find_trans[sid]
+                    elif setup[0] == SMB_TRANS2_QUERY_FS_INFORMATION:
+                        if req.payload.flags:
+                            raise Exception("Transaction 2 flags not supported!")
+
+                        fmt = "<H"
+                        fmt_size = struct.calcsize(fmt)
+                        (information_level,) = struct.unpack(fmt, req.payload.params_bytes[:fmt_size])
+
+                        try:
+                            fs_info_generator = FS_INFO_GENERATORS[information_level]
+                        except KeyError:
+                            raise Exception("QUERY FS Information level not supported: %r" % (information_level,))
+
+                        data_bytes = fs_info_generator()
+
+                        args = response_args_from_req(req,
+                                                      setup_bytes=struct.pack("<H", SMB_TRANS2_QUERY_FS_INFORMATION),
+                                                      params_bytes=b'',
+                                                      data_bytes=data_bytes)
+                        self.send_message(SMBMessage(ComTransaction2Response(**args)))
+                    elif setup[0] == SMB_TRANS2_QUERY_PATH_INFORMATION:
+                        if req.payload.flags:
+                            raise Exception("Transaction 2 flags not supported!")
+
+                        (information_level,) = struct.unpack("<H",
+                                                             req.payload.params_bytes[:2])
+
+                        try:
+                            query_path_info_generator = QUERY_FILE_INFO_GENERATORS[information_level]
+                        except KeyError:
+                            raise Exception("QUERY PATH Information level not supported: %r" % (information_level,))
+
+                        path = req.payload.params_bytes[6:].decode("utf-16-le").rstrip("\0")
+
+                        (filename, md) = get_file(path) or (None, None)
+                        if md is None:
+                            self.send_message(error_response(req, STATUS_NO_SUCH_FILE))
+                        else:
+                            setup_bytes = struct.pack("<H", SMB_TRANS2_QUERY_PATH_INFORMATION)
+                            (ea_error_offset, data_bytes) = query_path_info_generator(filename, md)
+                            params_bytes = struct.pack("<H", ea_error_offset)
+
+                            args = response_args_from_req(req,
+                                                          setup_bytes=setup_bytes,
+                                                          params_bytes=params_bytes,
+                                                          data_bytes=data_bytes)
+                            self.send_message(SMBMessage(ComTransaction2Response(**args)))
+                    else:
+                        log.debug("%s", req)
+                        self.send_message(error_response(req, STATUS_NOT_SUPPORTED))
+                except ProtocolError as e:
+                    self.send_message(error_response(req, e.error))
             elif req.command == SMB_COM_QUERY_INFORMATION_DISK:
                 verify_uid(req)
                 verify_tid(req)

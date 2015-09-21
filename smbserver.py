@@ -960,7 +960,11 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                         if md is None:
                             cur_entries = []
                         elif is_directory_search:
-                            cur_entries = get_children(md)
+                            cur_entries = list(get_children(md))
+                            cur_entries.extend([
+                                (".", {"type": "directory"}),
+                                ("..", {"type": "directory"}),
+                                ])
                         else:
                             cur_entries = [(filename, md)]
 

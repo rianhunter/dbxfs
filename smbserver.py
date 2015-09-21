@@ -608,8 +608,9 @@ def generate_info_standard(idx, offset, flags, name, md, _):
 
     file_data_size = get_size(md)
     allocation_size = 4096
-    attributes = (0 |
-                  (ATTR_DIRECTORY if md["type"] == "directory" else 0))
+    attributes = (ATTR_DIRECTORY
+                  if md["type"] == "directory" else
+                  ATTR_NORMAL)
 
     args.extend([creation_date, creation_time,
                  last_access_date, last_access_time,
@@ -644,7 +645,9 @@ def generate_find_file_both_directory_info(idx, offset, flags, name, md, is_last
     file_data_size = get_size(md)
 
     allocation_size = 4096
-    ext_file_attributes = (ATTR_DIRECTORY if md["type"] == "directory" else 0)
+    ext_file_attributes = (ATTR_DIRECTORY
+                           if md["type"] == "directory" else
+                           ATTR_NORMAL)
     ea_size = 0
 
     buf = struct.pack(fmt, next_entry_offset, 0,
@@ -705,7 +708,9 @@ def generate_query_file_all_info(path, md):
     last_access_time = datetime_to_win32(dt)
     last_write_time = datetime_to_win32(dt)
     last_change_time = datetime_to_win32(dt)
-    ext_file_attributes = (ATTR_DIRECTORY if md["type"] == "directory" else 0)
+    ext_file_attributes = (ATTR_DIRECTORY
+                           if md["type"] == "directory" else
+                           ATTR_NORMAL)
     allocation_size = 4096
     file_data_size = get_size(md)
 
@@ -1104,7 +1109,9 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
 
                     win32_now = datetime_to_win32(datetime.now())
                     directory = int(md["type"] == "directory")
-                    ext_attr = ATTR_DIRECTORY if directory else ATTR_NORMAL
+                    ext_attr = (ATTR_DIRECTORY
+                                if directory else
+                                ATTR_NORMAL)
 
                     if (directory and
                         (request.create_options & FILE_NON_DIRECTORY_FILE)):

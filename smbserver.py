@@ -575,6 +575,13 @@ def recv_all(sock, len_):
 def datetime_to_win32(dt):
     return (int(dt.timestamp()) + 11644473600) * 10000000
 
+def get_size(md):
+    if md["type"] == "directory":
+        return 0
+    else:
+        assert md["type"] == "file"
+        return len(md.get("data", b''))
+
 def generate_info_standard(idx, offset, flags, name, md, _):
     include_resume_key = flags & SMB_FIND_RETURN_RESUME_KEYS
 
@@ -592,12 +599,7 @@ def generate_info_standard(idx, offset, flags, name, md, _):
     (last_access_date, last_access_time) = encode_smb_datetime(datetime.now())
     (last_write_date, last_write_time) = encode_smb_datetime(datetime.now())
 
-    if md["type"] == "directory":
-        file_data_size = 0
-    else:
-        assert md["type"] == "file"
-        file_data_size = md["size"]
-
+    file_data_size = get_size(md)
     allocation_size = 4096
     attributes = (0 |
                   (ATTR_DIRECTORY if md["type"] == "directory" else 0))
@@ -632,11 +634,7 @@ def generate_find_file_both_directory_info(idx, offset, flags, name, md, is_last
 
     now = datetime.now()
 
-    if md["type"] == "directory":
-        file_data_size = 0
-    else:
-        assert md["type"] == "file"
-        file_data_size = md["size"]
+    file_data_size = get_size(md)
 
     allocation_size = 4096
     ext_file_attributes = (ATTR_DIRECTORY if md["type"] == "directory" else 0)
@@ -702,12 +700,7 @@ def generate_query_file_all_info(path, md):
     last_change_time = datetime_to_win32(dt)
     ext_file_attributes = (ATTR_DIRECTORY if md["type"] == "directory" else 0)
     allocation_size = 4096
-
-    if md["type"] == "directory":
-        file_data_size = 0
-    else:
-        assert md["type"] == "file"
-        file_data_size = md["size"]
+    file_data_size = get_size(md)
 
     reserved = 0
 
@@ -819,7 +812,7 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
         self.send_message(SMBMessage(ComTreeConnectAndxResponse(**args)))
 
         entries = [("foo", {"type": "directory"}),
-                   ("bar", {"type": "file", "size": 1, "data": b"f"})]
+                   ("bar", {"type": "file", "data": b"f"})]
 
         def get_file(path):
             components = path[1:].split("\\")
@@ -1076,11 +1069,7 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                         (request.create_options & FILE_NON_DIRECTORY_FILE)):
                         raise ProtocolError(STATUS_FILE_IS_A_DIRECTORY)
 
-                    if md["type"] == "directory":
-                        file_data_size = 0
-                    else:
-                        assert md["type"] == "file"
-                        file_data_size = md["size"]
+                    file_data_size = get_size(md)
 
                     FILE_TYPE_DISK = 0
 

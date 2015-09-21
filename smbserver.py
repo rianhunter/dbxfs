@@ -50,7 +50,7 @@ class SMBMessage(smb_structs.SMBMessage):
         elif self.command == smb_structs.SMB_COM_OPEN_ANDX:
             self.payload = smb_structs.ComOpenAndxRequest()
         elif self.command == smb_structs.SMB_COM_NT_CREATE_ANDX:
-            self.payload = smb_structs.ComNTCreateAndxRequest()
+            self.payload = ComNTCreateAndxRequest()
         elif self.command == smb_structs.SMB_COM_TREE_CONNECT_ANDX:
             self.payload = ComTreeConnectAndxRequest()
         elif self.command == smb_structs.SMB_COM_ECHO:
@@ -345,12 +345,71 @@ class ComQueryInformationDiskResponse(smb_structs.Payload):
                                               self.free_units,
                                               0)
 
+class ComNTCreateAndxRequest(smb_structs.ComNTCreateAndxRequest):
+    def __init__(self): pass
+
+    def decode(self, message):
+        is_unicode = message.flags2 & smb_structs.SMB_FLAGS2_UNICODE
+        if not is_unicode: raise Exception("Only support unicode!")
+
+        (andx_command, andx_reserved, andx_offset,
+         reserved, filename_len, self.flags,
+         self.root_fid, self.access_mask,
+         self.allocation_size, self.ext_attr,
+         self.share_access, self.create_disp,
+         self.create_options, self.impersonation,
+         self.security_flags) = struct.unpack("<BBH" + self.PAYLOAD_STRUCT_FORMAT[1:],
+                                              message.parameters_data)
+
+        # TODO: better andx parsing
+        if not (andx_command == 0xff and not andx_offset):
+            raise Exception("We don't support non-terminal ANDX parameter blocks yet...")
+
+        raw_offset = message.HEADER_STRUCT_SIZE + len(message.parameters_data) + 2
+        if raw_offset % 2:
+            raw_offset += 1
+
+        self.filename = message.raw_data[raw_offset:raw_offset + filename_len].decode("utf-16-le")
+
+class ComNTCreateAndxResponse(smb_structs.ComNTCreateAndxResponse):
+    def __init__(self, **kw):
+        for (k, v) in kw.items():
+            setattr(self, k, v)
+
+    def initMessage(self, message):
+        init_reply(self, message, smb_structs.SMB_COM_NT_CREATE_ANDX)
+
+    def prepare(self, message):
+        prepare(self, message)
+
+        message.parameters_data = struct.pack("<BBHBHLQQQQLQQHHB",
+                                              0xff, 0, 0,
+                                              self.op_lock_level,
+                                              self.fid,
+                                              self.create_disp,
+                                              self.create_time,
+                                              self.last_access_time,
+                                              self.last_write_time,
+                                              self.last_change_time,
+                                              self.ext_attr,
+                                              self.allocation_size,
+                                              self.end_of_file,
+                                              self.resource_type,
+                                              self.nm_pipe_status,
+                                              self.directory)
+        message.data = b''
+
 def response_args_from_req(req, **kw):
     return dict(pid=req.pid, tid=req.tid,
                 uid=req.uid, mid=req.mid, **kw)
 
 STATUS_NOT_FOUND = 0xc0000225
 STATUS_SMB_BAD_COMMAND = 0x160002
+STATUS_NOT_SUPPORTED = 0xc00000bb
+STATUS_NO_SUCH_FILE = 0xc000000f
+STATUS_TOO_MANY_OPENED_FILES = 0xc000011f
+STATUS_FILE_IS_A_DIRECTORY = 0xc00000ba
+STATUS_SHARING_VIOLATION = 0xc0000043
 
 SMB_TRANS2_FIND_FIRST2 = 0x1
 SMB_TRANS2_QUERY_FS_INFORMATION = 0x3
@@ -360,9 +419,32 @@ SMB_FIND_FILE_BOTH_DIRECTORY_INFO = 0x104
 SMB_FIND_RETURN_RESUME_KEYS = 0x4
 SMB_FIND_CLOSE_AT_EOS = 0x2
 ATTR_DIRECTORY = 0x10
+ATTR_NORMAL = 0x80
 SMB_QUERY_FS_SIZE_INFO = 0x103
 SMB_QUERY_FS_ATTRIBUTE_INFO = 0x105
 SMB_QUERY_FILE_ALL_INFO = 0x107
+
+NT_CREATE_REQUEST_OPLOCK = 0x2
+NT_CREATE_REQUEST_OPBATCH = 0x4
+NT_CREATE_OPEN_TARGET_DIR = 0x8
+
+FILE_WRITE_DATA = 0x2
+FILE_APPEND_DATA = 0x4
+FILE_WRITE_EA = 0x10
+FILE_WRITE_ATTRIBUTES = 0x100
+DELETE = 0x10000
+WRITE_DAC = 0x40000
+WRITE_OWNER = 0x80000
+ACCESS_SYSTEM_SECURITY = 0x1000000
+GENERIC_ALL = 0x1000000
+GENERIC_WRITE = 0x40000000
+
+FILE_OPEN = 0x1
+
+FILE_DELETE_ON_CLOSE = 0x1000
+FILE_OPEN_BY_FILE_ID = 0x2000
+
+FILE_SHARE_READ = 0x1
 
 def encode_smb_datetime(dt):
     log.debug("date is %r", dt)
@@ -676,6 +758,7 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
             return ('\\' if not real_comps else real_comps[-1], parent)
 
         open_find_trans = {}
+        open_files = {}
         while True:
             req = self.read_message()
 
@@ -840,6 +923,114 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                                               free_units=0
                 )
                 self.send_message(SMBMessage(ComQueryInformationDiskResponse(**args)))
+            elif req.command == smb_structs.SMB_COM_NT_CREATE_ANDX:
+                processed = False
+
+                request = req.payload
+
+                class ProtocolError(Exception):
+                    def __init__(self, error):
+                        self.error = error
+
+                try:
+                    if (request.flags &
+                        (NT_CREATE_REQUEST_OPLOCK |
+                         NT_CREATE_REQUEST_OPBATCH |
+                         NT_CREATE_OPEN_TARGET_DIR)):
+                        raise Exception("SMB_COM_NT_CREATE_ANDX doesn't support flags!")
+
+                    if (request.access_mask &
+                        (FILE_WRITE_DATA | FILE_APPEND_DATA |
+                         FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES |
+                         DELETE | WRITE_DAC | WRITE_OWNER |
+                         ACCESS_SYSTEM_SECURITY |
+                         GENERIC_ALL | GENERIC_WRITE)):
+                        # Don't allow write access
+                        # TODO: allow write access when we have an actual backend
+                        raise ProtocolError(STATUS_ACCESS_DENIED)
+
+                    if request.create_disp != FILE_OPEN:
+                        raise ProtocolError(STATUS_ACCESS_DENIED)
+
+                    if request.create_options & FILE_DELETE_ON_CLOSE:
+                        raise ProtocolError(STATUS_ACCESS_DENIED)
+
+                    if request.create_options & FILE_OPEN_BY_FILE_ID:
+                        raise ProtocolError(STATUS_NOT_SUPPORTED)
+
+                    if request.root_fid:
+                        try:
+                            root_md = open_files[request.root_fid]
+                        except KeyError:
+                            raise ProtocolError(STATUS_INVALID_HANDLE)
+                        root_path = root_md['path']
+                    else:
+                        root_path = ""
+
+                    file_path = root_path + request.filename
+
+                    log.debug("Opening file_path: %r, %r", file_path, request.filename)
+
+                    is_sharing = request.share_access & FILE_SHARE_READ
+
+                    # verify share access
+                    # find other files
+                    for (fid, open_md) in open_files:
+                        if open_md['path'].lower() == file_path.lower():
+                            if not (open_md['share'] and is_sharing):
+                                raise ProtocolError(STATUS_SHARING_VIOLATION)
+
+                    (filename, md) = get_file(file_path) or (None, None)
+                    if md is None:
+                        raise ProtocolError(STATUS_NO_SUCH_FILE)
+
+                    # create
+                    if len(open_files) == 2 ** 16 - 1:
+                        raise ProtocolError(STATUS_TOO_MANY_OPENED_FILES)
+
+                    fid = random.randint(0, 2 ** 16)
+                    while fid in open_files:
+                        fid = random.randint(0, 2 ** 16)
+
+                    win32_now = datetime_to_win32(datetime.now())
+                    directory = int(md["type"] == "directory")
+                    ext_attr = ATTR_DIRECTORY if directory else ATTR_NORMAL
+
+                    if (directory and
+                        (request.create_options & FILE_NON_DIRECTORY_FILE)):
+                        raise ProtocolError(STATUS_FILE_IS_A_DIRECTORY)
+
+                    if md["type"] == "directory":
+                        file_data_size = 0
+                    else:
+                        assert md["type"] == "file"
+                        file_data_size = md["size"]
+
+                    FILE_TYPE_DISK = 0
+
+                    open_files[fid] = {
+                        'path': file_path,
+                        'share': is_sharing,
+                    }
+
+                    args = response_args_from_req(req,
+                                                  op_lock_level=0,
+                                                  fid=fid,
+                                                  create_disp=request.create_disp,
+                                                  create_time=win32_now,
+                                                  last_access_time=win32_now,
+                                                  last_write_time=win32_now,
+                                                  last_change_time=win32_now,
+                                                  ext_attr=ext_attr,
+                                                  allocation_size=4096,
+                                                  end_of_file=file_data_size,
+                                                  resource_type=FILE_TYPE_DISK,
+                                                  nm_pipe_status=0,
+                                                  directory=directory)
+                    response = SMBMessage(ComNTCreateAndxResponse(**args))
+                    self.send_message(response)
+                except ProtocolError as e:
+                    self.send_message(error_response(req, e.error))
             else:
                 log.debug("%s", req)
                 self.send_message(error_response(req, STATUS_SMB_BAD_COMMAND))

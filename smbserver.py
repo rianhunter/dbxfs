@@ -486,6 +486,7 @@ STATUS_FILE_IS_A_DIRECTORY = 0xc00000ba
 STATUS_SHARING_VIOLATION = 0xc0000043
 STATUS_INVALID_HANDLE = 0xc0000008
 STATUS_ACCESS_DENIED = 0xc0000022
+STATUS_INSUFF_SERVER_RESOURCES = 0xc00000cf
 
 SMB_TRANS2_FIND_FIRST2 = 0x1
 SMB_TRANS2_QUERY_FS_INFORMATION = 0x3
@@ -843,8 +844,22 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                     return None
             return ('\\' if not real_comps else real_comps[-1], parent)
 
+        INVALID_SIDS = (0xffff,)
         open_find_trans = {}
+        INVALID_FIDS = (0xffff,)
         open_files = {}
+
+        def create_id(set_, invalid, error=STATUS_INSUFF_SERVER_RESOURCES):
+            assert len(open_uids) <= 2 ** 16 - len(invalid)
+            if len(open_tids) == 2 ** 16 - len(invalid):
+                raise ProtocolError(error)
+
+            uid = random.randint(0, 2 ** 16)
+            while uid in open_uids or uid in invalid:
+                uid = random.randint(0, 2 ** 16)
+
+            return uid
+
         while True:
             req = self.read_message()
 
@@ -911,9 +926,8 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                     num_entries_to_ret = min(len(cur_entries) - entries_offset, search_count)
 
                     entries_to_ret = cur_entries[entries_offset:entries_offset + num_entries_to_ret]
-                    sid = random.randint(0, 2 ** 16)
-                    while sid in open_find_trans or sid == 0xffff:
-                        sid = random.randint(0, 2 ** 16)
+
+                    sid = create_id(open_find_trans, INVALID_SIDS)
 
                     is_search_over = entries_offset + num_entries_to_ret == len(cur_entries)
 
@@ -1064,13 +1078,7 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                     if md is None:
                         raise ProtocolError(STATUS_NO_SUCH_FILE)
 
-                    # create
-                    if len(open_files) == 2 ** 16 - 1:
-                        raise ProtocolError(STATUS_TOO_MANY_OPENED_FILES)
-
-                    fid = random.randint(0, 2 ** 16)
-                    while fid in open_files:
-                        fid = random.randint(0, 2 ** 16)
+                    fid = create_id(open_files, INVALID_FIDS, STATUS_TOO_MANY_OPENED_FILES)
 
                     win32_now = datetime_to_win32(datetime.now())
                     directory = int(md["type"] == "directory")

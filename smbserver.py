@@ -703,15 +703,17 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
 
                     entries_to_ret = entries[entries_offset:entries_offset + num_entries_to_ret]
 
-                    assert len(open_find_trans) <= 2 ** 16
-                    if len(open_find_trans) == 2 ** 16:
-                        raise Exception("Too many find first transactions open!")
 
                     sid = random.randint(0, 2 ** 16)
                     while sid in open_find_trans or sid == 0xffff:
                         sid = random.randint(0, 2 ** 16)
 
                     is_search_over = entries_offset + num_entries_to_ret == len(entries)
+
+                    assert len(open_find_trans) <= 2 ** 16
+                    if not (is_search_over and flags & SMB_FIND_CLOSE_AT_EOS):
+                        if len(open_find_trans) == 2 ** 16:
+                            raise Exception("Too many find first transactions open!")
 
                     offset = 0
                     data = []

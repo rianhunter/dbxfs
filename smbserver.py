@@ -488,6 +488,8 @@ STATUS_INVALID_HANDLE = 0xc0000008
 STATUS_ACCESS_DENIED = 0xc0000022
 STATUS_INSUFF_SERVER_RESOURCES = 0xc00000cf
 STATUS_OBJECT_PATH_NOT_FOUND = 0xc000003a
+STATUS_SMB_BAD_TID = 0x50002
+STATUS_SMB_BAD_UID = 0x5b0002
 
 TREE_CONNECT_ANDX_DISCONNECT_TID = 0x1
 SMB_TRANS2_FIND_FIRST2 = 0x1
@@ -833,6 +835,14 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
         INVALID_FIDS = (0xffff,)
         open_files = {}
 
+        def verify_tid(req):
+            if req.tid not in open_tids:
+                raise ProtocolError(STATUS_SMB_BAD_TID)
+
+        def verify_uid(req):
+            if req.uid not in open_uids:
+                raise ProtocolError(STATUS_SMB_BAD_UID)
+
         def create_id(set_, invalid, error=STATUS_INSUFF_SERVER_RESOURCES):
             assert len(open_uids) <= 2 ** 16 - len(invalid)
             if len(open_tids) == 2 ** 16 - len(invalid):
@@ -865,6 +875,8 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                     self.send_message(error_response(req, e.error))
             elif req.command == smb_structs.SMB_COM_TREE_CONNECT_ANDX:
                 try:
+                    verify_uid(req)
+
                     if req.payload.flags & TREE_CONNECT_ANDX_DISCONNECT_TID:
                         try:
                             del open_tids[req.tid]
@@ -901,6 +913,9 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                                               data=req.payload.echo_data)
                 self.send_message(SMBMessage(ComEchoResponse(**args)))
             elif req.command == smb_structs.SMB_COM_TRANSACTION2:
+                verify_uid(req)
+                verify_tid(req)
+
                 if len(req.payload.setup_bytes) % 2:
                     raise Exception("bad setup bytes length!")
                 setup = struct.unpack("<%dH" % (len(req.payload.setup_bytes) / 2,),
@@ -1043,6 +1058,8 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                     log.debug("%s", req)
                     self.send_message(error_response(req, STATUS_NOT_SUPPORTED))
             elif req.command == SMB_COM_QUERY_INFORMATION_DISK:
+                verify_uid(req)
+                verify_tid(req)
                 args = response_args_from_req(req,
                                               total_units=2 ** 16 - 1,
                                               blocks_per_unit=16384,
@@ -1054,6 +1071,9 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                 request = req.payload
 
                 try:
+                    verify_uid(req)
+                    verify_tid(req)
+
                     if (request.flags &
                         (NT_CREATE_REQUEST_OPLOCK |
                          NT_CREATE_REQUEST_OPBATCH |
@@ -1147,6 +1167,9 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
             elif req.command == smb_structs.SMB_COM_READ_ANDX:
                 request = req.payload
                 try:
+                    verify_uid(req)
+                    verify_tid(req)
+
                     try:
                         fid_md = open_files[request.fid]
                     except KeyError:
@@ -1165,6 +1188,9 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
             elif req.command == smb_structs.SMB_COM_CLOSE:
                 request = req.payload
                 try:
+                    verify_uid(req)
+                    verify_tid(req)
+
                     try:
                         del open_files[request.fid]
                     except KeyError:

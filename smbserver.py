@@ -696,19 +696,51 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                     except KeyError:
                         raise Exception("Find First Information level not supported: %r" % (information_level,))
 
+                    comps = filename[1:].split("\\")
+                    for c in comps[:-1]:
+                        if '*' in c or '?' in c:
+                            raise Exception("unsupported search path: %r" % (filename,))
+
+                    if '*' in comps[-1] and comps[-1] not in ["*", "*.*", ""]:
+                        raise Exception("unsupported search path: %r" % (filename,))
+
+                    is_directory_search = comps[-1] in ["*", "*.*", ""]
+                    if is_directory_search:
+                        comps = comps[:-1]
+
+                    # find path to return
+                    parent = {"type": "directory",
+                              "children": entries}
+                    real_comps = []
+                    for comp in comps:
+                        for (name, md) in parent["children"]:
+                            if name.lower() == comp.lower():
+                                real_comps.append(name)
+                                parent = md
+                                break
+                        else:
+                            parent = None
+                            break
+                    md = parent
+
+                    if md is None:
+                        cur_entries = []
+                    elif is_directory_search:
+                        cur_entries = md["children"]
+                    else:
+                        cur_entries = [(real_comps[-1], md)]
+
                     # todo: actually implement this
                     #       for now just send "foo" and "bar"
                     entries_offset = 0
-                    num_entries_to_ret = min(len(entries) - entries_offset, search_count)
+                    num_entries_to_ret = min(len(cur_entries) - entries_offset, search_count)
 
-                    entries_to_ret = entries[entries_offset:entries_offset + num_entries_to_ret]
-
-
+                    entries_to_ret = cur_entries[entries_offset:entries_offset + num_entries_to_ret]
                     sid = random.randint(0, 2 ** 16)
                     while sid in open_find_trans or sid == 0xffff:
                         sid = random.randint(0, 2 ** 16)
 
-                    is_search_over = entries_offset + num_entries_to_ret == len(entries)
+                    is_search_over = entries_offset + num_entries_to_ret == len(cur_entries)
 
                     assert len(open_find_trans) <= 2 ** 16
                     if not (is_search_over and flags & SMB_FIND_CLOSE_AT_EOS):
@@ -717,14 +749,16 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
 
                     offset = 0
                     data = []
-                    for (i, (name, md)) in enumerate(entries[entries_offset:entries_offset + num_entries_to_ret], entries_offset):
+                    for (i, (name, md)) in enumerate(entries_to_ret):
                         bufs = info_generator(i, offset, flags, name, md,
-                                              i == len(entries) - 1)
+                                              i == len(cur_entries) - 1)
                         data.extend(bufs)
                         offset += sum(map(len, bufs))
 
                     data_bytes = b''.join(data)
-                    last_name_offset = len(data_bytes) - len(data[-1])
+                    last_name_offset = (0
+                                        if not num_entries_to_ret else
+                                        len(data_bytes) - len(data[-1]))
 
                     params_bytes = struct.pack("<HHHHH",
                                                sid, num_entries_to_ret,

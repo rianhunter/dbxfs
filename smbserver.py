@@ -211,8 +211,8 @@ class ComTreeConnectAndxRequest(smb_structs.ComTreeConnectAndxRequest):
         if not (andx_command == 0xff and not andx_offset):
             raise Exception("We don't support non-terminal ANDX parameter blocks yet...")
 
-        (flags, password_len) = struct.unpack(self.PAYLOAD_STRUCT_FORMAT,
-                                              message.parameters_data[self.DEFAULT_ANDX_PARAM_SIZE:self.PAYLOAD_STRUCT_SIZE + self.DEFAULT_ANDX_PARAM_SIZE])
+        (self.flags, password_len) = struct.unpack(self.PAYLOAD_STRUCT_FORMAT,
+                                                   message.parameters_data[self.DEFAULT_ANDX_PARAM_SIZE:self.PAYLOAD_STRUCT_SIZE + self.DEFAULT_ANDX_PARAM_SIZE])
 
         self.password = message.data[:password_len].rstrip(b'\0').decode("utf-8")
 
@@ -487,7 +487,9 @@ STATUS_SHARING_VIOLATION = 0xc0000043
 STATUS_INVALID_HANDLE = 0xc0000008
 STATUS_ACCESS_DENIED = 0xc0000022
 STATUS_INSUFF_SERVER_RESOURCES = 0xc00000cf
+STATUS_OBJECT_PATH_NOT_FOUND = 0xc000003a
 
+TREE_CONNECT_ANDX_DISCONNECT_TID = 0x1
 SMB_TRANS2_FIND_FIRST2 = 0x1
 SMB_TRANS2_QUERY_FS_INFORMATION = 0x3
 SMB_TRANS2_QUERY_PATH_INFORMATION = 0x5
@@ -802,20 +804,6 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
         session_setup_andx_resp = SMBMessage(ComSessionSetupAndxResponse(**args))
         self.send_message(session_setup_andx_resp)
 
-        tree_connect_andx_req = self.read_message()
-        if tree_connect_andx_req.command != smb_structs.SMB_COM_TREE_CONNECT_ANDX:
-            raise Exception("Got unexpected request: %s" % (session_setup_andx_req,))
-
-        if tree_connect_andx_req.payload.service not in ("?????", "A:"):
-            raise Exception("We don't provide the requested service: %s" %
-                            (tree_connect_andx_req.payload.service,))
-
-        args = response_args_from_req(tree_connect_andx_req,
-                                      optional_support=smb_structs.SMB_TREE_CONNECTX_SUPPORT_SEARCH,
-                                      service="A:",
-                                      native_file_system="FAT")
-        self.send_message(SMBMessage(ComTreeConnectAndxResponse(**args)))
-
         entries = [("foo", {"type": "directory",
                             "children" : [
                                 ("baz", {"type": "file", "data": b"YOOOO"}),
@@ -844,6 +832,8 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                     return None
             return ('\\' if not real_comps else real_comps[-1], parent)
 
+        INVALID_TIDS = (0x0, 0xffff)
+        open_tids = set()
         INVALID_SIDS = (0xffff,)
         open_find_trans = {}
         INVALID_FIDS = (0xffff,)
@@ -863,7 +853,34 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
         while True:
             req = self.read_message()
 
-            if req.command == smb_structs.SMB_COM_ECHO:
+            if req.command == smb_structs.SMB_COM_TREE_CONNECT_ANDX:
+                try:
+                    if req.payload.flags & TREE_CONNECT_ANDX_DISCONNECT_TID:
+                        try:
+                            del open_tids[req.tid]
+                        except KeyError:
+                            # NB: this is allowed to fail silently
+                            pass
+
+                    if req.payload.service not in ("?????", "A:"):
+                        raise ProtocolError(STATUS_OBJECT_PATH_NOT_FOUND)
+
+                    if req.payload.path.endswith("$"):
+                        raise ProtocolError(STATUS_OBJECT_PATH_NOT_FOUND)
+
+                    tid = create_id(open_tids, INVALID_TIDS)
+                    assert tid not in INVALID_TIDS
+                    open_tids.add(tid)
+
+                    args = response_args_from_req(req,
+                                                  optional_support=smb_structs.SMB_TREE_CONNECTX_SUPPORT_SEARCH,
+                                                  service="A:",
+                                                  native_file_system="FAT")
+                    args['tid'] = tid
+                    self.send_message(SMBMessage(ComTreeConnectAndxResponse(**args)))
+                except ProtocolError as e:
+                    self.send_message(error_response(req, e.error))
+            elif req.command == smb_structs.SMB_COM_ECHO:
                 log.debug("echo...")
                 if req.payload.echo_count > 1:
                     raise Exception("Echo count is too high: %r" %

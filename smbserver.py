@@ -974,11 +974,6 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
 
                     is_search_over = entries_offset + num_entries_to_ret == len(cur_entries)
 
-                    assert len(open_find_trans) <= 2 ** 16
-                    if not (is_search_over and flags & SMB_FIND_CLOSE_AT_EOS):
-                        if len(open_find_trans) == 2 ** 16:
-                            raise Exception("Too many find first transactions open!")
-
                     offset = 0
                     data = []
                     for (i, (name, md)) in enumerate(entries_to_ret):

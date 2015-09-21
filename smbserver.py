@@ -371,7 +371,7 @@ class ComNTCreateAndxRequest(smb_structs.ComNTCreateAndxRequest):
         if raw_offset % 2:
             raw_offset += 1
 
-        self.filename = message.raw_data[raw_offset:raw_offset + filename_len].decode("utf-16-le")
+        self.filename = message.raw_data[raw_offset:raw_offset + filename_len].decode("utf-16-le").rstrip("\0")
 
 class ComNTCreateAndxResponse(smb_structs.ComNTCreateAndxResponse):
     def __init__(self, **kw):

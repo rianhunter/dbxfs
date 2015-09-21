@@ -582,6 +582,10 @@ def get_size(md):
         assert md["type"] == "file"
         return len(md.get("data", b''))
 
+def get_children(md):
+    assert md["type"] == "directory"
+    return md.get("children", [])
+
 def generate_info_standard(idx, offset, flags, name, md, _):
     include_resume_key = flags & SMB_FIND_RETURN_RESUME_KEYS
 
@@ -825,7 +829,7 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
             for comp in components:
                 if parent["type"] != "directory":
                     return None
-                for (name, md) in parent["children"]:
+                for (name, md) in get_children(parent):
                     if name.lower() == comp.lower():
                         real_comps.append(name)
                         parent = md
@@ -892,7 +896,7 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                     if md is None:
                         cur_entries = []
                     elif is_directory_search:
-                        cur_entries = md["children"]
+                        cur_entries = get_children(md)
                     else:
                         cur_entries = [(filename, md)]
 

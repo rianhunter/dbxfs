@@ -19,6 +19,7 @@ import errno
 import json
 import logging
 import os
+import random
 import sys
 
 import dropbox
@@ -66,7 +67,11 @@ def main(argv=None):
         with open(config_file, "w") as f:
             json.dump(dict(access_token=access_token), f)
 
-    address = ('0.0.0.0', 8888)
+    # NB: Binding to this port could fail
+    # TODO: keep randomly binding until we find a port
+    port = random.randint(60000, 2 ** 16)
+
+    address = ('0.0.0.0', port)
     server = SMBServer(address, DropboxFileSystem(access_token))
 
     # TODO: do mount asynchronously

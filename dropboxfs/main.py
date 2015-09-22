@@ -20,12 +20,17 @@ import json
 import logging
 import os
 import random
+import signal
+import subprocess
 import sys
+import threading
 
 import dropbox
 
 from dropboxfs.smbserver import SMBServer
 from dropboxfs.dbfs import FileSystem as DropboxFileSystem
+
+log = logging.getLogger(__name__)
 
 def main(argv=None):
     if argv is None:
@@ -80,9 +85,40 @@ def main(argv=None):
     address = ('127.0.0.1', port)
     server = SMBServer(address, DropboxFileSystem(access_token))
 
-    # TODO: do mount asynchronously
+    do_unmount = False
 
-    server.run()
+    def run_server():
+        try:
+            server.run()
+        except:
+            _thread.interrupt_main()
+            raise
+
+    threading.Thread(target=run_server, daemon=True).start()
+
+    if sys.platform != "darwin":
+        log.warn("Couldn't mount file system automatically, not on Mac OS X")
+        signal.pause()
+    else:
+        try:
+            os.mkdir("/Volumes/dropboxfs")
+        except OSError as e:
+            if e.errno == errno.EEXIST: pass
+            else: raise
+
+        if os.path.ismount("/Volumes/dropboxfs"):
+            raise Exception("Volume is already mounted at /Volumes/dropboxfs")
+
+        subprocess.check_call(["mount", "-t", "smbfs",
+                               "cifs://guest:@127.0.0.1:%d/dropboxfs" % (port,),
+                               "/Volumes/dropboxfs"])
+
+        subprocess.call(["open", "/Volumes/dropboxfs"])
+
+        try:
+            signal.pause()
+        finally:
+            subprocess.call(["umount", "-f", "/Volumes/dropboxfs"])
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv))

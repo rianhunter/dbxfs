@@ -71,7 +71,7 @@ def main(argv=None):
     # TODO: keep randomly binding until we find a port
     port = random.randint(60000, 2 ** 16)
 
-    address = ('0.0.0.0', port)
+    address = ('127.0.0.1', port)
     server = SMBServer(address, DropboxFileSystem(access_token))
 
     # TODO: do mount asynchronously

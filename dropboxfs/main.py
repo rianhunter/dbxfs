@@ -26,7 +26,10 @@ import dropbox
 from dropboxfs.smbserver import SMBServer
 from dropboxfs.dbfs import FileSystem as DropboxFileSystem
 
-def main(argv):
+def main(argv=None):
+    if argv is None:
+        argv = sys.argv
+
     logging.basicConfig(level=logging.DEBUG)
 
     config_file = os.path.expanduser("~/.dropboxfs")

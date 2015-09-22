@@ -64,8 +64,14 @@ def main(argv=None):
 
         access_token, _ = auth_flow.finish(auth_code)
 
-        with open(config_file, "w") as f:
-            json.dump(dict(access_token=access_token), f)
+        print("We're all connected. Do you want to save this access token to disk? Caution: it can be saved and abused by a rogue program to access your entire Dropbox!")
+        answer = input("[y/N]: ")
+        while answer.strip() not in ("y", "n", "yes", "no", ""):
+            print("Please answer yes or no!")
+            answer = input("[y/N]: ")
+        if answer in ("y", "yes"):
+            with open(config_file, "w") as f:
+                json.dump(dict(access_token=access_token), f)
 
     # NB: Binding to this port could fail
     # TODO: keep randomly binding until we find a port

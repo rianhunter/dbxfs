@@ -15,6 +15,7 @@
 # You should have received a copy of the GNU General Public License
 # along with dropboxfs.  If not, see <http://www.gnu.org/licenses/>.
 
+import itertools
 import os
 import logging
 import random
@@ -582,15 +583,7 @@ def datetime_to_win32(dt):
     return (int(dt.timestamp()) + 11644473600) * 10000000
 
 def get_size(md):
-    if md["type"] == "directory":
-        return 0
-    else:
-        assert md["type"] == "file"
-        return len(md.get("data", b''))
-
-def get_children(md):
-    assert md["type"] == "directory"
-    return md.get("children", [])
+    return getattr(md, 'size', 0)
 
 def generate_info_standard(idx, offset, flags, name, md, _):
     include_resume_key = flags & SMB_FIND_RETURN_RESUME_KEYS
@@ -605,14 +598,14 @@ def generate_info_standard(idx, offset, flags, name, md, _):
     name += '\0'
     file_name_encoded = name.encode("utf-16-le")
 
-    (creation_date, creation_time) = encode_smb_datetime(datetime.now())
-    (last_access_date, last_access_time) = encode_smb_datetime(datetime.now())
-    (last_write_date, last_write_time) = encode_smb_datetime(datetime.now())
+    (creation_date, creation_time) = encode_smb_datetime(md.mtime)
+    (last_access_date, last_access_time) = encode_smb_datetime(md.atime)
+    (last_write_date, last_write_time) = encode_smb_datetime(md.birthtime)
 
     file_data_size = get_size(md)
     allocation_size = 4096
     attributes = (ATTR_DIRECTORY
-                  if md["type"] == "directory" else
+                  if md.type == "directory" else
                   ATTR_NORMAL)
 
     args.extend([creation_date, creation_time,
@@ -649,15 +642,15 @@ def generate_find_file_both_directory_info(idx, offset, flags, name, md, is_last
 
     allocation_size = 4096
     ext_file_attributes = (ATTR_DIRECTORY
-                           if md["type"] == "directory" else
+                           if md.type == "directory" else
                            ATTR_NORMAL)
     ea_size = 0
 
     buf = struct.pack(fmt, next_entry_offset, 0,
-                      datetime_to_win32(now),
-                      datetime_to_win32(now),
-                      datetime_to_win32(now),
-                      datetime_to_win32(now),
+                      datetime_to_win32(md.birthtime),
+                      datetime_to_win32(md.atime),
+                      datetime_to_win32(md.mtime),
+                      datetime_to_win32(md.ctime),
                       file_data_size,
                       allocation_size,
                       ext_file_attributes,
@@ -706,13 +699,12 @@ FS_INFO_GENERATORS = {
 }
 
 def generate_query_file_all_info(path, md):
-    dt = datetime.now()
-    creation_time = datetime_to_win32(dt)
-    last_access_time = datetime_to_win32(dt)
-    last_write_time = datetime_to_win32(dt)
-    last_change_time = datetime_to_win32(dt)
+    creation_time = datetime_to_win32(md.birthtime)
+    last_access_time = datetime_to_win32(md.atime)
+    last_write_time = datetime_to_win32(md.mtime)
+    last_change_time = datetime_to_win32(md.ctime)
     ext_file_attributes = (ATTR_DIRECTORY
-                           if md["type"] == "directory" else
+                           if md.type == "directory" else
                            ATTR_NORMAL)
     allocation_size = 4096
     file_data_size = get_size(md)
@@ -721,7 +713,7 @@ def generate_query_file_all_info(path, md):
 
     number_of_links = 1
     delete_pending = 0
-    directory = int(md["type"] == "directory")
+    directory = int(md.type == "directory")
 
     ea_size = 0
 
@@ -799,34 +791,6 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
 
         self.send_message(negotiate_resp)
 
-        entries = [("foo", {"type": "directory",
-                            "children" : [
-                                ("baz", {"type": "file", "data": b"YOOOO"}),
-                                ("quux", {"type": "directory"}),
-                            ]
-                            }),
-                   ("bar", {"type": "file", "data": b"f"})]
-
-        def get_file(path):
-            components = path[1:].split("\\")
-            if components == ['']:
-                components = []
-
-            parent = {"type": "directory",
-                      "children": entries}
-            real_comps = []
-            for comp in components:
-                if parent["type"] != "directory":
-                    return None
-                for (name, md) in get_children(parent):
-                    if name.lower() == comp.lower():
-                        real_comps.append(name)
-                        parent = md
-                        break
-                else:
-                    return None
-            return ('\\' if not real_comps else real_comps[-1], parent)
-
         INVALID_UIDS = (0x0, 0xfffe)
         open_uids = set()
         INVALID_TIDS = (0x0, 0xffff)
@@ -854,6 +818,41 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                 uid = random.randint(0, 2 ** 16)
 
             return uid
+
+        def smb_path_to_fs_path(path):
+            comps = path[1:].split("\\")
+            if comps == ['']:
+                comps = []
+            return self.server.fs.create_path(*comps)
+
+        def normalize_stat(stat):
+            class MyEntry(object): pass
+            mystat = MyEntry()
+
+            mystat.birthtime = getattr(stat, "birthtime", datetime.fromtimestamp(0))
+            mystat.mtime = getattr(stat, "mtime", mystat.birthtime)
+            mystat.ctime = getattr(stat, "ctime", mystat.mtime)
+            mystat.atime = getattr(stat, "atime", mystat.ctime)
+
+            mystat.type = getattr(stat, "type")
+            mystat.size = getattr(stat, "size")
+
+            return mystat
+
+        def normalize_dir_entry(entry):
+            need_to_stat = False
+            for prop in ["birthtime", "mtime", "ctime", "atime",
+                         "type", "size"]:
+                if (not hasattr(entry, prop) and
+                    self.server.fs.stat_has_attr(prop)):
+                    need_to_stat = True
+                    break
+
+            to_normalize = entry
+            if need_to_stat:
+                to_normalize = self.server.fs.stat(path / entry.name)
+
+            return normalize_stat(to_normalize)
 
         while True:
             req = self.read_message()
@@ -943,50 +942,55 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                         except KeyError:
                             raise Exception("Find First Information level not supported: %r" % (information_level,))
 
-                        comps = filename[1:].split("\\")
-                        for c in comps[:-1]:
-                            if '*' in c or '?' in c:
+                        if filename == "\\":
+                            is_directory_search = False
+                        else:
+                            comps = filename[1:].split("\\")
+                            for c in comps[:-1]:
+                                if '*' in c or '?' in c:
+                                    raise Exception("unsupported search path: %r" % (filename,))
+
+                            if '*' in comps[-1] and comps[-1] not in ["*", "*.*", ""]:
                                 raise Exception("unsupported search path: %r" % (filename,))
 
-                        if '*' in comps[-1] and comps[-1] not in ["*", "*.*", ""]:
-                            raise Exception("unsupported search path: %r" % (filename,))
+                            is_directory_search = comps[-1] in ["*", "*.*", ""]
+                            if is_directory_search:
+                                comps = comps[:-1]
 
-                        is_directory_search = comps[-1] in ["*", "*.*", ""]
-                        if is_directory_search:
-                            comps = comps[:-1]
+                        path = self.server.fs.create_path(*comps)
+                        try:
+                            if is_directory_search:
+                                handle = self.server.fs.open_directory(path)
 
-                        (filename, md) = get_file('\\' + '\\'.join(comps)) or (None, None)
+                                class Dir(object):
+                                    def __init__(self):
+                                        self.type = "directory"
+                                        self.size = 0
 
-                        if md is None:
-                            cur_entries = []
-                        elif is_directory_search:
-                            cur_entries = list(get_children(md))
-                            cur_entries.extend([
-                                (".", {"type": "directory"}),
-                                ("..", {"type": "directory"}),
-                                ])
-                        else:
-                            cur_entries = [(filename, md)]
+                                entries_to_ret = [
+                                    (".", normalize_stat(Dir())),
+                                    ("..", normalize_stat(Dir())),
+                                    ]
 
-                        if not cur_entries:
+                                entries_to_ret.extend((entry.name, normalize_dir_entry(entry))
+                                                      for entry in itertools.islice(handle, search_count))
+                            else:
+                                handle = None
+                                stat = self.server.fs.stat(path)
+                                entries_to_ret = [(path.basename(), normalize_stat(stat))][:search_count]
+                        except FileNotFoundError:
                             raise ProtocolError(STATUS_NO_SUCH_FILE)
-
-                        # todo: actually implement this
-                        #       for now just send "foo" and "bar"
-                        entries_offset = 0
-                        num_entries_to_ret = min(len(cur_entries) - entries_offset, search_count)
-
-                        entries_to_ret = cur_entries[entries_offset:entries_offset + num_entries_to_ret]
 
                         sid = create_id(open_find_trans, INVALID_SIDS)
 
-                        is_search_over = entries_offset + num_entries_to_ret == len(cur_entries)
+                        num_entries_to_ret = len(entries_to_ret)
+                        is_search_over = num_entries_to_ret < search_count
 
                         offset = 0
                         data = []
                         for (i, (name, md)) in enumerate(entries_to_ret):
                             bufs = info_generator(i, offset, flags, name, md,
-                                                  i == len(cur_entries) - 1)
+                                                  i == len(entries_to_ret) - 1)
                             data.extend(bufs)
                             offset += sum(map(len, bufs))
 
@@ -1007,7 +1011,7 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                                                       params_bytes=params_bytes,
                                                       data_bytes=data_bytes)
                         self.send_message(SMBMessage(ComTransaction2Response(**args)))
-                        open_find_trans[sid] = {}
+                        open_find_trans[sid] = handle
 
                         if (is_search_over and flags & SMB_FIND_CLOSE_AT_EOS or
                             flags & SMB_FIND_CLOSE_AFTER_REQUEST):
@@ -1045,20 +1049,23 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                             raise Exception("QUERY PATH Information level not supported: %r" % (information_level,))
 
                         path = req.payload.params_bytes[6:].decode("utf-16-le").rstrip("\0")
+                        fspath = smb_path_to_fs_path(path)
 
-                        (filename, md) = get_file(path) or (None, None)
-                        if md is None:
-                            self.send_message(error_response(req, STATUS_NO_SUCH_FILE))
-                        else:
-                            setup_bytes = struct.pack("<H", SMB_TRANS2_QUERY_PATH_INFORMATION)
-                            (ea_error_offset, data_bytes) = query_path_info_generator(filename, md)
-                            params_bytes = struct.pack("<H", ea_error_offset)
+                        try:
+                            md = self.server.fs.stat(fspath)
+                        except OSError as e:
+                            raise ProtocolError(STATUS_NO_SUCH_FILE)
 
-                            args = response_args_from_req(req,
-                                                          setup_bytes=setup_bytes,
-                                                          params_bytes=params_bytes,
-                                                          data_bytes=data_bytes)
-                            self.send_message(SMBMessage(ComTransaction2Response(**args)))
+                        setup_bytes = struct.pack("<H", SMB_TRANS2_QUERY_PATH_INFORMATION)
+                        name = fspath.basename() if fspath.basename() else '\\'
+                        (ea_error_offset, data_bytes) = query_path_info_generator(name, normalize_stat(md))
+                        params_bytes = struct.pack("<H", ea_error_offset)
+
+                        args = response_args_from_req(req,
+                                                      setup_bytes=setup_bytes,
+                                                      params_bytes=params_bytes,
+                                                      data_bytes=data_bytes)
+                        self.send_message(SMBMessage(ComTransaction2Response(**args)))
                     else:
                         log.debug("%s", req)
                         self.send_message(error_response(req, STATUS_NOT_SUPPORTED))
@@ -1128,21 +1135,28 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                             if not (open_md['share'] and is_sharing):
                                 raise ProtocolError(STATUS_SHARING_VIOLATION)
 
-                    (filename, md) = get_file(file_path) or (None, None)
-                    if md is None:
+                    is_directory = False
+                    path = smb_path_to_fs_path(file_path)
+                    try:
+                        handle = self.server.fs.open(path)
+                    except FileNotFoundError:
                         raise ProtocolError(STATUS_NO_SUCH_FILE)
+                    except IsADirectoryError:
+                        if request.create_options & FILE_NON_DIRECTORY_FILE:
+                            raise ProtocolError(STATUS_FILE_IS_A_DIRECTORY)
+                        handle = self.server.fs.open_directory(path)
+                        is_directory = True
 
-                    fid = create_id(open_files, INVALID_FIDS, STATUS_TOO_MANY_OPENED_FILES)
+                    md = self.server.fs.fstat(handle)
 
-                    win32_now = datetime_to_win32(datetime.now())
-                    directory = int(md["type"] == "directory")
+                    fid = create_id(open_files, INVALID_FIDS,
+                                    STATUS_TOO_MANY_OPENED_FILES)
+
+                    now = datetime.now()
+                    directory = int(is_directory)
                     ext_attr = (ATTR_DIRECTORY
                                 if directory else
                                 ATTR_NORMAL)
-
-                    if (directory and
-                        (request.create_options & FILE_NON_DIRECTORY_FILE)):
-                        raise ProtocolError(STATUS_FILE_IS_A_DIRECTORY)
 
                     file_data_size = get_size(md)
 
@@ -1151,16 +1165,19 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                     open_files[fid] = {
                         'path': file_path,
                         'share': is_sharing,
+                        'handle': handle,
                     }
+
+                    md2 = normalize_stat(md)
 
                     args = response_args_from_req(req,
                                                   op_lock_level=0,
                                                   fid=fid,
                                                   create_disp=request.create_disp,
-                                                  create_time=win32_now,
-                                                  last_access_time=win32_now,
-                                                  last_write_time=win32_now,
-                                                  last_change_time=win32_now,
+                                                  create_time=datetime_to_win32(md2.birthtime),
+                                                  last_access_time=datetime_to_win32(md2.atime),
+                                                  last_write_time=datetime_to_win32(md2.mtime),
+                                                  last_change_time=datetime_to_win32(md2.ctime),
                                                   ext_attr=ext_attr,
                                                   allocation_size=4096,
                                                   end_of_file=file_data_size,
@@ -1182,10 +1199,7 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                     except KeyError:
                         raise ProtocolError(STATUS_INVALID_HANDLE)
 
-                    (name, md) = get_file(fid_md['path'])
-                    assert md is not None
-
-                    buf = md["data"][request.offset:request.offset + request.max_return_bytes_count]
+                    buf = fid_md['handle'].pread(request.offset, request.max_return_bytes_count)
 
                     args = response_args_from_req(req, data=buf)
                     response = SMBMessage(ComReadAndxResponse(**args))
@@ -1199,7 +1213,9 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                     verify_tid(req)
 
                     try:
-                        del open_files[request.fid]
+                        fidmd = open_files.pop(request.fid)
+                        assert 'handle' in fidmd
+                        fidmd['handle'].close()
                     except KeyError:
                         raise ProtocolError(STATUS_INVALID_HANDLE)
 
@@ -1211,17 +1227,34 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                 log.debug("%s", req)
                 self.send_message(error_response(req, STATUS_NOT_SUPPORTED))
 
+class SMBServer(object):
+    def __init__(self, address, fs):
+        # run basic server
+        self._server = socketserver.ThreadingTCPServer(address,
+                                                       SMBClientHandler, False)
+        self._server.fs = fs
+        self._server.allow_reuse_address = True
+        self._server.server_bind()
+        self._server.server_activate()
+
+    def run(self):
+        self._server.serve_forever()
+
 def main(argv):
     logging.basicConfig(level=logging.DEBUG)
 
-    # run basic server
-    server = socketserver.ThreadingTCPServer(('localhost', 8888),
-                                             SMBClientHandler, False)
-    server.allow_reuse_address = True
-    server.server_bind()
-    server.server_activate()
-    server.serve_forever()
-    return 0
+    # This runtime import is okay because it happens in main()
+    from dropboxfs.memoryfs import FileSystem as MemoryFileSystem
+
+    fs = MemoryFileSystem([("foo", {"type": "directory",
+                                    "children" : [
+                                        ("baz", {"type": "file", "data": b"YOOOO"}),
+                                        ("quux", {"type": "directory"}),
+                                    ]
+    }),
+                           ("bar", {"type": "file", "data": b"f"})])
+
+    SMBServer(('0.0.0.0', 8888), fs).run()
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv))

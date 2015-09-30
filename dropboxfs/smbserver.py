@@ -919,10 +919,6 @@ class SMBClientHandler(object):
 
         @asyncio.coroutine
         def read_client(reader, dead_future, writer_queue):
-            @asyncio.coroutine
-            def send_message(msg):
-                yield from writer_queue.put(msg)
-
             read_future = asyncio.ensure_future(self.read_message(reader),
                                                 loop=loop)
             while True:
@@ -946,12 +942,13 @@ class SMBClientHandler(object):
                     @asyncio.coroutine
                     def real_handle_request(msg):
                         try:
-                            yield from handle_request(server_capabilities,
-                                                      self, fs, msg, send_message)
+                            ret = yield from handle_request(server_capabilities,
+                                                            self, fs, msg)
                         except ProtocolError as e:
                             log.debug("Protocol Error!!! %r %r",
                                       hex(msg.command), hex(e.error))
-                            yield from send_message(error_response(msg, e.error))
+                            ret = error_response(msg, e.error)
+                        yield from writer_queue.put(ret)
 
                     reqfut = asyncio.ensure_future(real_handle_request(msg), loop=loop)
                     def on_fail():
@@ -989,7 +986,7 @@ class SMBClientHandler(object):
             assert len(done) == 1
 
 @asyncio.coroutine
-def handle_request(server_capabilities, cs, fs, req, send_message):
+def handle_request(server_capabilities, cs, fs, req):
     @asyncio.coroutine
     def smb_path_to_fs_path(path):
         comps = path[1:].split("\\")
@@ -1037,7 +1034,7 @@ def handle_request(server_capabilities, cs, fs, req, send_message):
                                       action=1,
                                       domain=req.payload.domain)
         args['uid'] = uid
-        yield from send_message(SMBMessage(ComSessionSetupAndxResponse(**args)))
+        return SMBMessage(ComSessionSetupAndxResponse(**args))
     elif req.command == smb_structs.SMB_COM_TREE_CONNECT_ANDX:
         yield from cs.verify_uid(req)
 
@@ -1061,7 +1058,7 @@ def handle_request(server_capabilities, cs, fs, req, send_message):
                                       service="A:",
                                       native_file_system="FAT")
         args['tid'] = tid
-        yield from send_message(SMBMessage(ComTreeConnectAndxResponse(**args)))
+        return SMBMessage(ComTreeConnectAndxResponse(**args))
     elif req.command == smb_structs.SMB_COM_ECHO:
         log.debug("echo...")
         if req.payload.echo_count > 1:
@@ -1071,7 +1068,7 @@ def handle_request(server_capabilities, cs, fs, req, send_message):
         args = response_args_from_req(req,
                                       sequence_number=0,
                                       data=req.payload.echo_data)
-        yield from send_message(SMBMessage(ComEchoResponse(**args)))
+        return SMBMessage(ComEchoResponse(**args))
     elif req.command == smb_structs.SMB_COM_TRANSACTION2:
         yield from cs.verify_uid(req)
         yield from cs.verify_tid(req)
@@ -1178,7 +1175,7 @@ def handle_request(server_capabilities, cs, fs, req, send_message):
                                           setup_bytes=struct.pack("<H", SMB_TRANS2_FIND_FIRST2),
                                           params_bytes=params_bytes,
                                           data_bytes=data_bytes)
-            yield from send_message(SMBMessage(ComTransaction2Response(**args)))
+            return SMBMessage(ComTransaction2Response(**args))
         elif setup[0] == SMB_TRANS2_QUERY_FS_INFORMATION:
             if req.payload.flags:
                 raise Exception("Transaction 2 flags not supported!")
@@ -1198,7 +1195,7 @@ def handle_request(server_capabilities, cs, fs, req, send_message):
                                           setup_bytes=struct.pack("<H", SMB_TRANS2_QUERY_FS_INFORMATION),
                                           params_bytes=b'',
                                           data_bytes=data_bytes)
-            yield from send_message(SMBMessage(ComTransaction2Response(**args)))
+            return SMBMessage(ComTransaction2Response(**args))
         elif setup[0] == SMB_TRANS2_QUERY_PATH_INFORMATION:
             if req.payload.flags:
                 raise Exception("Transaction 2 flags not supported!")
@@ -1228,7 +1225,7 @@ def handle_request(server_capabilities, cs, fs, req, send_message):
                                           setup_bytes=setup_bytes,
                                           params_bytes=params_bytes,
                                           data_bytes=data_bytes)
-            yield from send_message(SMBMessage(ComTransaction2Response(**args)))
+            return SMBMessage(ComTransaction2Response(**args))
     elif req.command == SMB_COM_QUERY_INFORMATION_DISK:
         yield from cs.verify_uid(req)
         yield from cs.verify_tid(req)
@@ -1238,7 +1235,7 @@ def handle_request(server_capabilities, cs, fs, req, send_message):
                                       block_size=512,
                                       free_units=0
         )
-        yield from send_message(SMBMessage(ComQueryInformationDiskResponse(**args)))
+        return SMBMessage(ComQueryInformationDiskResponse(**args))
     elif req.command == smb_structs.SMB_COM_NT_CREATE_ANDX:
         request = req.payload
 
@@ -1333,7 +1330,7 @@ def handle_request(server_capabilities, cs, fs, req, send_message):
                                       resource_type=FILE_TYPE_DISK,
                                       nm_pipe_status=0,
                                       directory=directory)
-        yield from send_message(SMBMessage(ComNTCreateAndxResponse(**args)))
+        return SMBMessage(ComNTCreateAndxResponse(**args))
     elif req.command == smb_structs.SMB_COM_READ_ANDX:
         request = req.payload
         yield from cs.verify_uid(req)
@@ -1349,7 +1346,7 @@ def handle_request(server_capabilities, cs, fs, req, send_message):
         yield from cs.deref_file(request.fid)
 
         args = response_args_from_req(req, data=buf)
-        yield from send_message(SMBMessage(ComReadAndxResponse(**args)))
+        return SMBMessage(ComReadAndxResponse(**args))
     elif req.command == smb_structs.SMB_COM_CLOSE:
         request = req.payload
         yield from cs.verify_uid(req)
@@ -1363,7 +1360,7 @@ def handle_request(server_capabilities, cs, fs, req, send_message):
             raise ProtocolError(STATUS_INVALID_HANDLE)
 
         args = response_args_from_req(req)
-        yield from send_message(SMBMessage(ComCloseResponse(**args)))
+        return SMBMessage(ComCloseResponse(**args))
 
     log.debug("%s", req)
     raise ProtocolError(STATUS_NOT_SUPPORTED)

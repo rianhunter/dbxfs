@@ -946,8 +946,8 @@ class SMBClientHandler(object):
                     @asyncio.coroutine
                     def real_handle_request(msg):
                         try:
-                            yield from self.handle_request(server_capabilities,
-                                                           self, fs, msg, send_message)
+                            yield from handle_request(server_capabilities,
+                                                      self, fs, msg, send_message)
                         except ProtocolError as e:
                             log.debug("Protocol Error!!! %r %r",
                                       hex(msg.command), hex(e.error))
@@ -988,390 +988,385 @@ class SMBClientHandler(object):
                                                       loop=loop)
             assert len(done) == 1
 
-    @classmethod
+@asyncio.coroutine
+def handle_request(server_capabilities, cs, fs, req, send_message):
     @asyncio.coroutine
-    def handle_request(cls, server_capabilities, cs, fs, req, send_message):
-        @asyncio.coroutine
-        def smb_path_to_fs_path(path):
-            comps = path[1:].split("\\")
-            if comps == ['']:
-                comps = []
-            return (yield from fs.create_path(*comps))
-
-        def normalize_stat(stat):
-            class MyEntry(object): pass
-            mystat = MyEntry()
-
-            mystat.birthtime = getattr(stat, "birthtime", datetime.fromtimestamp(0))
-            mystat.mtime = getattr(stat, "mtime", mystat.birthtime)
-            mystat.ctime = getattr(stat, "ctime", mystat.mtime)
-            mystat.atime = getattr(stat, "atime", mystat.ctime)
-
-            mystat.type = getattr(stat, "type")
-            mystat.size = getattr(stat, "size")
-
-            return mystat
-
-        @asyncio.coroutine
-        def normalize_dir_entry(entry):
-            need_to_stat = False
-            for prop in ["birthtime", "mtime", "ctime", "atime",
-                         "type", "size"]:
-                if (not hasattr(entry, prop) and
-                    (yield from fs.stat_has_attr(prop))):
-                    need_to_stat = True
-                    break
-
-            to_normalize = entry
-            if need_to_stat:
-                to_normalize = yield from fs.stat(path / entry.name)
-
-            return normalize_stat(to_normalize)
-
-        if True:
-            if req.command == smb_structs.SMB_COM_SESSION_SETUP_ANDX:
-                if req.payload.capabilities & ~server_capabilities:
-                    raise ProtocolError(STATUS_NOT_SUPPORTED)
-
-                uid = yield from cs.create_session()
-
-                args = response_args_from_req(req,
-                                              action=1,
-                                              domain=req.payload.domain)
-                args['uid'] = uid
-                response = SMBMessage(ComSessionSetupAndxResponse(**args))
-                yield from send_message(response)
-            elif req.command == smb_structs.SMB_COM_TREE_CONNECT_ANDX:
-                yield from cs.verify_uid(req)
-
-                if req.payload.flags & TREE_CONNECT_ANDX_DISCONNECT_TID:
-                    try:
-                        yield from cs.destroy_tree(req.tid)
-                    except KeyError:
-                        # NB: this is allowed to fail silently
-                        pass
-
-                if req.payload.service not in ("?????", "A:"):
-                    raise ProtocolError(STATUS_OBJECT_PATH_NOT_FOUND)
-
-                if req.payload.path.endswith("$"):
-                    raise ProtocolError(STATUS_OBJECT_PATH_NOT_FOUND)
-
-                tid = yield from cs.create_tree()
-
-                args = response_args_from_req(req,
-                                              optional_support=smb_structs.SMB_TREE_CONNECTX_SUPPORT_SEARCH,
-                                              service="A:",
-                                              native_file_system="FAT")
-                args['tid'] = tid
-                yield from send_message(SMBMessage(ComTreeConnectAndxResponse(**args)))
-            elif req.command == smb_structs.SMB_COM_ECHO:
-                log.debug("echo...")
-                if req.payload.echo_count > 1:
-                    raise Exception("Echo count is too high: %r" %
-                                    (req.payload.echo_count,))
-
-                args = response_args_from_req(req,
-                                              sequence_number=0,
-                                              data=req.payload.echo_data)
-                yield from send_message(SMBMessage(ComEchoResponse(**args)))
-            elif req.command == smb_structs.SMB_COM_TRANSACTION2:
-                yield from cs.verify_uid(req)
-                yield from cs.verify_tid(req)
-
-                if len(req.payload.setup_bytes) % 2:
-                    raise Exception("bad setup bytes length!")
-                setup = struct.unpack("<%dH" % (len(req.payload.setup_bytes) / 2,),
-                                      req.payload.setup_bytes)
-
-                if req.payload.timeout:
-                    raise Exception("Transaction2 Delayed request not supported!")
-
-                # go through another layer of parsing
-                if setup[0] == SMB_TRANS2_FIND_FIRST2:
-                    if req.payload.flags:
-                        raise Exception("Transaction 2 flags not supported!")
-
-                    fmt = "<HHHHI"
-                    fmt_size = struct.calcsize(fmt)
-                    (search_attributes, search_count,
-                     flags, information_level,
-                     search_storage_type) = struct.unpack("<HHHHI", req.payload.params_bytes[:fmt_size])
-                    filename = req.payload.params_bytes[fmt_size:].decode("utf-16-le")[:-1]
-
-                    try:
-                        info_generator = INFO_GENERATORS[information_level]
-                    except KeyError:
-                        raise Exception("Find First Information level not supported: %r" % (information_level,))
-
-                    if filename == "\\":
-                        is_directory_search = False
-                    else:
-                        comps = filename[1:].split("\\")
-                        for c in comps[:-1]:
-                            if '*' in c or '?' in c:
-                                raise Exception("unsupported search path: %r" % (filename,))
-
-                        if '*' in comps[-1] and comps[-1] not in ["*", "*.*", ""]:
-                            raise Exception("unsupported search path: %r" % (filename,))
-
-                        is_directory_search = comps[-1] in ["*", "*.*", ""]
-                        if is_directory_search:
-                            comps = comps[:-1]
-
-                    path = yield from fs.create_path(*comps)
-                    try:
-                        if is_directory_search:
-                            handle = yield from fs.open_directory(path)
-
-                            log.debug("HANDLE: %r", handle)
-
-                            class Dir(object):
-                                def __init__(self):
-                                    self.type = "directory"
-                                    self.size = 0
-
-                            entries_to_ret = [
-                                (".", normalize_stat(Dir())),
-                                ("..", normalize_stat(Dir())),
-                                ]
-
-                            for _ in range(search_count):
-                                entry = yield from handle.read()
-                                if entry is None: break
-                                nentry = yield from normalize_dir_entry(entry)
-                                entries_to_ret.append((entry.name, nentry))
-                        else:
-                            handle = None
-                            stat = yield from fs.stat(path)
-                            entries_to_ret = [(path.basename(), normalize_stat(stat))][:search_count]
-                    except FileNotFoundError:
-                        raise ProtocolError(STATUS_NO_SUCH_FILE)
-
-                    num_entries_to_ret = len(entries_to_ret)
-                    is_search_over = num_entries_to_ret < search_count
-
-                    offset = 0
-                    data = []
-                    for (i, (name, md)) in enumerate(entries_to_ret):
-                        bufs = info_generator(i, offset, flags, name, md,
-                                              i == len(entries_to_ret) - 1)
-                        data.extend(bufs)
-                        offset += sum(map(len, bufs))
-
-                    if (is_search_over and flags & SMB_FIND_CLOSE_AT_EOS or
-                        flags & SMB_FIND_CLOSE_AFTER_REQUEST):
-                        sid = 0
-                    else:
-                        sid = yield from cs.create_search()
-
-                    data_bytes = b''.join(data)
-                    last_name_offset = (0
-                                        if not num_entries_to_ret else
-                                        len(data_bytes) - len(data[-1]))
-
-                    params_bytes = struct.pack("<HHHHH",
-                                               sid, num_entries_to_ret,
-                                               int(is_search_over),
-                                               0x0,
-                                               0 if is_search_over else
-                                               last_name_offset)
-
-                    args = response_args_from_req(req,
-                                                  setup_bytes=struct.pack("<H", SMB_TRANS2_FIND_FIRST2),
-                                                  params_bytes=params_bytes,
-                                                  data_bytes=data_bytes)
-                    yield from send_message(SMBMessage(ComTransaction2Response(**args)))
-                elif setup[0] == SMB_TRANS2_QUERY_FS_INFORMATION:
-                    if req.payload.flags:
-                        raise Exception("Transaction 2 flags not supported!")
-
-                    fmt = "<H"
-                    fmt_size = struct.calcsize(fmt)
-                    (information_level,) = struct.unpack(fmt, req.payload.params_bytes[:fmt_size])
-
-                    try:
-                        fs_info_generator = FS_INFO_GENERATORS[information_level]
-                    except KeyError:
-                        raise Exception("QUERY FS Information level not supported: %r" % (information_level,))
-
-                    data_bytes = fs_info_generator()
-
-                    args = response_args_from_req(req,
-                                                  setup_bytes=struct.pack("<H", SMB_TRANS2_QUERY_FS_INFORMATION),
-                                                  params_bytes=b'',
-                                                  data_bytes=data_bytes)
-                    yield from send_message(SMBMessage(ComTransaction2Response(**args)))
-                elif setup[0] == SMB_TRANS2_QUERY_PATH_INFORMATION:
-                    if req.payload.flags:
-                        raise Exception("Transaction 2 flags not supported!")
-
-                    (information_level,) = struct.unpack("<H",
-                                                         req.payload.params_bytes[:2])
-
-                    try:
-                        query_path_info_generator = QUERY_FILE_INFO_GENERATORS[information_level]
-                    except KeyError:
-                        raise Exception("QUERY PATH Information level not supported: %r" % (information_level,))
-
-                    path = req.payload.params_bytes[6:].decode("utf-16-le").rstrip("\0")
-                    fspath = yield from smb_path_to_fs_path(path)
-
-                    try:
-                        md = yield from fs.stat(fspath)
-                    except OSError as e:
-                        raise ProtocolError(STATUS_NO_SUCH_FILE)
-
-                    setup_bytes = struct.pack("<H", SMB_TRANS2_QUERY_PATH_INFORMATION)
-                    name = fspath.basename() if fspath.basename() else '\\'
-                    (ea_error_offset, data_bytes) = query_path_info_generator(name, normalize_stat(md))
-                    params_bytes = struct.pack("<H", ea_error_offset)
-
-                    args = response_args_from_req(req,
-                                                  setup_bytes=setup_bytes,
-                                                  params_bytes=params_bytes,
-                                                  data_bytes=data_bytes)
-                    yield from send_message(SMBMessage(ComTransaction2Response(**args)))
-            elif req.command == SMB_COM_QUERY_INFORMATION_DISK:
-                yield from cs.verify_uid(req)
-                yield from cs.verify_tid(req)
-                args = response_args_from_req(req,
-                                              total_units=2 ** 16 - 1,
-                                              blocks_per_unit=16384,
-                                              block_size=512,
-                                              free_units=0
-                )
-                yield from send_message(SMBMessage(ComQueryInformationDiskResponse(**args)))
-            elif req.command == smb_structs.SMB_COM_NT_CREATE_ANDX:
-                request = req.payload
-
-                yield from cs.verify_uid(req)
-                yield from cs.verify_tid(req)
-
-                if (request.flags &
-                    (NT_CREATE_REQUEST_OPLOCK |
-                     NT_CREATE_REQUEST_OPBATCH |
-                     NT_CREATE_OPEN_TARGET_DIR)):
-                    raise Exception("SMB_COM_NT_CREATE_ANDX doesn't support flags!")
-
-                if (request.access_mask &
-                    (FILE_WRITE_DATA | FILE_APPEND_DATA |
-                     FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES |
-                     DELETE | WRITE_DAC | WRITE_OWNER |
-                     ACCESS_SYSTEM_SECURITY |
-                     GENERIC_ALL | GENERIC_WRITE)):
-                    # Don't allow write access
-                    # TODO: allow write access when we have an actual backend
-                    raise ProtocolError(STATUS_ACCESS_DENIED)
-
-                if request.create_disp != FILE_OPEN:
-                    raise ProtocolError(STATUS_ACCESS_DENIED)
-
-                if request.create_options & FILE_DELETE_ON_CLOSE:
-                    raise ProtocolError(STATUS_ACCESS_DENIED)
-
-                if request.create_options & FILE_OPEN_BY_FILE_ID:
-                    raise ProtocolError(STATUS_NOT_SUPPORTED)
-
-                if request.root_fid:
-                    try:
-                        root_md = yield from cs.ref_file(request.root_fid)
-                    except KeyError:
-                        raise ProtocolError(STATUS_INVALID_HANDLE)
-                    root_path = root_md['path']
-                    yield from cs.deref_file(request.root_fid)
-                else:
-                    root_path = ""
-
-                file_path = root_path + request.filename
-
-                log.debug("Opening file_path: %r, %r", file_path, request.filename)
-
-                is_sharing = request.share_access & FILE_SHARE_READ
-
-                # verify share access
-                # find other files
-                yield from cs.verify_share(file_path, is_sharing)
-
-                is_directory = False
-                path = yield from smb_path_to_fs_path(file_path)
-                try:
-                    handle = yield from fs.open(path)
-                except FileNotFoundError:
-                    raise ProtocolError(STATUS_NO_SUCH_FILE)
-                except IsADirectoryError:
-                    if request.create_options & FILE_NON_DIRECTORY_FILE:
-                        raise ProtocolError(STATUS_FILE_IS_A_DIRECTORY)
-                    handle = yield from fs.open_directory(path)
-                    is_directory = True
-
-                md = yield from fs.fstat(handle)
-
-                fid = yield from cs.create_file(file_path,
-                                                is_sharing, handle)
-
-                now = datetime.now()
-                directory = int(is_directory)
-                ext_attr = (ATTR_DIRECTORY
-                            if directory else
-                            ATTR_NORMAL)
-
-                file_data_size = get_size(md)
-
-                FILE_TYPE_DISK = 0
-
-                md2 = normalize_stat(md)
-
-                args = response_args_from_req(req,
-                                              op_lock_level=0,
-                                              fid=fid,
-                                              create_disp=request.create_disp,
-                                              create_time=datetime_to_win32(md2.birthtime),
-                                              last_access_time=datetime_to_win32(md2.atime),
-                                              last_write_time=datetime_to_win32(md2.mtime),
-                                              last_change_time=datetime_to_win32(md2.ctime),
-                                              ext_attr=ext_attr,
-                                              allocation_size=4096,
-                                              end_of_file=file_data_size,
-                                              resource_type=FILE_TYPE_DISK,
-                                              nm_pipe_status=0,
-                                              directory=directory)
-                response = SMBMessage(ComNTCreateAndxResponse(**args))
-                yield from send_message(response)
-            elif req.command == smb_structs.SMB_COM_READ_ANDX:
-                request = req.payload
-                yield from cs.verify_uid(req)
-                yield from cs.verify_tid(req)
-
-                try:
-                    fid_md = yield from cs.ref_file(request.fid)
-                except KeyError:
-                    raise ProtocolError(STATUS_INVALID_HANDLE)
-
-                buf = yield from fid_md['handle'].pread(request.offset, request.max_return_bytes_count)
-
-                yield from cs.deref_file(request.fid)
-
-                args = response_args_from_req(req, data=buf)
-                response = SMBMessage(ComReadAndxResponse(**args))
-                yield from send_message(response)
-            elif req.command == smb_structs.SMB_COM_CLOSE:
-                request = req.payload
-                yield from cs.verify_uid(req)
-                yield from cs.verify_tid(req)
-
-                try:
-                    fidmd = yield from cs.destroy_file(request.fid)
-                    assert 'handle' in fidmd
-                    fidmd['handle'].close()
-                except KeyError:
-                    raise ProtocolError(STATUS_INVALID_HANDLE)
-
-                args = response_args_from_req(req)
-                yield from send_message(SMBMessage(ComCloseResponse(**args)))
-
-            log.debug("%s", req)
+    def smb_path_to_fs_path(path):
+        comps = path[1:].split("\\")
+        if comps == ['']:
+            comps = []
+        return (yield from fs.create_path(*comps))
+
+    def normalize_stat(stat):
+        class MyEntry(object): pass
+        mystat = MyEntry()
+
+        mystat.birthtime = getattr(stat, "birthtime", datetime.fromtimestamp(0))
+        mystat.mtime = getattr(stat, "mtime", mystat.birthtime)
+        mystat.ctime = getattr(stat, "ctime", mystat.mtime)
+        mystat.atime = getattr(stat, "atime", mystat.ctime)
+
+        mystat.type = getattr(stat, "type")
+        mystat.size = getattr(stat, "size")
+
+        return mystat
+
+    @asyncio.coroutine
+    def normalize_dir_entry(entry):
+        need_to_stat = False
+        for prop in ["birthtime", "mtime", "ctime", "atime",
+                     "type", "size"]:
+            if (not hasattr(entry, prop) and
+                (yield from fs.stat_has_attr(prop))):
+                need_to_stat = True
+                break
+
+        to_normalize = entry
+        if need_to_stat:
+            to_normalize = yield from fs.stat(path / entry.name)
+
+        return normalize_stat(to_normalize)
+
+    if req.command == smb_structs.SMB_COM_SESSION_SETUP_ANDX:
+        if req.payload.capabilities & ~server_capabilities:
             raise ProtocolError(STATUS_NOT_SUPPORTED)
+
+        uid = yield from cs.create_session()
+
+        args = response_args_from_req(req,
+                                      action=1,
+                                      domain=req.payload.domain)
+        args['uid'] = uid
+        yield from send_message(SMBMessage(ComSessionSetupAndxResponse(**args)))
+    elif req.command == smb_structs.SMB_COM_TREE_CONNECT_ANDX:
+        yield from cs.verify_uid(req)
+
+        if req.payload.flags & TREE_CONNECT_ANDX_DISCONNECT_TID:
+            try:
+                yield from cs.destroy_tree(req.tid)
+            except KeyError:
+                # NB: this is allowed to fail silently
+                pass
+
+        if req.payload.service not in ("?????", "A:"):
+            raise ProtocolError(STATUS_OBJECT_PATH_NOT_FOUND)
+
+        if req.payload.path.endswith("$"):
+            raise ProtocolError(STATUS_OBJECT_PATH_NOT_FOUND)
+
+        tid = yield from cs.create_tree()
+
+        args = response_args_from_req(req,
+                                      optional_support=smb_structs.SMB_TREE_CONNECTX_SUPPORT_SEARCH,
+                                      service="A:",
+                                      native_file_system="FAT")
+        args['tid'] = tid
+        yield from send_message(SMBMessage(ComTreeConnectAndxResponse(**args)))
+    elif req.command == smb_structs.SMB_COM_ECHO:
+        log.debug("echo...")
+        if req.payload.echo_count > 1:
+            raise Exception("Echo count is too high: %r" %
+                            (req.payload.echo_count,))
+
+        args = response_args_from_req(req,
+                                      sequence_number=0,
+                                      data=req.payload.echo_data)
+        yield from send_message(SMBMessage(ComEchoResponse(**args)))
+    elif req.command == smb_structs.SMB_COM_TRANSACTION2:
+        yield from cs.verify_uid(req)
+        yield from cs.verify_tid(req)
+
+        if len(req.payload.setup_bytes) % 2:
+            raise Exception("bad setup bytes length!")
+        setup = struct.unpack("<%dH" % (len(req.payload.setup_bytes) / 2,),
+                              req.payload.setup_bytes)
+
+        if req.payload.timeout:
+            raise Exception("Transaction2 Delayed request not supported!")
+
+        # go through another layer of parsing
+        if setup[0] == SMB_TRANS2_FIND_FIRST2:
+            if req.payload.flags:
+                raise Exception("Transaction 2 flags not supported!")
+
+            fmt = "<HHHHI"
+            fmt_size = struct.calcsize(fmt)
+            (search_attributes, search_count,
+             flags, information_level,
+             search_storage_type) = struct.unpack("<HHHHI", req.payload.params_bytes[:fmt_size])
+            filename = req.payload.params_bytes[fmt_size:].decode("utf-16-le")[:-1]
+
+            try:
+                info_generator = INFO_GENERATORS[information_level]
+            except KeyError:
+                raise Exception("Find First Information level not supported: %r" % (information_level,))
+
+            if filename == "\\":
+                is_directory_search = False
+            else:
+                comps = filename[1:].split("\\")
+                for c in comps[:-1]:
+                    if '*' in c or '?' in c:
+                        raise Exception("unsupported search path: %r" % (filename,))
+
+                if '*' in comps[-1] and comps[-1] not in ["*", "*.*", ""]:
+                    raise Exception("unsupported search path: %r" % (filename,))
+
+                is_directory_search = comps[-1] in ["*", "*.*", ""]
+                if is_directory_search:
+                    comps = comps[:-1]
+
+            path = yield from fs.create_path(*comps)
+            try:
+                if is_directory_search:
+                    handle = yield from fs.open_directory(path)
+
+                    log.debug("HANDLE: %r", handle)
+
+                    class Dir(object):
+                        def __init__(self):
+                            self.type = "directory"
+                            self.size = 0
+
+                    entries_to_ret = [
+                        (".", normalize_stat(Dir())),
+                        ("..", normalize_stat(Dir())),
+                        ]
+
+                    for _ in range(search_count):
+                        entry = yield from handle.read()
+                        if entry is None: break
+                        nentry = yield from normalize_dir_entry(entry)
+                        entries_to_ret.append((entry.name, nentry))
+                else:
+                    handle = None
+                    stat = yield from fs.stat(path)
+                    entries_to_ret = [(path.basename(), normalize_stat(stat))][:search_count]
+            except FileNotFoundError:
+                raise ProtocolError(STATUS_NO_SUCH_FILE)
+
+            num_entries_to_ret = len(entries_to_ret)
+            is_search_over = num_entries_to_ret < search_count
+
+            offset = 0
+            data = []
+            for (i, (name, md)) in enumerate(entries_to_ret):
+                bufs = info_generator(i, offset, flags, name, md,
+                                      i == len(entries_to_ret) - 1)
+                data.extend(bufs)
+                offset += sum(map(len, bufs))
+
+            if (is_search_over and flags & SMB_FIND_CLOSE_AT_EOS or
+                flags & SMB_FIND_CLOSE_AFTER_REQUEST):
+                sid = 0
+            else:
+                sid = yield from cs.create_search()
+
+            data_bytes = b''.join(data)
+            last_name_offset = (0
+                                if not num_entries_to_ret else
+                                len(data_bytes) - len(data[-1]))
+
+            params_bytes = struct.pack("<HHHHH",
+                                       sid, num_entries_to_ret,
+                                       int(is_search_over),
+                                       0x0,
+                                       0 if is_search_over else
+                                       last_name_offset)
+
+            args = response_args_from_req(req,
+                                          setup_bytes=struct.pack("<H", SMB_TRANS2_FIND_FIRST2),
+                                          params_bytes=params_bytes,
+                                          data_bytes=data_bytes)
+            yield from send_message(SMBMessage(ComTransaction2Response(**args)))
+        elif setup[0] == SMB_TRANS2_QUERY_FS_INFORMATION:
+            if req.payload.flags:
+                raise Exception("Transaction 2 flags not supported!")
+
+            fmt = "<H"
+            fmt_size = struct.calcsize(fmt)
+            (information_level,) = struct.unpack(fmt, req.payload.params_bytes[:fmt_size])
+
+            try:
+                fs_info_generator = FS_INFO_GENERATORS[information_level]
+            except KeyError:
+                raise Exception("QUERY FS Information level not supported: %r" % (information_level,))
+
+            data_bytes = fs_info_generator()
+
+            args = response_args_from_req(req,
+                                          setup_bytes=struct.pack("<H", SMB_TRANS2_QUERY_FS_INFORMATION),
+                                          params_bytes=b'',
+                                          data_bytes=data_bytes)
+            yield from send_message(SMBMessage(ComTransaction2Response(**args)))
+        elif setup[0] == SMB_TRANS2_QUERY_PATH_INFORMATION:
+            if req.payload.flags:
+                raise Exception("Transaction 2 flags not supported!")
+
+            (information_level,) = struct.unpack("<H",
+                                                 req.payload.params_bytes[:2])
+
+            try:
+                query_path_info_generator = QUERY_FILE_INFO_GENERATORS[information_level]
+            except KeyError:
+                raise Exception("QUERY PATH Information level not supported: %r" % (information_level,))
+
+            path = req.payload.params_bytes[6:].decode("utf-16-le").rstrip("\0")
+            fspath = yield from smb_path_to_fs_path(path)
+
+            try:
+                md = yield from fs.stat(fspath)
+            except OSError as e:
+                raise ProtocolError(STATUS_NO_SUCH_FILE)
+
+            setup_bytes = struct.pack("<H", SMB_TRANS2_QUERY_PATH_INFORMATION)
+            name = fspath.basename() if fspath.basename() else '\\'
+            (ea_error_offset, data_bytes) = query_path_info_generator(name, normalize_stat(md))
+            params_bytes = struct.pack("<H", ea_error_offset)
+
+            args = response_args_from_req(req,
+                                          setup_bytes=setup_bytes,
+                                          params_bytes=params_bytes,
+                                          data_bytes=data_bytes)
+            yield from send_message(SMBMessage(ComTransaction2Response(**args)))
+    elif req.command == SMB_COM_QUERY_INFORMATION_DISK:
+        yield from cs.verify_uid(req)
+        yield from cs.verify_tid(req)
+        args = response_args_from_req(req,
+                                      total_units=2 ** 16 - 1,
+                                      blocks_per_unit=16384,
+                                      block_size=512,
+                                      free_units=0
+        )
+        yield from send_message(SMBMessage(ComQueryInformationDiskResponse(**args)))
+    elif req.command == smb_structs.SMB_COM_NT_CREATE_ANDX:
+        request = req.payload
+
+        yield from cs.verify_uid(req)
+        yield from cs.verify_tid(req)
+
+        if (request.flags &
+            (NT_CREATE_REQUEST_OPLOCK |
+             NT_CREATE_REQUEST_OPBATCH |
+             NT_CREATE_OPEN_TARGET_DIR)):
+            raise Exception("SMB_COM_NT_CREATE_ANDX doesn't support flags!")
+
+        if (request.access_mask &
+            (FILE_WRITE_DATA | FILE_APPEND_DATA |
+             FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES |
+             DELETE | WRITE_DAC | WRITE_OWNER |
+             ACCESS_SYSTEM_SECURITY |
+             GENERIC_ALL | GENERIC_WRITE)):
+            # Don't allow write access
+            # TODO: allow write access when we have an actual backend
+            raise ProtocolError(STATUS_ACCESS_DENIED)
+
+        if request.create_disp != FILE_OPEN:
+            raise ProtocolError(STATUS_ACCESS_DENIED)
+
+        if request.create_options & FILE_DELETE_ON_CLOSE:
+            raise ProtocolError(STATUS_ACCESS_DENIED)
+
+        if request.create_options & FILE_OPEN_BY_FILE_ID:
+            raise ProtocolError(STATUS_NOT_SUPPORTED)
+
+        if request.root_fid:
+            try:
+                root_md = yield from cs.ref_file(request.root_fid)
+            except KeyError:
+                raise ProtocolError(STATUS_INVALID_HANDLE)
+            root_path = root_md['path']
+            yield from cs.deref_file(request.root_fid)
+        else:
+            root_path = ""
+
+        file_path = root_path + request.filename
+
+        log.debug("Opening file_path: %r, %r", file_path, request.filename)
+
+        is_sharing = request.share_access & FILE_SHARE_READ
+
+        # verify share access
+        # find other files
+        yield from cs.verify_share(file_path, is_sharing)
+
+        is_directory = False
+        path = yield from smb_path_to_fs_path(file_path)
+        try:
+            handle = yield from fs.open(path)
+        except FileNotFoundError:
+            raise ProtocolError(STATUS_NO_SUCH_FILE)
+        except IsADirectoryError:
+            if request.create_options & FILE_NON_DIRECTORY_FILE:
+                raise ProtocolError(STATUS_FILE_IS_A_DIRECTORY)
+            handle = yield from fs.open_directory(path)
+            is_directory = True
+
+        md = yield from fs.fstat(handle)
+
+        fid = yield from cs.create_file(file_path,
+                                        is_sharing, handle)
+
+        now = datetime.now()
+        directory = int(is_directory)
+        ext_attr = (ATTR_DIRECTORY
+                    if directory else
+                    ATTR_NORMAL)
+
+        file_data_size = get_size(md)
+
+        FILE_TYPE_DISK = 0
+
+        md2 = normalize_stat(md)
+
+        args = response_args_from_req(req,
+                                      op_lock_level=0,
+                                      fid=fid,
+                                      create_disp=request.create_disp,
+                                      create_time=datetime_to_win32(md2.birthtime),
+                                      last_access_time=datetime_to_win32(md2.atime),
+                                      last_write_time=datetime_to_win32(md2.mtime),
+                                      last_change_time=datetime_to_win32(md2.ctime),
+                                      ext_attr=ext_attr,
+                                      allocation_size=4096,
+                                      end_of_file=file_data_size,
+                                      resource_type=FILE_TYPE_DISK,
+                                      nm_pipe_status=0,
+                                      directory=directory)
+        yield from send_message(SMBMessage(ComNTCreateAndxResponse(**args)))
+    elif req.command == smb_structs.SMB_COM_READ_ANDX:
+        request = req.payload
+        yield from cs.verify_uid(req)
+        yield from cs.verify_tid(req)
+
+        try:
+            fid_md = yield from cs.ref_file(request.fid)
+        except KeyError:
+            raise ProtocolError(STATUS_INVALID_HANDLE)
+
+        buf = yield from fid_md['handle'].pread(request.offset, request.max_return_bytes_count)
+
+        yield from cs.deref_file(request.fid)
+
+        args = response_args_from_req(req, data=buf)
+        yield from send_message(SMBMessage(ComReadAndxResponse(**args)))
+    elif req.command == smb_structs.SMB_COM_CLOSE:
+        request = req.payload
+        yield from cs.verify_uid(req)
+        yield from cs.verify_tid(req)
+
+        try:
+            fidmd = yield from cs.destroy_file(request.fid)
+            assert 'handle' in fidmd
+            fidmd['handle'].close()
+        except KeyError:
+            raise ProtocolError(STATUS_INVALID_HANDLE)
+
+        args = response_args_from_req(req)
+        yield from send_message(SMBMessage(ComCloseResponse(**args)))
+
+    log.debug("%s", req)
+    raise ProtocolError(STATUS_NOT_SUPPORTED)
 
 def set_fd_non_blocking(fd, val):
     fl = fcntl.fcntl(fd, fcntl.F_GETFL)

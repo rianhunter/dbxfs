@@ -15,17 +15,28 @@
 # You should have received a copy of the GNU General Public License
 # along with dropboxfs.  If not, see <http://www.gnu.org/licenses/>.
 
+import asyncio
+import contextlib
+import fcntl
+import functools
 import itertools
 import os
 import logging
+import queue
 import random
 import socketserver
 import struct
 import sys
 import time
+import threading
 
 from datetime import datetime
 from io import StringIO
+
+try:
+    from socket import socketpair
+except ImportError:
+    from asyncio.windows_utils import socketpair
 
 # hack smb struct defs from PySMB
 import smb.smb_structs as smb_structs
@@ -743,18 +754,131 @@ class ProtocolError(Exception):
     def __init__(self, error):
         self.error = error
 
-class SMBClientHandler(socketserver.BaseRequestHandler):
-    def read_message(self):
-        data = self.request.recv(4)
+@asyncio.coroutine
+def cant_fail(on_fail, future):
+    try:
+        ret = yield from future
+    except:
+        log.exception("Process-stopping exception!")
+        on_fail()
+
+INVALID_UIDS = (0x0, 0xfffe)
+INVALID_TIDS = (0x0, 0xffff)
+INVALID_SIDS = (0xffff,)
+INVALID_FIDS = (0xffff,)
+
+class SMBClientHandler(object):
+    def __init__(self):
+        self._open_uids = set()
+        self._open_tids = set()
+        self._open_find_trans = {}
+        self._open_files = {}
+
+    @asyncio.coroutine
+    def verify_tid(self, req):
+        if req.tid not in self._open_tids:
+            raise ProtocolError(STATUS_SMB_BAD_TID)
+
+    @asyncio.coroutine
+    def verify_uid(self, req):
+        if req.uid not in self._open_uids:
+            raise ProtocolError(STATUS_SMB_BAD_UID)
+
+    def _create_id(self, set_, invalid, error=STATUS_INSUFF_SERVER_RESOURCES):
+        assert len(set_) <= 2 ** 16 - len(invalid)
+        if len(set_) == 2 ** 16 - len(invalid):
+            raise ProtocolError(error)
+
+        uid = random.randint(0, 2 ** 16)
+        while uid in set_ or uid in invalid:
+            uid = random.randint(0, 2 ** 16)
+
+        return uid
+
+    @asyncio.coroutine
+    def create_session(self):
+        uid = self._create_id(self._open_uids, INVALID_UIDS)
+        self._open_uids.add(uid)
+        return uid
+
+    @asyncio.coroutine
+    def destroy_session(self, uid):
+        del self._open_uids[uid]
+
+    @asyncio.coroutine
+    def create_tree(self):
+        tid = self._create_id(self._open_tids, INVALID_TIDS)
+        self._open_tids.add(tid)
+        return tid
+
+    @asyncio.coroutine
+    def destroy_tree(self, tid):
+        del self._open_tids[tid]
+
+    @asyncio.coroutine
+    def create_search(self, **kw):
+        sid = self._create_id(self._open_find_trans, INVALID_SIDS)
+        self._open_find_trans[sid] = dict(**kw)
+        return sid
+
+    @asyncio.coroutine
+    def destroy_search(self, sid):
+        del self._open_find_trans[sid]
+
+    @asyncio.coroutine
+    def verify_share(self, file_path, is_sharing):
+        for (fid, open_md) in self._open_files.items():
+            if open_md['path'].lower() == file_path.lower():
+                if not (open_md['share'] and is_sharing):
+                    raise ProtocolError(STATUS_SHARING_VIOLATION)
+
+    @asyncio.coroutine
+    def ref_file(self, fid):
+        # KeyError is okay for now
+        toret = self._open_files[fid]
+        toret['ref'] += 1
+        return toret
+
+    @asyncio.coroutine
+    def deref_file(self, fid):
+        toret = self._open_files[fid]
+        toret['ref'] -= 1
+
+    @asyncio.coroutine
+    def create_file(self, path, is_sharing, handle):
+        fid = self._create_id(self._open_files, INVALID_FIDS)
+        self._open_files[fid] = dict(path=path,
+                                     ref=0,
+                                     share=is_sharing,
+                                     handle=handle)
+        return fid
+
+    @asyncio.coroutine
+    def destroy_file(self, fid):
+        ret = self._open_files[fid]
+        if ret['ref']: raise Exception("File is being used by another connection!")
+        return self._open_files.pop(fid)
+
+    @classmethod
+    @asyncio.coroutine
+    def read_message(cls, reader):
+        data = yield from reader.read(4)
+        # Signal EOF
+        if not data: return None
         (length,) = struct.unpack(">I", data)
-        return decode_smb_message(recv_all(self.request, length))
+        return decode_smb_message((yield from reader.read(length)))
 
-    def send_message(self, msg):
+    @classmethod
+    @asyncio.coroutine
+    def send_message(cls, writer, msg):
         msg.raw_data = msg.encode()
-        self.request.sendall(struct.pack(">I", len(msg.raw_data)) + msg.raw_data)
+        writer.writelines([struct.pack(">I", len(msg.raw_data)),
+                           msg.raw_data])
 
-    def handle(self):
-        negotiate_req = self.read_message()
+    @asyncio.coroutine
+    def run(self, fs, loop, reader, writer):
+        # first negotiate SMB protocol
+        negotiate_req = yield from self.read_message(reader)
         if negotiate_req.command != smb_structs.SMB_COM_NEGOTIATE:
             raise Exception("Got unexpected request: %s" % (negotiate_req,))
 
@@ -789,41 +913,82 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
         negotiate_resp = smb_structs.SMBMessage(ComNegotiateResponse(**args))
         # TODO: set flags? status?
 
-        self.send_message(negotiate_resp)
+        yield from self.send_message(writer, negotiate_resp)
 
-        INVALID_UIDS = (0x0, 0xfffe)
-        open_uids = set()
-        INVALID_TIDS = (0x0, 0xffff)
-        open_tids = set()
-        INVALID_SIDS = (0xffff,)
-        open_find_trans = {}
-        INVALID_FIDS = (0xffff,)
-        open_files = {}
+        # okay now kick off SMB connection machinery
 
-        def verify_tid(req):
-            if req.tid not in open_tids:
-                raise ProtocolError(STATUS_SMB_BAD_TID)
+        @asyncio.coroutine
+        def read_client(reader, dead_future, writer_queue):
+            @asyncio.coroutine
+            def send_message(msg):
+                yield from writer_queue.put(msg)
 
-        def verify_uid(req):
-            if req.uid not in open_uids:
-                raise ProtocolError(STATUS_SMB_BAD_UID)
+            read_future = asyncio.ensure_future(self.read_message(reader),
+                                                loop=loop)
+            while True:
+                (done, pending) = yield from asyncio.wait([dead_future, read_future],
+                                                          return_when=asyncio.FIRST_COMPLETED,
+                                                          loop=loop)
+                if dead_future in done: break
 
-        def create_id(set_, invalid, error=STATUS_INSUFF_SERVER_RESOURCES):
-            assert len(open_uids) <= 2 ** 16 - len(invalid)
-            if len(open_tids) == 2 ** 16 - len(invalid):
-                raise ProtocolError(error)
+                if read_future in done:
+                    try:
+                        msg = read_future.result()
+                    except:
+                        # not sure what happened but we received invalid data
+                        log.exception("Exception during reading socket")
+                        break
+                    if not msg:
+                        log.debug("EOF from client, closing connection")
+                        break
 
-            uid = random.randint(0, 2 ** 16)
-            while uid in open_uids or uid in invalid:
-                uid = random.randint(0, 2 ** 16)
+                    # kick off concurrent request handler
+                    reqcoro = self.handle_request(server_capabilities,
+                                                  self, fs, msg, send_message)
+                    reqfut = asyncio.ensure_future(reqcoro, loop=loop)
+                    def on_fail():
+                        dead_future.set_result(None)
+                    asyncio.ensure_future(cant_fail(on_fail, reqfut), loop=loop)
+                    read_future = asyncio.ensure_future(self.read_message(reader),
+                                                        loop=loop)
 
-            return uid
+            # we have died, signal to writer coroutine to die as well
+            yield from writer_queue.put(None)
 
+        @asyncio.coroutine
+        def write_client(writer, queue):
+            while True:
+                msg = yield from queue.get()
+                if msg is None: break
+                yield from self.send_message(writer, msg)
+            writer.close()
+
+        # NB: dead future is our out-of-band way to signal to the read client
+        #     to stop
+        dead_future = asyncio.Future(loop=loop)
+        writer_queue = asyncio.Queue(loop=loop)
+
+        # start up reader/writer coroutines
+        read_client_future = asyncio.ensure_future(read_client(reader, dead_future,
+                                                               writer_queue),
+                                                   loop=loop)
+        try:
+            yield from write_client(writer, writer_queue)
+        finally:
+            # make sure read client is dead
+            (done, pending) = yield from asyncio.wait([read_client_future],
+                                                      loop=loop)
+            assert len(done) == 1
+
+    @classmethod
+    @asyncio.coroutine
+    def handle_request(cls, server_capabilities, cs, fs, req, send_message):
+        @asyncio.coroutine
         def smb_path_to_fs_path(path):
             comps = path[1:].split("\\")
             if comps == ['']:
                 comps = []
-            return self.server.fs.create_path(*comps)
+            return (yield from fs.create_path(*comps))
 
         def normalize_stat(stat):
             class MyEntry(object): pass
@@ -839,47 +1004,45 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
 
             return mystat
 
+        @asyncio.coroutine
         def normalize_dir_entry(entry):
             need_to_stat = False
             for prop in ["birthtime", "mtime", "ctime", "atime",
                          "type", "size"]:
                 if (not hasattr(entry, prop) and
-                    self.server.fs.stat_has_attr(prop)):
+                    (yield from fs.stat_has_attr(prop))):
                     need_to_stat = True
                     break
 
             to_normalize = entry
             if need_to_stat:
-                to_normalize = self.server.fs.stat(path / entry.name)
+                to_normalize = yield from fs.stat(path / entry.name)
 
             return normalize_stat(to_normalize)
 
-        while True:
-            req = self.read_message()
-
+        if True:
             if req.command == smb_structs.SMB_COM_SESSION_SETUP_ANDX:
                 try:
                     if req.payload.capabilities & ~server_capabilities:
                         raise ProtocolError(STATUS_NOT_SUPPORTED)
 
-                    uid = create_id(open_uids, INVALID_UIDS)
-                    open_uids.add(uid)
+                    uid = yield from cs.create_session()
 
                     args = response_args_from_req(req,
                                                   action=1,
                                                   domain=req.payload.domain)
                     args['uid'] = uid
                     response = SMBMessage(ComSessionSetupAndxResponse(**args))
-                    self.send_message(response)
+                    yield from send_message(response)
                 except ProtocolError as e:
-                    self.send_message(error_response(req, e.error))
+                    yield from send_message(error_response(req, e.error))
             elif req.command == smb_structs.SMB_COM_TREE_CONNECT_ANDX:
                 try:
-                    verify_uid(req)
+                    yield from cs.verify_uid(req)
 
                     if req.payload.flags & TREE_CONNECT_ANDX_DISCONNECT_TID:
                         try:
-                            del open_tids[req.tid]
+                            yield from cs.destroy_tree(req.tid)
                         except KeyError:
                             # NB: this is allowed to fail silently
                             pass
@@ -890,18 +1053,16 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                     if req.payload.path.endswith("$"):
                         raise ProtocolError(STATUS_OBJECT_PATH_NOT_FOUND)
 
-                    tid = create_id(open_tids, INVALID_TIDS)
-                    assert tid not in INVALID_TIDS
-                    open_tids.add(tid)
+                    tid = yield from cs.create_tree()
 
                     args = response_args_from_req(req,
                                                   optional_support=smb_structs.SMB_TREE_CONNECTX_SUPPORT_SEARCH,
                                                   service="A:",
                                                   native_file_system="FAT")
                     args['tid'] = tid
-                    self.send_message(SMBMessage(ComTreeConnectAndxResponse(**args)))
+                    yield from send_message(SMBMessage(ComTreeConnectAndxResponse(**args)))
                 except ProtocolError as e:
-                    self.send_message(error_response(req, e.error))
+                    yield from send_message(error_response(req, e.error))
             elif req.command == smb_structs.SMB_COM_ECHO:
                 log.debug("echo...")
                 if req.payload.echo_count > 1:
@@ -911,11 +1072,11 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                 args = response_args_from_req(req,
                                               sequence_number=0,
                                               data=req.payload.echo_data)
-                self.send_message(SMBMessage(ComEchoResponse(**args)))
+                yield from send_message(SMBMessage(ComEchoResponse(**args)))
             elif req.command == smb_structs.SMB_COM_TRANSACTION2:
                 try:
-                    verify_uid(req)
-                    verify_tid(req)
+                    yield from cs.verify_uid(req)
+                    yield from cs.verify_tid(req)
 
                     if len(req.payload.setup_bytes) % 2:
                         raise Exception("bad setup bytes length!")
@@ -957,10 +1118,12 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                             if is_directory_search:
                                 comps = comps[:-1]
 
-                        path = self.server.fs.create_path(*comps)
+                        path = yield from fs.create_path(*comps)
                         try:
                             if is_directory_search:
-                                handle = self.server.fs.open_directory(path)
+                                handle = yield from fs.open_directory(path)
+
+                                log.debug("HANDLE: %r", handle)
 
                                 class Dir(object):
                                     def __init__(self):
@@ -972,16 +1135,17 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                                     ("..", normalize_stat(Dir())),
                                     ]
 
-                                entries_to_ret.extend((entry.name, normalize_dir_entry(entry))
-                                                      for entry in itertools.islice(handle, search_count))
+                                for _ in range(search_count):
+                                    entry = yield from handle.read()
+                                    if entry is None: break
+                                    nentry = yield from normalize_dir_entry(entry)
+                                    entries_to_ret.append((entry.name, nentry))
                             else:
                                 handle = None
-                                stat = self.server.fs.stat(path)
+                                stat = yield from fs.stat(path)
                                 entries_to_ret = [(path.basename(), normalize_stat(stat))][:search_count]
                         except FileNotFoundError:
                             raise ProtocolError(STATUS_NO_SUCH_FILE)
-
-                        sid = create_id(open_find_trans, INVALID_SIDS)
 
                         num_entries_to_ret = len(entries_to_ret)
                         is_search_over = num_entries_to_ret < search_count
@@ -993,6 +1157,8 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                                                   i == len(entries_to_ret) - 1)
                             data.extend(bufs)
                             offset += sum(map(len, bufs))
+
+                        sid = yield from cs.create_search()
 
                         data_bytes = b''.join(data)
                         last_name_offset = (0
@@ -1010,12 +1176,11 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                                                       setup_bytes=struct.pack("<H", SMB_TRANS2_FIND_FIRST2),
                                                       params_bytes=params_bytes,
                                                       data_bytes=data_bytes)
-                        self.send_message(SMBMessage(ComTransaction2Response(**args)))
-                        open_find_trans[sid] = handle
+                        yield from send_message(SMBMessage(ComTransaction2Response(**args)))
 
                         if (is_search_over and flags & SMB_FIND_CLOSE_AT_EOS or
                             flags & SMB_FIND_CLOSE_AFTER_REQUEST):
-                            del open_find_trans[sid]
+                            yield from cs.destroy_search(sid)
                     elif setup[0] == SMB_TRANS2_QUERY_FS_INFORMATION:
                         if req.payload.flags:
                             raise Exception("Transaction 2 flags not supported!")
@@ -1035,7 +1200,7 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                                                       setup_bytes=struct.pack("<H", SMB_TRANS2_QUERY_FS_INFORMATION),
                                                       params_bytes=b'',
                                                       data_bytes=data_bytes)
-                        self.send_message(SMBMessage(ComTransaction2Response(**args)))
+                        yield from send_message(SMBMessage(ComTransaction2Response(**args)))
                     elif setup[0] == SMB_TRANS2_QUERY_PATH_INFORMATION:
                         if req.payload.flags:
                             raise Exception("Transaction 2 flags not supported!")
@@ -1049,10 +1214,10 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                             raise Exception("QUERY PATH Information level not supported: %r" % (information_level,))
 
                         path = req.payload.params_bytes[6:].decode("utf-16-le").rstrip("\0")
-                        fspath = smb_path_to_fs_path(path)
+                        fspath = yield from smb_path_to_fs_path(path)
 
                         try:
-                            md = self.server.fs.stat(fspath)
+                            md = yield from fs.stat(fspath)
                         except OSError as e:
                             raise ProtocolError(STATUS_NO_SUCH_FILE)
 
@@ -1065,28 +1230,28 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                                                       setup_bytes=setup_bytes,
                                                       params_bytes=params_bytes,
                                                       data_bytes=data_bytes)
-                        self.send_message(SMBMessage(ComTransaction2Response(**args)))
+                        yield from send_message(SMBMessage(ComTransaction2Response(**args)))
                     else:
                         log.debug("%s", req)
-                        self.send_message(error_response(req, STATUS_NOT_SUPPORTED))
+                        yield from send_message(error_response(req, STATUS_NOT_SUPPORTED))
                 except ProtocolError as e:
-                    self.send_message(error_response(req, e.error))
+                    yield from send_message(error_response(req, e.error))
             elif req.command == SMB_COM_QUERY_INFORMATION_DISK:
-                verify_uid(req)
-                verify_tid(req)
+                yield from cs.verify_uid(req)
+                yield from cs.verify_tid(req)
                 args = response_args_from_req(req,
                                               total_units=2 ** 16 - 1,
                                               blocks_per_unit=16384,
                                               block_size=512,
                                               free_units=0
                 )
-                self.send_message(SMBMessage(ComQueryInformationDiskResponse(**args)))
+                yield from send_message(SMBMessage(ComQueryInformationDiskResponse(**args)))
             elif req.command == smb_structs.SMB_COM_NT_CREATE_ANDX:
                 request = req.payload
 
                 try:
-                    verify_uid(req)
-                    verify_tid(req)
+                    yield from cs.verify_uid(req)
+                    yield from cs.verify_tid(req)
 
                     if (request.flags &
                         (NT_CREATE_REQUEST_OPLOCK |
@@ -1115,10 +1280,11 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
 
                     if request.root_fid:
                         try:
-                            root_md = open_files[request.root_fid]
+                            root_md = yield from cs.ref_file(request.root_fid)
                         except KeyError:
                             raise ProtocolError(STATUS_INVALID_HANDLE)
                         root_path = root_md['path']
+                        yield from cs.deref_file(request.root_fid)
                     else:
                         root_path = ""
 
@@ -1130,27 +1296,24 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
 
                     # verify share access
                     # find other files
-                    for (fid, open_md) in open_files.items():
-                        if open_md['path'].lower() == file_path.lower():
-                            if not (open_md['share'] and is_sharing):
-                                raise ProtocolError(STATUS_SHARING_VIOLATION)
+                    yield from cs.verify_share(file_path, is_sharing)
 
                     is_directory = False
-                    path = smb_path_to_fs_path(file_path)
+                    path = yield from smb_path_to_fs_path(file_path)
                     try:
-                        handle = self.server.fs.open(path)
+                        handle = yield from fs.open(path)
                     except FileNotFoundError:
                         raise ProtocolError(STATUS_NO_SUCH_FILE)
                     except IsADirectoryError:
                         if request.create_options & FILE_NON_DIRECTORY_FILE:
                             raise ProtocolError(STATUS_FILE_IS_A_DIRECTORY)
-                        handle = self.server.fs.open_directory(path)
+                        handle = yield from fs.open_directory(path)
                         is_directory = True
 
-                    md = self.server.fs.fstat(handle)
+                    md = yield from fs.fstat(handle)
 
-                    fid = create_id(open_files, INVALID_FIDS,
-                                    STATUS_TOO_MANY_OPENED_FILES)
+                    fid = yield from cs.create_file(file_path,
+                                                    is_sharing, handle)
 
                     now = datetime.now()
                     directory = int(is_directory)
@@ -1161,12 +1324,6 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                     file_data_size = get_size(md)
 
                     FILE_TYPE_DISK = 0
-
-                    open_files[fid] = {
-                        'path': file_path,
-                        'share': is_sharing,
-                        'handle': handle,
-                    }
 
                     md2 = normalize_stat(md)
 
@@ -1185,60 +1342,188 @@ class SMBClientHandler(socketserver.BaseRequestHandler):
                                                   nm_pipe_status=0,
                                                   directory=directory)
                     response = SMBMessage(ComNTCreateAndxResponse(**args))
-                    self.send_message(response)
+                    yield from send_message(response)
                 except ProtocolError as e:
-                    self.send_message(error_response(req, e.error))
+                    yield from send_message(error_response(req, e.error))
             elif req.command == smb_structs.SMB_COM_READ_ANDX:
                 request = req.payload
                 try:
-                    verify_uid(req)
-                    verify_tid(req)
+                    yield from cs.verify_uid(req)
+                    yield from cs.verify_tid(req)
 
                     try:
-                        fid_md = open_files[request.fid]
+                        fid_md = yield from cs.ref_file(request.fid)
                     except KeyError:
                         raise ProtocolError(STATUS_INVALID_HANDLE)
 
-                    buf = fid_md['handle'].pread(request.offset, request.max_return_bytes_count)
+                    buf = yield from fid_md['handle'].pread(request.offset, request.max_return_bytes_count)
+
+                    yield from cs.deref_file(request.fid)
 
                     args = response_args_from_req(req, data=buf)
                     response = SMBMessage(ComReadAndxResponse(**args))
-                    self.send_message(response)
+                    yield from send_message(response)
                 except ProtocolError as e:
-                    self.send_message(error_response(req, e.error))
+                    yield from send_message(error_response(req, e.error))
             elif req.command == smb_structs.SMB_COM_CLOSE:
                 request = req.payload
                 try:
-                    verify_uid(req)
-                    verify_tid(req)
+                    yield from cs.verify_uid(req)
+                    yield from cs.verify_tid(req)
 
                     try:
-                        fidmd = open_files.pop(request.fid)
+                        fidmd = yield from cs.destroy_file(request.fid)
                         assert 'handle' in fidmd
                         fidmd['handle'].close()
                     except KeyError:
                         raise ProtocolError(STATUS_INVALID_HANDLE)
 
                     args = response_args_from_req(req)
-                    self.send_message(SMBMessage(ComCloseResponse(**args)))
+                    yield from send_message(SMBMessage(ComCloseResponse(**args)))
                 except ProtocolError as e:
-                    self.send_message(error_response(req, e.error))
+                    yield from send_message(error_response(req, e.error))
             else:
                 log.debug("%s", req)
-                self.send_message(error_response(req, STATUS_NOT_SUPPORTED))
+                yield from send_message(error_response(req, STATUS_NOT_SUPPORTED))
+
+def set_fd_non_blocking(fd, val):
+    fl = fcntl.fcntl(fd, fcntl.F_GETFL)
+    if val:
+        fl = fl | os.O_NONBLOCK
+    else:
+        fl = fl & ~os.O_NONBLOCK
+    fcntl.fcntl(fd, fcntl.F_SETFL, fl)
+
+class AsyncWorkerPool(object):
+    def __init__(self, loop, size=1):
+        self.loop = loop
+
+        (self.rsock, self.wsock) = socketpair()
+        to_worker_queue = queue.Queue()
+        from_worker_queue = queue.Queue()
+
+        def worker_thread():
+            while True:
+                obj = to_worker_queue.get()
+                log.debug("worker %r", threading.get_ident())
+
+                if obj is None: break
+                (fn, tag) = obj
+                try:
+                    ret = fn()
+                    is_exc = False
+                except:
+                    ret = sys.exc_info()[1]
+                    is_exc = True
+                from_worker_queue.put((ret, is_exc, tag))
+                self.wsock.send(b"_")
+
+        for _ in range(size):
+            threading.Thread(target=worker_thread, daemon=True).start()
+
+        self.conduit_queue = asyncio.Queue(loop=loop)
+
+        @asyncio.coroutine
+        def worker_conduit():
+            set_fd_non_blocking(self.rsock, True)
+            while True:
+                coros = list(map(functools.partial(asyncio.ensure_future, loop=loop),
+                                 [self.conduit_queue.get(),
+                                  loop.sock_recv(self.rsock, 1)]))
+                (done, pending) = yield from asyncio.wait(coros,
+                                                          return_when=asyncio.FIRST_COMPLETED,
+                                                          timeout=1,
+                                                          loop=loop)
+
+                if coros[0] in done:
+                    q = coros[0].result()
+                    to_worker_queue.put(q)
+                    if q is None: break
+
+                if coros[1] in done:
+                    (res, is_exc, future) = from_worker_queue.get(block=False)
+                    if is_exc: future.set_exception(res)
+                    else: future.set_result(res)
+
+                for p in pending:
+                    p.cancel()
+
+        self.conduit_coro = asyncio.ensure_future(worker_conduit(),
+                                                  loop=loop)
+
+    @asyncio.coroutine
+    def run_async(self, f, *n, **kw):
+        f = functools.partial(f, *n, **kw)
+        fut = asyncio.Future(loop=self.loop)
+        yield from self.conduit_queue.put((f, fut))
+        return (yield from fut)
+
+    def close(self):
+        self.rsock.close()
+        self.wsock.close()
+
+    @asyncio.coroutine
+    def wait_closed(self):
+        yield from self.conduit_queue.put(None)
+        yield from self.conduit_coro
+
+class AsyncWrapped(object):
+    def __init__(self, obj, worker_pool):
+        self._obj = obj
+        self._worker_pool = worker_pool
+
+    def __getattr__(self, name):
+        @asyncio.coroutine
+        def fn(*n, **kw):
+            ret = yield from self._worker_pool.run_async(getattr(self._obj, name),
+                                                         *n, **kw)
+            return ret
+        return fn
+
+class AsyncFS(AsyncWrapped):
+    @asyncio.coroutine
+    def fstat(self, handle):
+        # NB: we have to unwrap the async handle
+        return (yield from self._worker_pool.run_async(self._obj.fstat,
+                                                       handle._obj))
+
+    def __getattr__(self, name):
+        @asyncio.coroutine
+        def fn(*n, **kw):
+            ret = yield from self._worker_pool.run_async(getattr(self._obj, name),
+                                                         *n, **kw)
+            if name in ("open_directory", "open"):
+                ret = AsyncWrapped(ret, self._worker_pool)
+            return ret
+        return fn
 
 class SMBServer(object):
     def __init__(self, address, fs):
-        # run basic server
-        self._server = socketserver.ThreadingTCPServer(address,
-                                                       SMBClientHandler, False)
-        self._server.fs = fs
-        self._server.allow_reuse_address = True
-        self._server.server_bind()
-        self._server.server_activate()
+        self._loop = asyncio.get_event_loop()
+
+        self._worker_pool = AsyncWorkerPool(self._loop, 4)
+
+        async_fs = AsyncFS(fs, self._worker_pool)
+
+        @asyncio.coroutine
+        def handle_client(reader, writer):
+            yield from SMBClientHandler().run(async_fs, self._loop,
+                                              reader, writer)
+            log.debug("client done!")
+
+        start_server_coro = asyncio.start_server(handle_client,
+                                                 host=address[0], port=address[1],
+                                                 loop=self._loop)
+        self._server = self._loop.run_until_complete(start_server_coro)
+
+    def close(self):
+        self._server.close()
+        self._loop.run_until_complete(self._server.wait_closed())
+        self._worker_pool.close()
+        self._loop.run_until_complete(self._worker_pool.wait_closed())
 
     def run(self):
-        self._server.serve_forever()
+        self._loop.run_forever()
 
 def main(argv):
     logging.basicConfig(level=logging.DEBUG)
@@ -1254,7 +1539,8 @@ def main(argv):
     }),
                            ("bar", {"type": "file", "data": b"f"})])
 
-    SMBServer(('0.0.0.0', 8888), fs).run()
+    with contextlib.closing(SMBServer(('0.0.0.0', 8888), fs)) as server:
+        server.run()
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv))

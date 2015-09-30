@@ -1291,15 +1291,18 @@ def handle_request(server_capabilities, cs, fs, req):
         path = yield from smb_path_to_fs_path(file_path)
         try:
             handle = yield from fs.open(path)
+            # TODO: dbfs currently doesn't return FileNotFoundError
+            #       on open, so we have to fstat in this try-except-block
+            md = yield from fs.fstat(handle)
         except FileNotFoundError:
             raise ProtocolError(STATUS_NO_SUCH_FILE)
-        except IsADirectoryError:
-            if request.create_options & FILE_NON_DIRECTORY_FILE:
-                raise ProtocolError(STATUS_FILE_IS_A_DIRECTORY)
-            handle = yield from fs.open_directory(path)
-            is_directory = True
 
-        md = yield from fs.fstat(handle)
+        is_directory = md.type == "directory"
+
+        if (is_directory and
+            request.create_options & FILE_NON_DIRECTORY_FILE):
+            handle.close()
+            raise ProtocolError(STATUS_FILE_IS_A_DIRECTORY)
 
         fid = yield from cs.create_file(file_path,
                                         is_sharing, handle)

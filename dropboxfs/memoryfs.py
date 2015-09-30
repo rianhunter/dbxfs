@@ -44,6 +44,8 @@ class _File(io.RawIOBase):
         self._offset = 0
 
     def pread(self, offset, size=-1):
+        if self._md["type"] == "directory":
+            raise OSError(errno.EISDIR, os.strerror(errno.EISDIR))
         return self._md["data"][offset:
                                 len(self._md["data"]) if size < 0 else offset + size]
 
@@ -129,9 +131,6 @@ class FileSystem(object):
 
     def open(self, path):
         md = self._get_file(path)
-        if md["type"] == "directory":
-            raise OSError(errno.EISDIR, os.strerror(errno.EISDIR))
-
         return _File(md)
 
     def open_directory(self, path):

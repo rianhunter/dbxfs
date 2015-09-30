@@ -68,16 +68,22 @@ class _Directory(object):
         return next(self._md)
 
 class _File(io.RawIOBase):
-    def __init__(self, fs, path, md):
+    def __init__(self, fs, path):
         self._fs = fs
         self._path = path
         self._offset = 0
-        self._md = md
 
     def pread(self, offset, size=-1):
-        with self._fs._client.get_file(str(self._path), start=offset,
+        if str(self._path) == '/':
+            raise OSError(errno.EISDIR, os.strerror(errno.EISDIR))
+        try:
+            with self._fs._client.get_file(str(self._path), start=offset,
                                        length=size if size >= 0 else None) as resp:
-            return resp.read()
+                return resp.read()
+        except dropbox.rest.ErrorResponse as e:
+            if e.error_msg == "Path is a directory":
+                raise OSError(errno.EISDIR, os.strerror(errno.EISDIR))
+            else: raise
 
     def read(self, size=-1):
         toret = self.pread(offset, size)
@@ -119,8 +125,7 @@ class FileSystem(object):
         #     we don't return ENOENT if the file doesn't exists
         # TODO: watch filesystem with /delta to detect external moves
         #       and update local file objects with new path
-        md = self._get_md(path)
-        return _File(self, path, md)
+        return _File(self, path)
 
     def open_directory(self, path):
         return _Directory(self, path)
@@ -132,12 +137,4 @@ class FileSystem(object):
         return self._get_md(path)
 
     def fstat(self, fobj):
-        if isinstance(fobj, _Directory):
-            class _StatObject(object): pass
-            st = _StatObject()
-            st.type = "directory"
-            st.size = 0
-            st.mtime = datetime.datetime.now()
-            return st
-        else:
-            return fobj._md
+        return self._get_md(fobj._path)

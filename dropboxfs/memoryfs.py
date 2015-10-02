@@ -65,7 +65,7 @@ class _Directory(object):
 
     def reset(self):
         # NB: I apologize if you're about to grep for _map_entry()
-        self._iter = iter(map(lambda tup: self._fs._map_entry(tup[1], tup[0]), self._md["children"]))
+        self._iter = iter(map(lambda tup: self._fs._map_entry(tup[1], tup[0]), get_children(self._md)))
 
     def close(self):
         pass

@@ -148,3 +148,15 @@ class FileSystem(object):
 
     def fstat(self, fobj):
         return self._map_entry(fobj._md)
+
+    def create_watch(self, cb, dir_handle, completion_filter, watch_tree):
+        if dir_handle._md['type'] != "directory":
+            raise OSError(errno.EINVAL, os.strerror(errno.EINVAL))
+
+        # NB: current MemoryFS is read-only so
+        #     just wait for stop() is a no-op and cb is never called
+
+        def stop(): pass
+
+        return stop
+

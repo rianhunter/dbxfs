@@ -15,6 +15,7 @@
 # You should have received a copy of the GNU General Public License
 # along with dropboxfs.  If not, see <http://www.gnu.org/licenses/>.
 
+import collections
 import datetime
 import errno
 import io
@@ -93,10 +94,93 @@ class _File(io.RawIOBase):
     def readall(self):
         return self.read()
 
+Change = collections.namedtuple('Change', ['action', 'filename'])
+
+(FILE_NOTIFY_CHANGE_FILE_NAME,
+ FILE_NOTIFY_CHANGE_DIR_NAME,
+ FILE_NOTIFY_CHANGE_ATRIBUTES,
+ FILE_NOTIFY_CHANGE_SIZE,
+ FILE_NOTIFY_CHANGE_LAST_WRITE,
+ FILE_NOTIFY_CHANGE_LAST_ACCESS,
+ FILE_NOTIFY_CHANGE_CREATION,
+ FILE_NOTIFY_CHANGE_EA,
+ FILE_NOTIFY_CHANGE_SECURITY,
+ FILE_NOTIFY_CHANGE_STREAM_NAME,
+ FILE_NOTIFY_CHANGE_STREAM_SIZE,
+ FILE_NOTIFY_CHANGE_STREAM_WRITE) = map(lambda x: 1 << x, range(12))
+
+def delta_thread(dbfs):
+    url, params, headers = dbfs._client.request("/delta/latest_cursor", {})
+    res = dbfs._client.rest_client.POST(url, params, headers)
+    cursor = res['cursor']
+    while True:
+        try:
+            res = dbfs._client.delta(cursor=cursor)
+        except:
+            log.exception()
+            # TODO: this should be exponential backoff
+            time.sleep(60)
+            continue
+
+        with dbfs._watches_lock:
+            watches = list(dbfs._watches)
+
+        for (cb, dir_handle, completion_filter, watch_tree) in watches:
+            if res['reset']:
+                cb('reset')
+
+            # TODO: filter based on completion filter
+
+            # XXX: we don't check if the directory has been moved
+            to_sub = []
+            ndirpath = str(dir_handle._path).lower()
+            prefix_ndirpath = ndirpath + ("" if ndirpath == "/" else "/")
+            for (path, md) in res['entries']:
+                log.debug("PATH %r %r", path, md)
+                if not path.lower().startswith(prefix_ndirpath):
+                    continue
+                if (not watch_tree and
+                    path.lower()[len(prefix_ndirpath):].find("/") != -1):
+                    continue
+                basename = path.lower()[len(prefix_ndirpath):]
+                # TODO: pull initial directory entries to tell the difference
+                #       "added" and "modified"
+                action = ("removed"
+                          if md is None else
+                          "modified")
+                to_sub.append(Change(action, basename))
+
+            try:
+                cb(to_sub)
+            except:
+                log.exception()
+
+        cursor = res['cursor']
+        if not res['has_more']:
+            while True:
+                try:
+                    resp = dbfs._client.longpoll_delta(cursor)
+                except:
+                    log.exception()
+                    break
+                if resp.get('changes', False): break
+                backoff = resp.get('backoff', 0)
+                if backoff:
+                    time.sleep(backoff)
+
 class FileSystem(object):
     def __init__(self, access_token):
         self._access_token = access_token
         self._local = threading.local()
+        self._watches = []
+        self._watches_lock = threading.Lock()
+
+        # kick off delta thread
+        threading.Thread(target=delta_thread, args=(self,), daemon=True).start()
+
+    def close(self):
+        # TODO: send signal to stop delta_thread
+        pass
 
     def create_path(self, *args):
         return Path.root_path().join(*args)
@@ -138,3 +222,21 @@ class FileSystem(object):
 
     def fstat(self, fobj):
         return self._get_md(fobj._path)
+
+    def create_watch(self, cb, dir_handle, completion_filter, watch_tree):
+        # NB: current MemoryFS is read-only so
+        #     cb will never be called and stop() can
+        #     be a no-op
+        if not isinstance(dir_handle, _File):
+            raise OSError(errno.EINVAL, os.strerror(errno.EINVAL))
+
+        tag = (cb, dir_handle, completion_filter, watch_tree)
+
+        with self._watches_lock:
+            self._watches.append(tag)
+
+        def stop():
+            with self._watches_lock:
+                self._watches.remove(tag)
+
+        return stop

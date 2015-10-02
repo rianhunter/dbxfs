@@ -75,6 +75,8 @@ class SMBMessage(smb_structs.SMBMessage):
             self.payload = ComQueryInformationDiskRequest()
         elif self.command == smb_structs.SMB_COM_CLOSE:
             self.payload = ComCloseRequest()
+        elif self.command == smb_structs.SMB_COM_NT_TRANSACT:
+            self.payload = ComNTTransactRequest()
 
         if self.payload:
             self.payload.decode(self)
@@ -485,6 +487,84 @@ class ComCloseResponse(smb_structs.Payload):
         message.parameters_data = b''
         message.data = b''
 
+class ComNTTransactRequest(smb_structs.ComNTTransactRequest):
+    def __init__(self): pass
+
+    def decode(self, message):
+        fmt = "<BHLLLLLLLLBH"
+        fmt_size = struct.calcsize(fmt)
+
+        (self.max_setup_count,
+         _,
+         self.total_params_count,
+         self.total_data_count,
+         self.max_params_count,
+         self.max_data_count,
+         params_count,
+         params_offset,
+         data_count,
+         data_offset,
+         setup_count,
+         self.function,
+         ) = struct.unpack(fmt, message.parameters_data[:fmt_size])
+
+        self.setup_bytes = message.parameters_data[fmt_size:fmt_size + setup_count * 2]
+
+        if (data_count < self.total_data_count or
+            params_count < self.total_params_count):
+            raise Exception("We don't support extended SMB_COM_NT_TRANSACT yet")
+
+        self.params_bytes = message.raw_data[params_offset:params_offset + params_count]
+        self.data_bytes = message.raw_data[data_offset:data_offset + data_count]
+
+class ComNTTransactResponse(smb_structs.ComNTTransactResponse):
+    def __init__(self, **kw):
+        for (k, v) in kw.items():
+            setattr(self, k, v)
+
+    def initMessage(self, message):
+        init_reply(self, message, smb_structs.SMB_COM_NT_TRANSACT)
+
+    def prepare(self, message):
+        prepare(self, message)
+
+        if len(self.setup_bytes) % 2:
+            raise Exception("invalid setup bytes!")
+
+        fmt = "<BBBLLLLLLLLB"
+        fmt_size = struct.calcsize(fmt)
+
+        offset = message.HEADER_STRUCT_SIZE + fmt_size + len(self.setup_bytes) + 2
+
+        pad1 = b''
+        if offset % 4:
+            pad1 = b' ' * (4 - offset % 4)
+            offset += 4 - offset % 4
+        params_offset = offset
+
+        offset += len(self.params_bytes)
+
+        pad2 = b''
+        if offset % 4:
+            pad2 = b' ' * (4 - offset % 4)
+            offset += 4 - offset % 4
+        data_offset = offset
+
+        message.parameters_data = b''.join([struct.pack(fmt,
+                                                        0, 0, 0,
+                                                        self.total_params_count,
+                                                        self.total_data_count,
+                                                        len(self.params_bytes),
+                                                        params_offset,
+                                                        0,
+                                                        len(self.data_bytes),
+                                                        data_offset,
+                                                        0,
+                                                        len(self.setup_bytes) // 2),
+                                            self.setup_bytes])
+
+        message.data = b''.join([pad1, self.params_bytes, pad2, self.data_bytes])
+
 def response_args_from_req(req, **kw):
     return dict(pid=req.pid, tid=req.tid,
                 uid=req.uid, mid=req.mid, **kw)
@@ -502,6 +582,7 @@ STATUS_INSUFF_SERVER_RESOURCES = 0xc00000cf
 STATUS_OBJECT_PATH_NOT_FOUND = 0xc000003a
 STATUS_SMB_BAD_TID = 0x50002
 STATUS_SMB_BAD_UID = 0x5b0002
+STATUS_NOTIFY_ENUM_DIR = 0x10c
 
 TREE_CONNECT_ANDX_DISCONNECT_TID = 0x1
 SMB_TRANS2_FIND_FIRST2 = 0x1
@@ -517,6 +598,7 @@ ATTR_NORMAL = 0x80
 SMB_QUERY_FS_SIZE_INFO = 0x103
 SMB_QUERY_FS_ATTRIBUTE_INFO = 0x105
 SMB_QUERY_FILE_ALL_INFO = 0x107
+NT_TRANSACT_NOTIFY_CHANGE = 0x4
 
 NT_CREATE_REQUEST_OPLOCK = 0x2
 NT_CREATE_REQUEST_OPBATCH = 0x4
@@ -541,6 +623,12 @@ FILE_OPEN_BY_FILE_ID = 0x2000
 FILE_NON_DIRECTORY_FILE = 0x40
 
 FILE_SHARE_READ = 0x1
+
+FILE_ACTION_ADDED = 0x1
+FILE_ACTION_REMOVED = 0x2
+FILE_ACTION_MODIFIED = 0x3
+FILE_ACTION_RENAMED_OLD_NAME = 0x4
+FILE_ACTION_RENAMED_NEW_NAME = 0x5
 
 def encode_smb_datetime(dt):
     log.debug("date is %r", dt)
@@ -855,7 +943,9 @@ class SMBClientHandler(object):
                                      ref=0,
                                      share=is_sharing,
                                      handle=handle,
-                                     closing=None)
+                                     closing=None,
+                                     is_closing=asyncio.Future(loop=self._loop),
+                                     watches=[])
         return fid
 
     @asyncio.coroutine
@@ -868,6 +958,9 @@ class SMBClientHandler(object):
         if not ret['ref']:
             all_closed.set_result(None)
 
+        # flag to all blockers that this file is closing
+        ret['is_closing'].set_result(None)
+
         # wait for all files to be dereffed
         yield from all_closed
         assert not ret['ref']
@@ -875,6 +968,37 @@ class SMBClientHandler(object):
         assert popped is ret
         return ret
 
+    @asyncio.coroutine
+    def watch_file(self, fid, fs, *n, **kw):
+        ret = self._open_files[fid]
+        if ret['closing'] is not None: raise KeyError()
+
+        changes_future = asyncio.Future(loop=self._loop)
+        stop_new_watch = fs.create_watch(changes_future.set_result, ret['handle'],
+                                         *n, **kw)
+
+        ret['ref'] += 1
+
+        (done, pending) = yield from asyncio.wait([changes_future,
+                                                   ret['is_closing']],
+                                                  return_when=asyncio.FIRST_COMPLETED,
+                                                  loop=self._loop)
+
+        assert (fid in self._open_files and
+                self._open_files[fid] is ret)
+
+        changes = []
+        if changes_future in done:
+            changes = changes_future.result()
+
+        ret['ref'] -= 1
+        if (ret['closing'] is not None and
+            not ret['ref']):
+            ret['closing'].set_result(None)
+
+        stop_new_watch()
+
+        return changes
 
     @classmethod
     @asyncio.coroutine
@@ -1383,6 +1507,70 @@ def handle_request(server_capabilities, cs, fs, req):
 
         args = response_args_from_req(req)
         return SMBMessage(ComCloseResponse(**args))
+    elif req.command == smb_structs.SMB_COM_NT_TRANSACT:
+        yield from cs.verify_uid(req)
+        yield from cs.verify_tid(req)
+
+        nt_transact = req.payload
+
+        assert not (len(nt_transact.setup_bytes) % 2),\
+            "bad setup bytes length!"
+
+        if nt_transact.function == NT_TRANSACT_NOTIFY_CHANGE:
+            fmt = "<LH?"
+            fmt_size = struct.calcsize(fmt)
+            (completion_filter, fid, watch_tree) = struct.unpack(fmt,
+                                                                 nt_transact.setup_bytes[:fmt_size])
+
+            log.debug("COMPLETION_FILTER: %x", completion_filter)
+            log.debug("FID: %r", fid)
+            log.debug("WATCH_TREE: %r", watch_tree)
+
+            try:
+                changes = yield from cs.watch_file(fid, fs, completion_filter, watch_tree)
+            except KeyError:
+                raise ProtocolError(STATUS_INVALID_HANDLE)
+
+            log.debug("CHANGES: %r %r", fid, changes)
+
+            if changes == 'reset':
+                raise ProtocolError(STATUS_NOTIFY_ENUM_DIR)
+
+            buf = []
+            curoffset = 0
+            for (idx, change) in enumerate(changes):
+                if curoffset % 4:
+                    buf.append(b'\0' * (4 - curoffset % 4))
+                    curoffset += len(buf[-1])
+                action = {"added": FILE_ACTION_ADDED,
+                          "removed": FILE_ACTION_REMOVED,
+                          "modified": FILE_ACTION_MODIFIED,
+                          "renamed_from": FILE_ACTION_RENAMED_OLD_NAME,
+                          "renamed_to": FILE_ACTION_RENAMED_NEW_NAME,}[change.action]
+
+                filename_encoded = change.filename.encode("utf-16-le")
+                potential_next_entry_offset = 4 + 4 + 4 + len(filename_encoded)
+                if potential_next_entry_offset % 4:
+                    potential_next_entry_offset += 4 - potential_next_entry_offset % 4
+                next_entry_offset = (potential_next_entry_offset
+                                     if idx != len(changes) - 1 else
+                                     0)
+                buf.append(struct.pack("<III", next_entry_offset, action,
+                                       len(filename_encoded)))
+                curoffset += len(buf[-1])
+                buf.append(filename_encoded)
+                curoffset += len(buf[-1])
+
+            param_bytes = b''.join(buf)
+
+            args = response_args_from_req(req,
+                                          total_params_count=len(param_bytes),
+                                          total_data_count=0,
+                                          params_bytes=param_bytes,
+                                          data_bytes=b'',
+                                          setup_bytes=b'',
+                                          )
+            return SMBMessage(ComNTTransactResponse(**args))
 
     log.debug("%s", req)
     raise ProtocolError(STATUS_NOT_SUPPORTED)
@@ -1487,6 +1675,24 @@ class AsyncFS(AsyncWrapped):
         # NB: we have to unwrap the async handle
         return (yield from self._worker_pool.run_async(self._obj.fstat,
                                                        handle._obj))
+
+    def create_watch(self, cb, dir_handle, *n, **kw):
+        is_stopped = [False]
+
+        def on_main(changes):
+            if is_stopped[0]: return
+            return cb(changes)
+
+        def wrapped_cb(changes):
+            self._worker_pool.loop.call_soon_threadsafe(functools.partial(on_main, changes))
+
+        stop = self._obj.create_watch(wrapped_cb, dir_handle._obj, *n, **kw)
+
+        def wrapped_stop():
+            is_stopped[0] = True
+            return stop()
+
+        return wrapped_stop
 
     def __getattr__(self, name):
         @asyncio.coroutine

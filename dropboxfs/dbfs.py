@@ -110,8 +110,8 @@ class _File(io.RawIOBase):
             else: raise
 
     def read(self, size=-1):
-        toret = self.pread(offset, size)
-        self._offset += toret
+        toret = self.pread(self._offset, size)
+        self._offset += len(toret)
         return toret
 
     def readall(self):

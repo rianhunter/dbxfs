@@ -1422,8 +1422,6 @@ def handle_request(server_capabilities, cs, fs, req):
 
         file_path = root_path + request.filename
 
-        log.debug("Opening file_path: %r, %r", file_path, request.filename)
-
         is_sharing = request.share_access & FILE_SHARE_READ
 
         # verify share access
@@ -1462,6 +1460,8 @@ def handle_request(server_capabilities, cs, fs, req):
 
         md2 = normalize_stat(md)
 
+        log.debug("Opening file_path: %r, %r", file_path, fid)
+
         args = response_args_from_req(req,
                                       op_lock_level=0,
                                       fid=fid,
@@ -1482,12 +1482,18 @@ def handle_request(server_capabilities, cs, fs, req):
         yield from cs.verify_uid(req)
         yield from cs.verify_tid(req)
 
+        log.debug("About to read file... %r", request.fid)
+
         try:
             fid_md = yield from cs.ref_file(request.fid)
         except KeyError:
             raise ProtocolError(STATUS_INVALID_HANDLE)
 
+        log.debug("About to do pread... %r", fid_md['path'])
+
         buf = yield from fid_md['handle'].pread(request.offset, request.max_return_bytes_count)
+
+        log.debug("PREAD DONE... %r", fid_md['path'])
 
         yield from cs.deref_file(request.fid)
 
@@ -1498,12 +1504,16 @@ def handle_request(server_capabilities, cs, fs, req):
         yield from cs.verify_uid(req)
         yield from cs.verify_tid(req)
 
+        log.debug("CLOSE FILE... %r", request.fid)
+
         try:
             fidmd = yield from cs.destroy_file(request.fid)
             assert 'handle' in fidmd
             fidmd['handle'].close()
         except KeyError:
             raise ProtocolError(STATUS_INVALID_HANDLE)
+
+        log.debug("CLose done! %r", request.fid)
 
         args = response_args_from_req(req)
         return SMBMessage(ComCloseResponse(**args))

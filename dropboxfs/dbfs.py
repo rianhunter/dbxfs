@@ -31,22 +31,48 @@ from dropboxfs.path_common import Path
 log = logging.getLogger(__name__)
 
 def _md_to_stat(md):
-    class _StatObject(object): pass
-    toret = _StatObject()
-    toret.name = md['path'].rsplit("/", 1)[1]
-    toret.type = 'directory' if md['is_dir'] else 'file'
-    toret.size = md['bytes']
-    toret.mtime = (datetime.datetime.strptime(md['client_mtime'],
-                                              "%a, %d %b %Y %H:%M:%S %z").astimezone()
-                   if 'client_mtime' in md else
-                   datetime.datetime.now())
-    return toret
+    _StatObject = collections.namedtuple("Stat", ["name", "type", "size", "mtime"])
+    name = md.name
+    type = 'directory' if isinstance(md, dropbox.files.FolderMetadata) else 'file'
+    size = 0 if isinstance(md, dropbox.files.FolderMetadata) else md.size
+    mtime = (md.client_modified
+             if not isinstance(md, dropbox.files.FolderMetadata) else
+             datetime.datetime.now())
+    return _StatObject(name, type, size, mtime)
 
 class _Directory(object):
-    def __init__(self, fs, path):
+    def __init__(self, fs, path, id_):
         self._fs = fs
         self._path = path
+        self._id = id_
         self.reset()
+
+    def __it(self):
+        # XXX: Hack: we "snapshot" this directory by not returning entries
+        #      newer than the moment this iterator was started
+        start = datetime.datetime.utcnow()
+        self._cursor = None
+        stop = False
+        while not stop:
+            if self._cursor is None:
+                path_ = "" if self._path == "/" else self._path
+                res = self._fs._clientv2.files_list_folder(path_)
+            else:
+                res = self._fs._clientv2.files_list_folder_continue(self._cursor)
+
+            for f in res.entries:
+                if isinstance(f, dropbox.files.DeletedMetadata):
+                    continue
+                if (isinstance(f, dropbox.files.FileMetadata) and
+                    f.server_modified > start):
+                    stop = True
+                    break
+                yield _md_to_stat(f)
+
+            self._cursor = res.cursor
+
+            if not res.has_more:
+                stop = True
 
     def read(self):
         try:
@@ -55,9 +81,7 @@ class _Directory(object):
             return None
 
     def reset(self):
-        contents = self._fs._client.metadata(str(self._path))["contents"]
-        log.debug("Contents for %r: %r", self._path, contents)
-        self._md = iter(map(_md_to_stat, contents))
+        self._md = self.__it()
 
     def close(self):
         pass
@@ -69,17 +93,16 @@ class _Directory(object):
         return next(self._md)
 
 class _File(io.RawIOBase):
-    def __init__(self, fs, path):
+    def __init__(self, fs, path_lower, id_):
         self._fs = fs
-        self._path = path
+        self._path_lower = path_lower
+        self._id = id_
         self._offset = 0
 
     def pread(self, offset, size=-1):
-        if str(self._path) == '/':
-            raise OSError(errno.EISDIR, os.strerror(errno.EISDIR))
         try:
-            with self._fs._client.get_file(str(self._path), start=offset,
-                                       length=size if size >= 0 else None) as resp:
+            with self._fs._client.get_file(str(self._path_lower), start=offset,
+                                           length=size if size >= 0 else None) as resp:
                 return resp.read()
         except dropbox.rest.ErrorResponse as e:
             if e.error_msg == "Path is a directory":
@@ -110,14 +133,19 @@ Change = collections.namedtuple('Change', ['action', 'filename'])
  FILE_NOTIFY_CHANGE_STREAM_WRITE) = map(lambda x: 1 << x, range(12))
 
 def delta_thread(dbfs):
-    url, params, headers = dbfs._client.request("/delta/latest_cursor", {})
-    res = dbfs._client.rest_client.POST(url, params, headers)
-    cursor = res['cursor']
+    cursor = None
+    needs_reset = True
     while True:
         try:
-            res = dbfs._client.delta(cursor=cursor)
-        except:
-            log.exception()
+            if cursor is None:
+                cursor = dbfs._clientv2.files_list_folder_get_latest_cursor('', True).cursor
+            res = dbfs._clientv2.files_list_folder_continue(cursor)
+        except Exception as e:
+            if isinstance(e, dropbox.files.ListFolderContinueError):
+                cursor = None
+                needs_reset = True
+
+            log.exception("failure while doing list folder")
             # TODO: this should be exponential backoff
             time.sleep(60)
             continue
@@ -126,47 +154,41 @@ def delta_thread(dbfs):
             watches = list(dbfs._watches)
 
         for (cb, dir_handle, completion_filter, watch_tree) in watches:
-            if res['reset']:
+            if needs_reset:
                 cb('reset')
-
-            # TODO: filter based on completion filter
 
             # XXX: we don't check if the directory has been moved
             to_sub = []
-            ndirpath = str(dir_handle._path).lower()
+            ndirpath = dir_handle._path_lower
             prefix_ndirpath = ndirpath + ("" if ndirpath == "/" else "/")
-            for (path, md) in res['entries']:
-                log.debug("PATH %r %r", path, md)
-                if not path.lower().startswith(prefix_ndirpath):
+
+            for entry in res.entries:
+                # TODO: filter based on completion filter
+                if not entry.path_lower.startswith(prefix_ndirpath):
                     continue
                 if (not watch_tree and
-                    path.lower()[len(prefix_ndirpath):].find("/") != -1):
+                    entry.path_lower[len(prefix_ndirpath):].find("/") != -1):
                     continue
-                basename = path.lower()[len(prefix_ndirpath):]
+                basename = entry.name
                 # TODO: pull initial directory entries to tell the difference
                 #       "added" and "modified"
                 action = ("removed"
-                          if md is None else
+                          if isinstance(entry, dropbox.files.DeletedMetadata) else
                           "modified")
                 to_sub.append(Change(action, basename))
 
-            try:
-                cb(to_sub)
-            except:
-                log.exception()
-
-        cursor = res['cursor']
-        if not res['has_more']:
-            while True:
+            if to_sub:
                 try:
-                    resp = dbfs._client.longpoll_delta(cursor)
+                    cb(to_sub)
                 except:
-                    log.exception()
-                    break
-                if resp.get('changes', False): break
-                backoff = resp.get('backoff', 0)
-                if backoff:
-                    time.sleep(backoff)
+                    log.exception("failure during watch callback")
+
+        needs_reset = False
+
+        cursor = res.cursor
+        if not res.has_more:
+            # NB: poll for now, wait for longpoll_delta in APIv2
+            time.sleep(30)
 
 class FileSystem(object):
     def __init__(self, access_token):
@@ -193,26 +215,41 @@ class FileSystem(object):
             self._local._client = toret = dropbox.client.DropboxClient(self._access_token)
         return toret
 
-    def _get_md(self, path):
+    # NB: This is probably evil opaque magic
+    @property
+    def _clientv2(self):
+        toret = getattr(self._local, '_clientv2', None)
+        if toret is None:
+            self._local._clientv2 = toret = dropbox.Dropbox(self._access_token)
+        return toret
+
+    def _get_md_inner(self, path):
         log.debug("GET %r", path)
         try:
-            md = self._client.metadata(str(path), list=False)
-        except dropbox.rest.ErrorResponse as e:
-            if e.status == 404:
+            # NB: allow for raw paths/id strings
+            p = str(path)
+            if p == '/':
+                return dropbox.files.FolderMetadata(name="/", path_lower="/")
+            md = self._clientv2.files_get_metadata(p)
+        except dropbox.exceptions.ApiError as e:
+            if e.error.is_path():
                 raise OSError(errno.ENOENT, os.strerror(errno.ENOENT))
             else: raise
+        return md
+
+    def _get_md(self, path):
+        md = self._get_md_inner(path)
         log.debug("md: %r", md)
         return _md_to_stat(md)
 
     def open(self, path):
-        # NB: Unlike traditional file systems,
-        #     we don't return ENOENT if the file doesn't exists
-        # TODO: watch filesystem with /delta to detect external moves
-        #       and update local file objects with new path
-        return _File(self, path)
+        md = self._get_md_inner(path)
+        fobj = _File(self, md.path_lower, "/" if md.path_lower == "/" else md.id)
+        return fobj
 
     def open_directory(self, path):
-        return _Directory(self, path)
+        md = self._get_md_inner(path)
+        return _Directory(self, md.path_lower, "/" if md.path_lower == "/" else md.id)
 
     def stat_has_attr(self, attr):
         return attr in ["type", "size", "mtime"]
@@ -221,7 +258,7 @@ class FileSystem(object):
         return self._get_md(path)
 
     def fstat(self, fobj):
-        return self._get_md(fobj._path)
+        return self._get_md(fobj._id)
 
     def create_watch(self, cb, dir_handle, completion_filter, watch_tree):
         # NB: current MemoryFS is read-only so

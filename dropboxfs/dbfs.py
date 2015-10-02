@@ -16,13 +16,17 @@
 # along with dropboxfs.  If not, see <http://www.gnu.org/licenses/>.
 
 import collections
+import contextlib
 import datetime
 import errno
 import io
 import itertools
+import json
 import logging
 import os
 import threading
+import time
+import sys
 
 import dropbox
 
@@ -277,3 +281,45 @@ class FileSystem(object):
                 self._watches.remove(tag)
 
         return stop
+
+def main(argv):
+    # run some basic tests on this class
+
+    with open(os.path.expanduser("~/.dropboxfs")) as f:
+        token = json.load(f)['access_token']
+
+    fs = FileSystem(token)
+
+    root_path = fs.create_path()
+
+    root_md = fs.stat(root_path)
+    print("Root MD:", root_md)
+
+    print("Root directory listting:")
+    with contextlib.closing(fs.open_directory(root_path)) as f:
+        for entry in f:
+            if entry.type == "file":
+                to_open = entry
+            print("", entry)
+
+    file_path = root_path.join(to_open.name)
+    file_md = fs.stat(file_path)
+    print("File MD:", file_md)
+
+    with contextlib.closing(fs.open(file_path)) as f:
+        print("File Data: %r" % (f.read(4),))
+        print("File Data 2: %r" % (f.read(4),))
+
+    event = threading.Event()
+    def cb(changes):
+        print(changes)
+        event.set()
+
+    with contextlib.closing(fs.open(root_path)) as root:
+        stop = fs.create_watch(cb, root, ~0, False)
+        print("Waiting for FS event for 10 seconds")
+        event.wait(5 * 60)
+        stop()
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

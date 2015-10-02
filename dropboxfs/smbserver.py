@@ -836,6 +836,7 @@ class SMBClientHandler(object):
     def ref_file(self, fid):
         # KeyError is okay for now
         toret = self._open_files[fid]
+        if toret['closing'] is not None: raise KeyError()
         toret['ref'] += 1
         return toret
 
@@ -843,6 +844,9 @@ class SMBClientHandler(object):
     def deref_file(self, fid):
         toret = self._open_files[fid]
         toret['ref'] -= 1
+        if (toret['closing'] is not None and
+            not toret['ref']):
+            toret['closing'].set_result(None)
 
     @asyncio.coroutine
     def create_file(self, path, is_sharing, handle):
@@ -850,14 +854,27 @@ class SMBClientHandler(object):
         self._open_files[fid] = dict(path=path,
                                      ref=0,
                                      share=is_sharing,
-                                     handle=handle)
+                                     handle=handle,
+                                     closing=None)
         return fid
 
     @asyncio.coroutine
     def destroy_file(self, fid):
+        # flag file as closing
         ret = self._open_files[fid]
-        if ret['ref']: raise Exception("File is being used by another connection!")
-        return self._open_files.pop(fid)
+        if ret['closing'] is not None: raise KeyError()
+        all_closed = asyncio.Future(loop=self._loop)
+        ret['closing'] = all_closed
+        if not ret['ref']:
+            all_closed.set_result(None)
+
+        # wait for all files to be dereffed
+        yield from all_closed
+        assert not ret['ref']
+        popped = self._open_files.pop(fid)
+        assert popped is ret
+        return ret
+
 
     @classmethod
     @asyncio.coroutine
@@ -877,6 +894,8 @@ class SMBClientHandler(object):
 
     @asyncio.coroutine
     def run(self, fs, loop, reader, writer):
+        self._loop = loop
+
         # first negotiate SMB protocol
         negotiate_req = yield from self.read_message(reader)
         if negotiate_req.command != smb_structs.SMB_COM_NEGOTIATE:

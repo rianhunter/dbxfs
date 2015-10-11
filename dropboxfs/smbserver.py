@@ -1062,8 +1062,8 @@ class SMBClientHandler(object):
 
         @asyncio.coroutine
         def read_client(reader, dead_future, writer_queue):
-            read_future = asyncio.ensure_future(self.read_message(reader),
-                                                loop=loop)
+            read_future = asyncio.async(self.read_message(reader),
+                                        loop=loop)
             while True:
                 (done, pending) = yield from asyncio.wait([dead_future, read_future],
                                                           return_when=asyncio.FIRST_COMPLETED,
@@ -1093,12 +1093,12 @@ class SMBClientHandler(object):
                             ret = error_response(msg, e.error)
                         yield from writer_queue.put(ret)
 
-                    reqfut = asyncio.ensure_future(real_handle_request(msg), loop=loop)
+                    reqfut = asyncio.async(real_handle_request(msg), loop=loop)
                     def on_fail():
                         dead_future.set_result(None)
-                    asyncio.ensure_future(cant_fail(on_fail, reqfut), loop=loop)
-                    read_future = asyncio.ensure_future(self.read_message(reader),
-                                                        loop=loop)
+                    asyncio.async(cant_fail(on_fail, reqfut), loop=loop)
+                    read_future = asyncio.async(self.read_message(reader),
+                                                loop=loop)
 
             # we have died, signal to writer coroutine to die as well
             yield from writer_queue.put(None)
@@ -1117,9 +1117,9 @@ class SMBClientHandler(object):
         writer_queue = asyncio.Queue(loop=loop)
 
         # start up reader/writer coroutines
-        read_client_future = asyncio.ensure_future(read_client(reader, dead_future,
-                                                               writer_queue),
-                                                   loop=loop)
+        read_client_future = asyncio.async(read_client(reader, dead_future,
+                                                       writer_queue),
+                                           loop=loop)
         try:
             yield from write_client(writer, writer_queue)
         finally:
@@ -1626,7 +1626,7 @@ class AsyncWorkerPool(object):
         def worker_conduit():
             set_fd_non_blocking(self.rsock, True)
             while True:
-                coros = list(map(functools.partial(asyncio.ensure_future, loop=loop),
+                coros = list(map(functools.partial(asyncio.async, loop=loop),
                                  [self.conduit_queue.get(),
                                   loop.sock_recv(self.rsock, 1)]))
                 (done, pending) = yield from asyncio.wait(coros,
@@ -1647,8 +1647,8 @@ class AsyncWorkerPool(object):
                 for p in pending:
                     p.cancel()
 
-        self.conduit_coro = asyncio.ensure_future(worker_conduit(),
-                                                  loop=loop)
+        self.conduit_coro = asyncio.async(worker_conduit(),
+                                          loop=loop)
 
     @asyncio.coroutine
     def run_async(self, f, *n, **kw):

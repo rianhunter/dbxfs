@@ -97,13 +97,17 @@ class _Directory(object):
         return next(self._md)
 
 class _File(io.RawIOBase):
-    def __init__(self, fs, path_lower, id_):
+    def __init__(self, fs, path_lower, id_, watch_file_handle):
         self._fs = fs
         self._path_lower = path_lower
         self._id = id_
         self._offset = 0
+        self._watch_file_handle = watch_file_handle
+        self._invalid = False
 
     def pread(self, offset, size=-1):
+        if self._invalid:
+            raise OSError(errno.EIO, os.strerror(errno.EIO))
         try:
             with self._fs._client.get_file(str(self._path_lower), start=offset,
                                            length=size if size >= 0 else None) as resp:
@@ -120,6 +124,21 @@ class _File(io.RawIOBase):
 
     def readall(self):
         return self.read()
+
+    def _update_path(self, entries):
+        if entries == "reset":
+            self._invalid = True
+
+        if self._invalid:
+            return
+
+        for entry in entries:
+            if (isinstance(entry, dropbox.files.FileMetadata) and
+                entry.id == self._id):
+                self._path_lower = entry.path_lower
+
+    def close(self):
+        self._fs._remove_watch(self._watch_file_handle)
 
 Change = collections.namedtuple('Change', ['action', 'filename'])
 
@@ -230,9 +249,43 @@ class FileSystem(object):
         return _md_to_stat(md)
 
     def open(self, path):
-        md = self._get_md_inner(path)
-        fobj = _File(self, md.path_lower, "/" if md.path_lower == "/" else md.id)
-        return fobj
+        batched_entries_lock = threading.Lock()
+        was_reset = [False]
+        batched_entries = []
+        fobj = [None]
+        def update_path(entries):
+            if fobj[0] is not None:
+                return fobj[0]._update_path(entries)
+            with batched_entries_lock:
+                if fobj[0] is None:
+                    if entries == "reset":
+                        was_reset[0] = True
+                    else:
+                        batched_entries.extend(entries)
+                else:
+                    fobj[0]._update_path(entries)
+
+        self._add_watch(update_path)
+
+        try:
+            while True:
+                md = self._get_md_inner(path)
+
+                with batched_entries_lock:
+                    if was_reset[0]:
+                        was_reset[0] = False
+                        batched_entries.clear()
+                        continue
+
+                    f = _File(self, md.path_lower, "/" if md.path_lower == "/" else md.id,
+                              update_path)
+                    f._update_path(batched_entries)
+                    batched_entries = None
+                    fobj[0] = f
+                    return f
+        except:
+            self._remove_watch(update_path)
+            raise
 
     def open_directory(self, path):
         md = self._get_md_inner(path)

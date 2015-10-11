@@ -179,6 +179,14 @@ class FileSystem(object):
         # kick off delta thread
         threading.Thread(target=delta_thread, args=(self,), daemon=True).start()
 
+    def _add_watch(self, watch_fn):
+        with self._watches_lock:
+            self._watches.append(watch_fn)
+
+    def _remove_watch(self, watch_fn):
+        with self._watches_lock:
+            self._watches.remove(watch_fn)
+
     def close(self):
         # TODO: send signal to stop delta_thread
         pass
@@ -276,12 +284,10 @@ class FileSystem(object):
                 except:
                     log.exception("failure during watch callback")
 
-        with self._watches_lock:
-            self._watches.append(watch_fn)
+        self._add_watch(watch_fn)
 
         def stop():
-            with self._watches_lock:
-                self._watches.remove(watch_fn)
+            self._remove_watch(watch_fn)
 
         return stop
 

@@ -157,35 +157,10 @@ def delta_thread(dbfs):
         with dbfs._watches_lock:
             watches = list(dbfs._watches)
 
-        for (cb, dir_handle, completion_filter, watch_tree) in watches:
+        for watch in watches:
             if needs_reset:
-                cb('reset')
-
-            # XXX: we don't check if the directory has been moved
-            to_sub = []
-            ndirpath = dir_handle._path_lower
-            prefix_ndirpath = ndirpath + ("" if ndirpath == "/" else "/")
-
-            for entry in res.entries:
-                # TODO: filter based on completion filter
-                if not entry.path_lower.startswith(prefix_ndirpath):
-                    continue
-                if (not watch_tree and
-                    entry.path_lower[len(prefix_ndirpath):].find("/") != -1):
-                    continue
-                basename = entry.name
-                # TODO: pull initial directory entries to tell the difference
-                #       "added" and "modified"
-                action = ("removed"
-                          if isinstance(entry, dropbox.files.DeletedMetadata) else
-                          "modified")
-                to_sub.append(Change(action, basename))
-
-            if to_sub:
-                try:
-                    cb(to_sub)
-                except:
-                    log.exception("failure during watch callback")
+                watch('reset')
+            watch(res.entries)
 
         needs_reset = False
 
@@ -271,14 +246,42 @@ class FileSystem(object):
         if not isinstance(dir_handle, _File):
             raise OSError(errno.EINVAL, os.strerror(errno.EINVAL))
 
-        tag = (cb, dir_handle, completion_filter, watch_tree)
+        def watch_fn(entries):
+            if entries == "reset":
+                return cb("reset")
+
+            # XXX: we don't check if the directory has been moved
+            to_sub = []
+            ndirpath = dir_handle._path_lower
+            prefix_ndirpath = ndirpath + ("" if ndirpath == "/" else "/")
+
+            for entry in entries:
+                # TODO: filter based on completion filter
+                if not entry.path_lower.startswith(prefix_ndirpath):
+                    continue
+                if (not watch_tree and
+                    entry.path_lower[len(prefix_ndirpath):].find("/") != -1):
+                    continue
+                basename = entry.name
+                # TODO: pull initial directory entries to tell the difference
+                #       "added" and "modified"
+                action = ("removed"
+                          if isinstance(entry, dropbox.files.DeletedMetadata) else
+                          "modified")
+                to_sub.append(Change(action, basename))
+
+            if to_sub:
+                try:
+                    cb(to_sub)
+                except:
+                    log.exception("failure during watch callback")
 
         with self._watches_lock:
-            self._watches.append(tag)
+            self._watches.append(watch_fn)
 
         def stop():
             with self._watches_lock:
-                self._watches.remove(tag)
+                self._watches.remove(watch_fn)
 
         return stop
 

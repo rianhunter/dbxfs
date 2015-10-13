@@ -36,7 +36,7 @@ class Path(object):
         return tuple(itertools.chain(('/',), self._comps))
 
     # NB: This is probably an evil abuse of the '/' operator
-    def __div__(self, elt):
+    def __truediv__(self, elt):
         return self.join(elt)
 
     def __repr__(self):

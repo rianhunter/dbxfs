@@ -1012,7 +1012,8 @@ class SMBClientHandler(object):
     @classmethod
     @asyncio.coroutine
     def send_message(cls, writer, msg):
-        msg.raw_data = msg.encode()
+        if not msg.raw_data:
+            msg.raw_data = msg.encode()
         writer.writelines([struct.pack(">I", len(msg.raw_data)),
                            msg.raw_data])
 
@@ -1091,6 +1092,7 @@ class SMBClientHandler(object):
                             log.debug("Protocol Error!!! %r %r",
                                       hex(msg.command), hex(e.error))
                             ret = error_response(msg, e.error)
+                        ret.raw_data = ret.encode()
                         yield from writer_queue.put(ret)
 
                     reqfut = asyncio.async(real_handle_request(msg), loop=loop)

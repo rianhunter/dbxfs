@@ -1089,8 +1089,9 @@ class SMBClientHandler(object):
                             ret = yield from handle_request(server_capabilities,
                                                             self, fs, msg)
                         except ProtocolError as e:
-                            log.debug("Protocol Error!!! %r %r",
-                                      hex(msg.command), hex(e.error))
+                            if e.error not in (STATUS_NO_SUCH_FILE,):
+                                log.debug("Protocol Error!!! %r %r",
+                                          hex(msg.command), hex(e.error))
                             ret = error_response(msg, e.error)
                         ret.raw_data = ret.encode()
                         yield from writer_queue.put(ret)

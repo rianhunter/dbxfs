@@ -1608,7 +1608,6 @@ class AsyncWorkerPool(object):
         def worker_thread():
             while True:
                 obj = to_worker_queue.get()
-                log.debug("worker %r", threading.get_ident())
 
                 if obj is None: break
                 (fn, tag) = obj

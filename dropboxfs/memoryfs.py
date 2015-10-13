@@ -15,6 +15,7 @@
 # You should have received a copy of the GNU General Public License
 # along with dropboxfs.  If not, see <http://www.gnu.org/licenses/>.
 
+import collections
 import errno
 import io
 import itertools
@@ -82,6 +83,8 @@ class _Directory(object):
     def __next__(self):
         return next(self._iter)
 
+_Stat = collections.namedtuple("Stat", ['name', 'mtime', 'type', 'size'])
+
 class FileSystem(object):
     def __init__(self, tree):
         self._mtime = datetime.now()
@@ -89,20 +92,15 @@ class FileSystem(object):
                         "children": tree}
 
     def _map_entry(self, md, name=None):
-        class _Stat(object): pass
-        a = _Stat()
-        if name is not None:
-            a.name = name
-
         if 'mtime' in md:
-            a.mtime = md['mtime']
+            mtime = md['mtime']
         else:
-            a.mtime = self._mtime
+            mtime = self._mtime
 
-        a.type = md["type"]
-        a.size = get_size(md)
+        type = md["type"]
+        size = get_size(md)
 
-        return a
+        return _Stat(name, mtime, type, size)
 
     def _get_file(self, path):
         parent = self._parent

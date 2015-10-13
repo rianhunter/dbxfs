@@ -17,6 +17,9 @@
 
 import itertools
 
+def file_name_norm(s):
+    return s.lower()
+
 # NB: this acts like a pathlib PurePath object
 class Path(object):
     def __init__(self, comps):
@@ -42,10 +45,14 @@ class Path(object):
     def __repr__(self):
         return 'Path' + str(self)
 
+    def _norm(self):
+        return tuple(map(file_name_norm, self.parts))
+
     def __eq__(self, other):
-        def norm(s):
-            return tuple(map(lambda s: s.lower(), s._comps))
-        return norm(self) == norm(other)
+        return self._norm() == other._norm()
+
+    def __hash__(self):
+        return hash(self._norm())
 
     def __str__(self):
         return '/' + '/'.join(self._comps)

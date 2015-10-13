@@ -27,6 +27,7 @@ import os
 import threading
 import time
 import sys
+import urllib.request
 
 import dropbox
 
@@ -187,8 +188,19 @@ def delta_thread(dbfs):
 
         cursor = res.cursor
         if not res.has_more:
-            # NB: poll for now, wait for longpoll_delta in APIv2
-            time.sleep(30)
+            try:
+                req = urllib.request.Request("https://notify.dropboxapi.com/2/files/list_folder/longpoll",
+                                             data=json.dumps({'cursor': cursor}).encode("utf8"),
+                                             headers={"Content-Type": "application/json"})
+
+                while True:
+                    with contextlib.closing(urllib.request.urlopen(req)) as resp:
+                        ret = resp.read()
+                        json_ret = json.loads(ret.decode('utf8'))
+                        if json_ret.get("changes"):
+                            break
+            except:
+                log.exception("failure during longpoll")
 
 class FileSystem(object):
     def __init__(self, access_token):

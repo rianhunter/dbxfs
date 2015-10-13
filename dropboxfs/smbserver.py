@@ -1108,6 +1108,7 @@ class SMBClientHandler(object):
 
         @asyncio.coroutine
         def write_client(writer, queue):
+            # TODO: set dead_future on exception
             while True:
                 msg = yield from queue.get()
                 if msg is None: break

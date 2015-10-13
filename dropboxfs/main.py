@@ -30,6 +30,7 @@ import dropbox
 from dropboxfs.smbserver import SMBServer
 from dropboxfs.dbfs import FileSystem as DropboxFileSystem
 from dropboxfs.memory_cache_fs import FileSystem as CachingFileSystem
+from dropboxfs.disable_quick_look import FileSystem as DisableQuickLookFileSystem
 
 log = logging.getLogger(__name__)
 
@@ -84,7 +85,7 @@ def main(argv=None):
     port = random.randint(60000, 2 ** 16)
 
     address = ('127.0.0.1', port)
-    server = SMBServer(address, CachingFileSystem(DropboxFileSystem(access_token)))
+    server = SMBServer(address, DisableQuickLookFileSystem(CachingFileSystem(DropboxFileSystem(access_token))))
 
     do_unmount = False
 

@@ -142,7 +142,7 @@ class _File(io.RawIOBase):
     def close(self):
         self._fs._remove_watch(self._watch_file_handle)
 
-Change = collections.namedtuple('Change', ['action', 'filename'])
+Change = collections.namedtuple('Change', ['action', 'path'])
 
 (FILE_NOTIFY_CHANGE_FILE_NAME,
  FILE_NOTIFY_CHANGE_DIR_NAME,
@@ -325,13 +325,15 @@ class FileSystem(object):
                 if (not watch_tree and
                     entry.path_lower[len(prefix_ndirpath):].find("/") != -1):
                     continue
-                basename = entry.name
+                path = self.create_path(*(([] if ndirpath == "/" else ndirpath[1:].split("/")) +
+                                          [entry.name]))
+
                 # TODO: pull initial directory entries to tell the difference
                 #       "added" and "modified"
                 action = ("removed"
                           if isinstance(entry, dropbox.files.DeletedMetadata) else
                           "modified")
-                to_sub.append(Change(action, basename))
+                to_sub.append(Change(action, path))
 
             if to_sub:
                 try:

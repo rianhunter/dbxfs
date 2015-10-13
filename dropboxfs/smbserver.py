@@ -1561,7 +1561,7 @@ def handle_request(server_capabilities, cs, fs, req):
                           "renamed_from": FILE_ACTION_RENAMED_OLD_NAME,
                           "renamed_to": FILE_ACTION_RENAMED_NEW_NAME,}[change.action]
 
-                filename_encoded = change.filename.encode("utf-16-le")
+                filename_encoded = change.path.name.encode("utf-16-le")
                 potential_next_entry_offset = 4 + 4 + 4 + len(filename_encoded)
                 if potential_next_entry_offset % 4:
                     potential_next_entry_offset += 4 - potential_next_entry_offset % 4

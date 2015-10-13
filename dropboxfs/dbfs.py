@@ -104,6 +104,7 @@ class _File(io.RawIOBase):
         self._offset = 0
         self._watch_file_handle = watch_file_handle
         self._invalid = False
+        self._lock = threading.Lock()
 
     def pread(self, offset, size=-1):
         if self._invalid:
@@ -118,9 +119,10 @@ class _File(io.RawIOBase):
             else: raise
 
     def read(self, size=-1):
-        toret = self.pread(self._offset, size)
-        self._offset += len(toret)
-        return toret
+        with self._lock:
+            toret = self.pread(self._offset, size)
+            self._offset += len(toret)
+            return toret
 
     def readall(self):
         return self.read()

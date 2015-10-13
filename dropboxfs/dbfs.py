@@ -35,14 +35,14 @@ from dropboxfs.path_common import Path
 log = logging.getLogger(__name__)
 
 def _md_to_stat(md):
-    _StatObject = collections.namedtuple("Stat", ["name", "type", "size", "mtime"])
+    _StatObject = collections.namedtuple("Stat", ["name", "type", "size", "mtime", "id"])
     name = md.name
     type = 'directory' if isinstance(md, dropbox.files.FolderMetadata) else 'file'
     size = 0 if isinstance(md, dropbox.files.FolderMetadata) else md.size
     mtime = (md.client_modified
              if not isinstance(md, dropbox.files.FolderMetadata) else
              datetime.datetime.now())
-    return _StatObject(name, type, size, mtime)
+    return _StatObject(name, type, size, mtime, md.id)
 
 class _Directory(object):
     def __init__(self, fs, path, id_):
@@ -294,7 +294,7 @@ class FileSystem(object):
         return _Directory(self, md.path_lower, "/" if md.path_lower == "/" else md.id)
 
     def stat_has_attr(self, attr):
-        return attr in ["type", "size", "mtime"]
+        return attr in ["type", "size", "mtime", "id"]
 
     def stat(self, path):
         return self._get_md(path)

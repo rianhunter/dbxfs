@@ -50,7 +50,8 @@ class Path(object):
     def __str__(self):
         return '/' + '/'.join(self._comps)
 
-    def basename(self):
+    @property
+    def name(self):
         if not self._comps: return ''
         return self._comps[-1]
 

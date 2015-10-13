@@ -1284,7 +1284,7 @@ def handle_request(server_capabilities, cs, fs, req):
                 else:
                     handle = None
                     stat = yield from fs.stat(path)
-                    entries_to_ret = [(path.basename(), normalize_stat(stat))][:search_count]
+                    entries_to_ret = [(path.name, normalize_stat(stat))][:search_count]
             except FileNotFoundError:
                 raise ProtocolError(STATUS_NO_SUCH_FILE)
 
@@ -1363,7 +1363,7 @@ def handle_request(server_capabilities, cs, fs, req):
                 raise ProtocolError(STATUS_NO_SUCH_FILE)
 
             setup_bytes = struct.pack("<H", SMB_TRANS2_QUERY_PATH_INFORMATION)
-            name = fspath.basename() if fspath.basename() else '\\'
+            name = fspath.name if fspath.name else '\\'
             (ea_error_offset, data_bytes) = query_path_info_generator(name, normalize_stat(md))
             params_bytes = struct.pack("<H", ea_error_offset)
 

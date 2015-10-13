@@ -348,6 +348,14 @@ class FileSystem(object):
 
         return stop
 
+    def create_db_style_watch(self, cb):
+        self._add_watch(cb)
+
+        def stop():
+            self._remove_watch(cb)
+
+        return stop
+
 def main(argv):
     # run some basic tests on this class
 

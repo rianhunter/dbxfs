@@ -8,6 +8,8 @@ import sys
 
 from dropboxfs.path_common import file_name_norm
 
+import dropbox
+
 log = logging.getLogger(__name__)
 
 class attr_merge(object):
@@ -83,8 +85,7 @@ class FileSystem(object):
 
         # watch file system and clear cache on any changes
         root_path = self._fs.create_path()
-        with contextlib.closing(self._fs.open(root_path)) as dir_:
-            self._watch_stop = self._fs.create_watch(self._handle_changes, dir_, ~0, True)
+        self._watch_stop = self._fs.create_db_style_watch(self._handle_changes)
 
     def close(self):
         self._watch_stop()
@@ -97,27 +98,30 @@ class FileSystem(object):
                 return
 
             for change in changes:
-                if change.action in ("removed", "renamed_from"):
+                parent_path_str = "/" if change.path_lower.count("/") == 1 else change.path_lower[:change.path_lower.rfind("/")]
+                parent_path = self.create_path(*([] if parent_path_str == "/" else parent_path_str[1:].split("/")))
+                name = change.name
+                path = parent_path / name
+                if isinstance(change, dropbox.files.DeletedMetadata):
                     try:
-                        parent_entries = self._md_cache_entries[change.path.parent]
+                        parent_entries = self._md_cache_entries[parent_path]
                     except KeyError:
                         pass
                     else:
-                        remove_from_parent_entries(parent_entries, change.path.name)
+                        remove_from_parent_entries(parent_entries, name)
 
-                    self._md_cache[change.path] = 'deleted'
-
-                if change.action in ("modified", "added", "renamed_to"):
+                    self._md_cache[path] = 'deleted'
+                else:
                     try:
-                        parent_entries = self._md_cache_entries[change.path.parent]
+                        parent_entries = self._md_cache_entries[parent_path]
                     except KeyError:
                         pass
                     else:
-                        add_to_parent_entries(parent_entries, change.path.name)
+                        add_to_parent_entries(parent_entries, name)
 
                     # clear whatever metadata we have on this file
                     try:
-                        del self._md_cache[change.path]
+                        del self._md_cache[path]
                     except KeyError:
                         pass
 

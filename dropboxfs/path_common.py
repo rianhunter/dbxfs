@@ -62,3 +62,7 @@ class Path(object):
         if not self._comps: return ''
         return self._comps[-1]
 
+    @property
+    def parent(self):
+        if not self._comps: return '/'
+        return '/'.join(self._comps[:-1])

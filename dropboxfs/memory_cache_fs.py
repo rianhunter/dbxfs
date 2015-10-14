@@ -142,11 +142,9 @@ class FileSystem(object):
                     else:
                         add_to_parent_entries(parent_entries, name)
 
-                    # clear whatever metadata we have on this file
-                    try:
-                        del self._md_cache[path]
-                    except KeyError:
-                        pass
+                    # update the metadata we have on this file
+                    if path in self._md_cache:
+                        self._md_cache[path] = dbmd_to_stat(change)
 
     def create_path(self, *args):
         return self._fs.create_path(*args)

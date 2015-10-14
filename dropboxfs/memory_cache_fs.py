@@ -44,6 +44,15 @@ class _Directory(object):
                     for entry in dir_:
                         entries_names.append(entry.name)
                         to_iter.append(entry)
+                        # NB: ordinarily, by the time we iterate this directory,
+                        #     it could have been moved and these cache entries
+                        #     will be wrong.  the directory interface allows for
+                        #     any kind of consistency.  with the following code,
+                        #     however, we exploit the fact that
+                        #     dbfs.FileSystem._Directory is based on path,
+                        #     rather than inode.  i.e. if we move the directory,
+                        #     the directory handle will still return entries
+                        #     under the original path it was opened with.
                         fs._md_cache[path / entry.name] = attr_merge(fs._md_cache.get(path / entry.name, object()), entry)
                 fs._md_cache_entries[path] = entries_names
             else:
@@ -116,6 +125,11 @@ class FileSystem(object):
                 return
 
             for change in changes:
+                # NB: the metadata we currently have could be newer than this change
+                #     the file will temporarily revert while we catch up to the newer state
+                # TODO: don't process stale data, need 'server_modified' on all metadata
+                #       entries from the dropbox api
+
                 parent_path_str = "/" if change.path_lower.count("/") == 1 else change.path_lower[:change.path_lower.rfind("/")]
                 parent_path = self.create_path(*([] if parent_path_str == "/" else parent_path_str[1:].split("/")))
                 name = change.name

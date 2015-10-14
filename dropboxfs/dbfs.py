@@ -35,7 +35,7 @@ from dropboxfs.path_common import Path
 
 log = logging.getLogger(__name__)
 
-def _md_to_stat(md):
+def md_to_stat(md):
     _StatObject = collections.namedtuple("Stat", ["name", "type", "size", "mtime", "id"])
     name = md.name
     type = 'directory' if isinstance(md, dropbox.files.FolderMetadata) else 'file'
@@ -72,7 +72,7 @@ class _Directory(object):
                     f.server_modified > start):
                     stop = True
                     break
-                yield _md_to_stat(f)
+                yield md_to_stat(f)
 
             self._cursor = res.cursor
 
@@ -266,7 +266,7 @@ class FileSystem(object):
     def _get_md(self, path):
         md = self._get_md_inner(path)
         log.debug("md: %r", md)
-        return _md_to_stat(md)
+        return md_to_stat(md)
 
     def open(self, path):
         batched_entries_lock = threading.Lock()

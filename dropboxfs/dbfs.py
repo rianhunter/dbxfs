@@ -108,6 +108,8 @@ class _File(io.RawIOBase):
         self._lock = threading.Lock()
 
     def pread(self, offset, size=-1):
+        if self._path_lower is None:
+            raise Exception("Directories opened by id cannot be read!")
         if self._invalid:
             raise OSError(errno.EIO, os.strerror(errno.EIO))
         try:
@@ -129,6 +131,9 @@ class _File(io.RawIOBase):
         return self.read()
 
     def _update_path(self, entries):
+        if self._path_lower is None:
+            raise Exception("This should not be called for directories opened by id")
+
         if entries == "reset":
             self._invalid = True
 
@@ -141,7 +146,8 @@ class _File(io.RawIOBase):
                 self._path_lower = entry.path_lower
 
     def close(self):
-        self._fs._remove_watch(self._watch_file_handle)
+        if self._watch_file_handle is not None:
+            self._fs._remove_watch(self._watch_file_handle)
 
 Change = collections.namedtuple('Change', ['action', 'path'])
 
@@ -300,6 +306,13 @@ class FileSystem(object):
             self._remove_watch(update_path)
             raise
 
+    # TODO: there should be no need to do the MVCC play in open_by_id
+    #       but we need path_lower for _File. We hack this for directories
+    def open_by_id(self, id_, is_directory=False):
+        if is_directory:
+            return _File(self, None, id_, None)
+        return self.open(id_)
+
     def open_directory(self, path):
         md = self._get_md_inner(path)
         return _Directory(self, md.path_lower, md.id)
@@ -320,16 +333,51 @@ class FileSystem(object):
         if not isinstance(dir_handle, _File):
             raise OSError(errno.EINVAL, os.strerror(errno.EINVAL))
 
+        id_ = dir_handle._id
+        dirpath = [None]
+        done = [False]
+
         def watch_fn(entries):
             if entries == "reset":
                 return cb("reset")
 
-            # XXX: we don't check if the directory has been moved
+            process_delete = True
+            if dirpath[0] is None:
+                process_delete = False
+                if id_ == "/":
+                    dirpath[0] = id_
+                else:
+                    md = self._get_md_inner(id_)
+                    dirpath[0] = md.path_lower
+
             to_sub = []
-            ndirpath = dir_handle._path_lower
+            ndirpath = dirpath[0]
             prefix_ndirpath = ndirpath + ("" if ndirpath == "/" else "/")
 
             for entry in entries:
+                # XXX: this check is racy since this could be a stale
+                #      delete from before we event retrieved the ID
+                #      for this file. We minimize damage using
+                #      `process_delete` but there is still chance of
+                #      us getting stale data the next time we are
+                #      called (though this should rarely occur in
+                #      practice).
+                if (process_delete and
+                    isinstance(entry, dropbox.files.DeletedMetadata) and
+                    entry.path_lower == ndirpath):
+                    done[0] = True
+                    continue
+
+                if (not isinstance(entry, dropbox.files.DeletedMetadata) and
+                    entry.id == id_):
+                    dirpath[0] = md.path_lower
+                    ndirpath = dirpath[0]
+                    prefix_ndirpath = ndirpath + ("" if ndirpath == "/" else "/")
+                    done[0] = False
+
+                if done[0]:
+                    continue
+
                 # TODO: filter based on completion filter
                 if not entry.path_lower.startswith(prefix_ndirpath):
                     continue

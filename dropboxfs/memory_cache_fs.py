@@ -7,6 +7,7 @@ import threading
 import sys
 
 from dropboxfs.path_common import file_name_norm
+from dropboxfs.dbfs import md_to_stat as dbmd_to_stat
 
 import dropbox
 
@@ -76,12 +77,29 @@ def remove_from_parent_entries(parent_entries, name):
             del parent_entries[i]
             break
 
+class _File(object):
+    def __init__(self, fs, f, stat, path):
+        self._fs = fs
+        self._f = f
+        self._stat = stat
+
+        self._fs._open_files_by_id[self._stat.id] = self
+
+    def __getattr__(self, name):
+        return getattr(self._f, name)
+
+    def close(self):
+        self._f.close()
+        with self._fs._md_cache_lock:
+            del self._fs._open_files_by_id[self._stat.id]
+
 class FileSystem(object):
     def __init__(self, fs):
         self._fs = fs
         self._md_cache = {}
         self._md_cache_entries = {}
         self._md_cache_lock = threading.Lock()
+        self._open_files_by_id = {}
 
         # watch file system and clear cache on any changes
         root_path = self._fs.create_path()
@@ -113,6 +131,11 @@ class FileSystem(object):
                     self._md_cache[path] = 'deleted'
                 else:
                     try:
+                        self._open_files_by_id[change.id]._stat = dbmd_to_stat(change)
+                    except KeyError:
+                        pass
+
+                    try:
                         parent_entries = self._md_cache_entries[parent_path]
                     except KeyError:
                         pass
@@ -129,7 +152,10 @@ class FileSystem(object):
         return self._fs.create_path(*args)
 
     def open(self, path):
-        return self._fs.open(path)
+        with self._md_cache_lock:
+            stat = self._stat_unlocked(path)
+            return _File(self, self._fs.open_by_id(stat.id, is_directory=stat.type == "directory"),
+                         stat, path)
 
     def open_directory(self, path):
         return _Directory(self, path)
@@ -157,11 +183,11 @@ class FileSystem(object):
             return self._stat_unlocked(path)
 
     def fstat(self, fobj):
-        # TODO: hit cache for this
-        return self._fs.fstat(fobj)
+        with self._md_cache_lock:
+            return fobj._stat
 
-    def create_watch(self, *n, **kw):
-        return self._fs.create_watch(*n, **kw)
+    def create_watch(self, cb, handle, *n, **kw):
+        return self._fs.create_watch(cb, handle._f, *n, **kw)
 
 def main(argv):
     logging.basicConfig(level=logging.DEBUG)

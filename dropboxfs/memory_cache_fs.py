@@ -128,7 +128,8 @@ class FileSystem(object):
                     else:
                         remove_from_parent_entries(parent_entries, name)
 
-                    self._md_cache[path] = 'deleted'
+                    if path in self._md_cache:
+                        self._md_cache[path] = 'deleted'
                 else:
                     try:
                         self._open_files_by_id[change.id]._stat = dbmd_to_stat(change)

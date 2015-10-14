@@ -249,7 +249,7 @@ class FileSystem(object):
             # NB: allow for raw paths/id strings
             p = str(path)
             if p == '/':
-                return dropbox.files.FolderMetadata(name="/", path_lower="/")
+                return dropbox.files.FolderMetadata(name="/", path_lower="/", id="/")
             md = self._clientv2.files_get_metadata(p)
         except dropbox.exceptions.ApiError as e:
             if e.error.is_path():
@@ -291,8 +291,7 @@ class FileSystem(object):
                         batched_entries.clear()
                         continue
 
-                    f = _File(self, md.path_lower, "/" if md.path_lower == "/" else md.id,
-                              update_path)
+                    f = _File(self, md.path_lower, md.id, update_path)
                     f._update_path(batched_entries)
                     batched_entries = None
                     fobj[0] = f
@@ -303,7 +302,7 @@ class FileSystem(object):
 
     def open_directory(self, path):
         md = self._get_md_inner(path)
-        return _Directory(self, md.path_lower, "/" if md.path_lower == "/" else md.id)
+        return _Directory(self, md.path_lower, md.id)
 
     def stat_has_attr(self, attr):
         return attr in ["type", "size", "mtime", "id"]

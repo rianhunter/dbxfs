@@ -1,0 +1,7 @@
+* large directories
+* keep track of rev in dbfs._File
+* convert dbfs._Directory to use FID
+* file data caching
+* wait for dropbox api v2 download() to support ranges, convert to dbfs._File to pure FID
+* sqlite backed cache (/persistent cache?)
+* make dbfs.create_watch() send renames

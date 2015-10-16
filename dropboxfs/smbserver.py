@@ -30,7 +30,7 @@ import sys
 import time
 import threading
 
-from datetime import datetime
+from datetime import datetime, timezone
 from io import StringIO
 
 try:
@@ -681,7 +681,9 @@ def recv_all(sock, len_):
     return b''.join(toret)
 
 def datetime_to_win32(dt):
-    return (int(dt.timestamp()) + 11644473600) * 10000000
+    # Assumes dt is a naive datetime in UTC time
+    assert dt.tzinfo is None
+    return (int(dt.replace(tzinfo=timezone.utc).timestamp()) + 11644473600) * 10000000
 
 def get_size(md):
     return getattr(md, 'size', 0)
@@ -1035,10 +1037,8 @@ class SMBClientHandler(object):
                                smb_structs.CAP_NT_FIND)
 
         # win32 time
-        now = datetime.now()
+        now = datetime.utcnow()
         win32_time = datetime_to_win32(now)
-        utc_offset = int(-(now -
-                           datetime.utcfromtimestamp(now.timestamp())).total_seconds() / 60)
         args = dict(
             # TODO: catch this and throw a friendlier error
             dialect_index=negotiate_req.payload.dialects.index('NT LM 0.12'),
@@ -1050,7 +1050,7 @@ class SMBClientHandler(object):
             session_key=0, # can be anything, we don't use it
             capabilities=server_capabilities,
             system_time=win32_time,
-            server_time_zone=utc_offset,
+            server_time_zone=0,
             challenge_length=0,
         )
         # Mac OS X client want the same tid/pid/uid back
@@ -1147,7 +1147,7 @@ def handle_request(server_capabilities, cs, fs, req):
         class MyEntry(object): pass
         mystat = MyEntry()
 
-        mystat.birthtime = getattr(stat, "birthtime", datetime.fromtimestamp(0))
+        mystat.birthtime = getattr(stat, "birthtime", datetime.utcfromtimestamp(0))
         mystat.mtime = getattr(stat, "mtime", mystat.birthtime)
         mystat.ctime = getattr(stat, "ctime", mystat.mtime)
         mystat.atime = getattr(stat, "atime", mystat.ctime)

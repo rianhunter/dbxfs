@@ -739,8 +739,6 @@ def generate_find_file_both_directory_info(idx, offset, flags, name, md, is_last
                          if is_last else
                          fmt_size + SHORT_NAME_SIZE + len(encoded_file_name))
 
-    now = datetime.now()
-
     file_data_size = get_size(md)
 
     allocation_size = 4096

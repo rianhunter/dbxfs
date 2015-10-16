@@ -130,7 +130,9 @@ class ComNegotiateResponse(smb_structs.ComNegotiateResponse):
     def prepare(self, message):
         prepare(self, message)
 
-        message.parameters_data = struct.pack(self.PAYLOAD_STRUCT_FORMAT,
+        PAYLOAD_STRUCT_FORMAT = '<HBHHIIIIQhB'
+
+        message.parameters_data = struct.pack(PAYLOAD_STRUCT_FORMAT,
                                               self.dialect_index, self.security_mode, self.max_mpx_count,
                                               self.max_number_vcs, self.max_buffer_size, self.max_raw_size,
                                               self.session_key, self.capabilities, self.system_time,

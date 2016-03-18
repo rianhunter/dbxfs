@@ -169,7 +169,7 @@ class FileSystem(object):
     def open(self, path):
         with self._md_cache_lock:
             stat = self._stat_unlocked(path)
-            return _File(self, self._fs.open_by_id(stat.id, is_directory=stat.type == "directory"),
+            return _File(self, self._fs.open_by_id(stat.id),
                          stat, path)
 
     def open_directory(self, path):

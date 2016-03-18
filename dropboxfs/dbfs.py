@@ -255,7 +255,7 @@ class FileSystem(object):
         md = self._get_md_inner(path)
         return _File(self, md.id)
 
-    def open_by_id(self, id_, is_directory=False):
+    def open_by_id(self, id_):
         return _File(self, id_)
 
     def open_directory(self, path):

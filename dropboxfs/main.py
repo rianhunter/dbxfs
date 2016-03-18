@@ -46,6 +46,7 @@ def main(argv=None):
         return port
 
     parser = argparse.ArgumentParser()
+    parser.add_argument("-c", "--config-file")
     parser.add_argument("-p", "--port", type=ensure_port)
     parser.add_argument("mount_point", nargs=1)
     args = parser.parse_args(argv[1:])
@@ -54,7 +55,10 @@ def main(argv=None):
 
     logging.basicConfig(level=logging.DEBUG)
 
-    config_file = os.path.expanduser("~/.dropboxfs")
+    if args.config_file is not None:
+        config_file = args.config_file
+    else:
+        config_file = os.path.expanduser("~/.dropboxfs")
 
     access_token = None
     try:

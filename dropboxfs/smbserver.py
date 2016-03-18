@@ -1090,6 +1090,9 @@ class SMBClientHandler(object):
 
         # first negotiate SMB protocol
         negotiate_req = yield from self.read_message(reader)
+        if negotiate_req is None:
+            raise Exception("Received client EOF!")
+
         if negotiate_req.command != smb_structs.SMB_COM_NEGOTIATE:
             raise Exception("Got unexpected request: %s" % (negotiate_req,))
 

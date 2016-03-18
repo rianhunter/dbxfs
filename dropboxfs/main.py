@@ -46,6 +46,7 @@ def main(argv=None):
         return port
 
     parser = argparse.ArgumentParser()
+    parser.add_argument("-p", "--port", type=ensure_port)
     parser.add_argument("mount_point", nargs=1)
     args = parser.parse_args(argv[1:])
 
@@ -93,9 +94,12 @@ def main(argv=None):
             with open(config_file, "w") as f:
                 json.dump(dict(access_token=access_token), f)
 
-    # NB: Binding to this port could fail
-    # TODO: keep randomly binding until we find a port
-    port = random.randint(60000, 2 ** 16)
+    if args.port is None:
+        # NB: Binding to this port could fail
+        # TODO: keep randomly binding until we find a port
+        port = random.randint(60000, 2 ** 16)
+    else:
+        port = args.port
 
     address = ('127.0.0.1', port)
     server = SMBServer(address, DisableQuickLookFileSystem(CachingFileSystem(DropboxFileSystem(access_token))))

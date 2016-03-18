@@ -15,6 +15,7 @@
 # You should have received a copy of the GNU General Public License
 # along with dropboxfs.  If not, see <http://www.gnu.org/licenses/>.
 
+import argparse
 import errno
 import json
 import logging
@@ -38,11 +39,17 @@ def main(argv=None):
     if argv is None:
         argv = sys.argv
 
-    try:
-        mount_point = argv[1]
-    except IndexError:
-        log.critical("Missing mount point")
-        return -1
+    def ensure_port(string):
+        port = int(string)
+        if not (0 < port < 65536):
+            raise argparse.ArgumentTypeError("%r is not a valid TCP port" % (string,))
+        return port
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("mount_point", nargs=1)
+    args = parser.parse_args(argv[1:])
+
+    (mount_point,) = args.mount_point
 
     logging.basicConfig(level=logging.DEBUG)
 

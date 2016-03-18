@@ -226,14 +226,6 @@ class FileSystem(object):
 
     # NB: This is probably evil opaque magic
     @property
-    def _client(self):
-        toret = getattr(self._local, '_client', None)
-        if toret is None:
-            self._local._client = toret = dropbox.client.DropboxClient(self._access_token)
-        return toret
-
-    # NB: This is probably evil opaque magic
-    @property
     def _clientv2(self):
         toret = getattr(self._local, '_clientv2', None)
         if toret is None:

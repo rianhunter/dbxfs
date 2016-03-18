@@ -38,6 +38,12 @@ def main(argv=None):
     if argv is None:
         argv = sys.argv
 
+    try:
+        mount_point = argv[1]
+    except IndexError:
+        log.critical("Missing mount point")
+        return -1
+
     logging.basicConfig(level=logging.DEBUG)
 
     config_file = os.path.expanduser("~/.dropboxfs")
@@ -102,25 +108,14 @@ def main(argv=None):
         log.warn("Couldn't mount file system automatically, not on Mac OS X")
         signal.pause()
     else:
-        try:
-            os.mkdir("/Volumes/dropboxfs")
-        except OSError as e:
-            if e.errno == errno.EEXIST: pass
-            else: raise
-
-        if os.path.ismount("/Volumes/dropboxfs"):
-            raise Exception("Volume is already mounted at /Volumes/dropboxfs")
-
         subprocess.check_call(["mount", "-t", "smbfs",
                                "cifs://guest:@127.0.0.1:%d/dropboxfs" % (port,),
-                               "/Volumes/dropboxfs"])
-
-        subprocess.call(["open", "/Volumes/dropboxfs"])
+                               mount_point])
 
         try:
             signal.pause()
         finally:
-            subprocess.call(["umount", "-f", "/Volumes/dropboxfs"])
+            subprocess.call(["umount", "-f", mount_point])
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv))

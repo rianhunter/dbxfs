@@ -1567,11 +1567,12 @@ def handle_request(server_capabilities, cs, fs, req):
         except KeyError:
             raise ProtocolError(STATUS_INVALID_HANDLE)
 
-        log.debug("About to do pread... %r", fid_md['path'])
+        log.debug("About to do pread... %r, offset: %r, amt: %r",
+                  fid_md['path'], request.offset, request.max_return_bytes_count)
 
         buf = yield from fid_md['handle'].pread(request.offset, request.max_return_bytes_count)
 
-        log.debug("PREAD DONE... %r", fid_md['path'])
+        log.debug("PREAD DONE... %r buf len: %r", fid_md['path'], len(buf))
 
         yield from cs.deref_file(request.fid)
 

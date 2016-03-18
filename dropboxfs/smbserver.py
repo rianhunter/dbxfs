@@ -163,7 +163,9 @@ class ComSessionSetupAndxRequest(smb_structs.ComSessionSetupAndxRequest__NoSecur
         if is_unicode:
             if oem_password_len:
                 raise Exception("OEM Password len must be 0 when SMB_FLAGS2_UNICODE is set")
-            password = message.data[0:unicode_password_len].decode("utf-16-le")
+            # Linux CIFS_VFS client sends NTLMv2 even when we ask it not to
+            password = None
+            #password = message.data[0:unicode_password_len].decode("utf-16-le")
         else:
             if unicode_password_len:
                 raise Exception("Unicode Password len must be 0 when SMB_FLAGS2_UNICODE is clear")
@@ -239,7 +241,9 @@ class ComTreeConnectAndxRequest(smb_structs.ComTreeConnectAndxRequest):
         (self.flags, password_len) = struct.unpack(self.PAYLOAD_STRUCT_FORMAT,
                                                    message.parameters_data[self.DEFAULT_ANDX_PARAM_SIZE:self.PAYLOAD_STRUCT_SIZE + self.DEFAULT_ANDX_PARAM_SIZE])
 
-        self.password = message.data[:password_len].rstrip(b'\0').decode("utf-8")
+        # Linux CIFS_VFS client sends NTLMv2 even when we ask it not to
+        self.password = None
+        #self.password = message.data[:password_len].rstrip(b'\0').decode("utf-8")
 
         raw_offset = (SMBMessage.HEADER_STRUCT_SIZE + len(message.parameters_data) +
                       2 + password_len)

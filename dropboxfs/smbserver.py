@@ -1467,7 +1467,7 @@ def handle_request(server_capabilities, cs, fs, req):
         if (request.flags &
             (
              NT_CREATE_OPEN_TARGET_DIR)):
-            raise Exception("SMB_COM_NT_CREATE_ANDX doesn't support flags!")
+            raise Exception("SMB_COM_NT_CREATE_ANDX doesn't support flags! 0x%x" % (request.flags,))
 
         if (request.access_mask &
             (FILE_WRITE_DATA | FILE_APPEND_DATA |

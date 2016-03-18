@@ -850,8 +850,13 @@ QUERY_FILE_INFO_GENERATORS = {
 }
 
 class ProtocolError(Exception):
-    def __init__(self, error):
+    def __init__(self, error, message=None):
         self.error = error
+        self.message = message
+        self.args = (error, message)
+
+    def __repr__(self):
+        return 'ProtocolError(0x%x, %r)' % (self.error, self.message)
 
 @asyncio.coroutine
 def cant_fail(on_fail, future):
@@ -1100,7 +1105,7 @@ class SMBClientHandler(object):
                         except ProtocolError as e:
                             if e.error not in (STATUS_NO_SUCH_FILE,):
                                 log.debug("Protocol Error!!! %r %r",
-                                          hex(msg.command), hex(e.error))
+                                          hex(msg.command), e)
                             ret = error_response(msg, e.error)
                         ret.raw_data = ret.encode()
                         yield from writer_queue.put(ret)

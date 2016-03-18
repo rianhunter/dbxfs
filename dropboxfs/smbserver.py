@@ -1241,7 +1241,8 @@ def handle_request(server_capabilities, cs, fs, req):
 
     if req.command == smb_structs.SMB_COM_SESSION_SETUP_ANDX:
         if req.payload.capabilities & ~server_capabilities:
-            raise ProtocolError(STATUS_NOT_SUPPORTED)
+            log.warning("Client's capabilities aren't a subset of Server's: 0x%x vs 0x%x",
+                        req.payload.capabilities, server_capabilities)
 
         uid = yield from cs.create_session()
 

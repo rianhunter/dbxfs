@@ -153,18 +153,27 @@ class ComSessionSetupAndxRequest(smb_structs.ComSessionSetupAndxRequest__NoSecur
 
         params = message.parameters_data[self.DEFAULT_ANDX_PARAM_SIZE:]
         (max_buffer_size, max_mpx_count, vc_number,
-         session_key, length1, length2, reserved, capabilities) = params_o =struct.unpack(self.PAYLOAD_STRUCT_FORMAT, params)
+         session_key, oem_password_len, unicode_password_len, reserved, capabilities) = params_o =struct.unpack(self.PAYLOAD_STRUCT_FORMAT, params)
 
+        # TODO: check session_key from SMB_COM_NEGOTIATE
 
         is_unicode = message.flags2 & smb_structs.SMB_FLAGS2_UNICODE
         if not is_unicode: raise Exception("Only support unicode!")
 
-        case_insensitive_password = message.data[:length1].rstrip(b'\0').decode("ascii")
-        case_sensitive_password = message.data[length1:length1 + length2].rstrip(b'\0').decode("ascii")
+        if is_unicode:
+            if oem_password_len:
+                raise Exception("OEM Password len must be 0 when SMB_FLAGS2_UNICODE is set")
+            password = message.data[0:unicode_password_len].decode("utf-16-le")
+        else:
+            if unicode_password_len:
+                raise Exception("Unicode Password len must be 0 when SMB_FLAGS2_UNICODE is clear")
+            # TODO: 'ascii' is probably not the right encoding here
+            password = message.data[:oem_password_len].rstrip(b'\0').decode("ascii")
+
 
         # read padding
         raw_offset = (SMBMessage.HEADER_STRUCT_SIZE + len(message.parameters_data) + 2 +
-                      length1 + length2)
+                      oem_password_len + unicode_password_len)
         if raw_offset % 2 and is_unicode:
             if message.raw_data[raw_offset] != 0:
                 raise Exception("Was expecting null byte!: %r" % (message.raw_data[raw_offset],))
@@ -184,7 +193,7 @@ class ComSessionSetupAndxRequest(smb_structs.ComSessionSetupAndxRequest__NoSecur
         self.session_key = session_key
         self.capabilities = capabilities
 
-        self.password = (case_insensitive_password or case_sensitive_password)
+        self.password = password
         self.username = elts['username']
         self.domain = elts['domain']
         self.native_os = elts['nativeos']

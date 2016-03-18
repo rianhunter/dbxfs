@@ -613,6 +613,7 @@ SMB_FIND_CLOSE_AFTER_REQUEST = 0x1
 ATTR_DIRECTORY = 0x10
 ATTR_NORMAL = 0x80
 SMB_QUERY_FS_SIZE_INFO = 0x103
+SMB_QUERY_FS_DEVICE_INFO = 0x104
 SMB_QUERY_FS_ATTRIBUTE_INFO = 0x105
 SMB_QUERY_FILE_ALL_INFO = 0x107
 NT_TRANSACT_NOTIFY_CHANGE = 0x4
@@ -828,6 +829,15 @@ def generate_fs_size_info():
                        512, # bytes per sector
                        )
 
+FILE_DEVICE_DISK = 0x7
+
+def generate_fs_device_info():
+    # TODO: there are a whole bunch of options we can use for the
+    #       "characteristics" field
+    return struct.pack("<II",
+                         FILE_DEVICE_DISK,
+                         0)
+
 FILE_CASE_SENSITIVE_SEARCH = 0x1
 FILE_CASE_PRESERVED_NAMES = 0x2
 FILE_UNICODE_ON_DISK = 0x4
@@ -845,6 +855,7 @@ def generate_fs_attribute_info():
 
 FS_INFO_GENERATORS = {
     SMB_QUERY_FS_SIZE_INFO: generate_fs_size_info,
+    SMB_QUERY_FS_DEVICE_INFO: generate_fs_device_info,
     SMB_QUERY_FS_ATTRIBUTE_INFO: generate_fs_attribute_info,
 }
 

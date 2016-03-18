@@ -120,7 +120,7 @@ def main(argv=None):
     threading.Thread(target=run_server, daemon=True).start()
 
     if sys.platform != "darwin":
-        log.warn("Couldn't mount file system automatically, not on Mac OS X")
+        log.warn("Couldn't mount file system automatically, you can access the SMB server at cifs://guest:@127.0.0.01:%d/dropboxfs" % (port,))
         signal.pause()
     else:
         subprocess.check_call(["mount", "-t", "smbfs",

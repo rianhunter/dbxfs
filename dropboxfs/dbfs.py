@@ -98,27 +98,37 @@ class _Directory(object):
         return next(self._md)
 
 class _File(io.RawIOBase):
-    def __init__(self, fs, path_lower, id_, watch_file_handle):
+    def __init__(self, fs, id_):
         self._fs = fs
-        self._path_lower = path_lower
         self._id = id_
         self._offset = 0
-        self._watch_file_handle = watch_file_handle
-        self._invalid = False
         self._lock = threading.Lock()
 
     def pread(self, offset, size=-1):
-        if self._path_lower is None:
-            raise Exception("Directories opened by id cannot be read!")
-        if self._invalid:
-            raise OSError(errno.EIO, os.strerror(errno.EIO))
+        # This implementation is only efficient in the case of
+        # offset=0, dropbox API doesn't support range requests
         try:
-            with self._fs._client.get_file(str(self._path_lower), start=offset,
-                                           length=size if size >= 0 else None) as resp:
-                return resp.read()
-        except dropbox.rest.ErrorResponse as e:
-            if e.error_msg == "Path is a directory":
-                raise OSError(errno.EISDIR, os.strerror(errno.EISDIR))
+            (md, resp) = self._fs._clientv2.files_download(self._id)
+            with contextlib.closing(resp):
+                cur_offset = 0
+                bufs = []
+                bufs_len = 0
+                for c in resp.iter_content(2**16):
+                    bufs.append(c[max(0, offset - cur_offset):
+                                  min(len(c), (offset + size - cur_offset
+                                               if size >= 0 else
+                                               len(c)))])
+                    bufs_len += len(bufs[-1])
+                    assert size < 0 or bufs_len <= size
+                    if size >= 0 and bufs_len == size:
+                        break
+                    cur_offset += len(c)
+                return b''.join(bufs)
+        except dropbox.exceptions.ApiError as e:
+            if (isinstance(e.error, dropbox.files.DownloadError) and
+                e.error.is_path() and
+                e.error.get_path().is_not_file()):
+                raise OSError(errno.EISDIR, os.strerror(errno.EISDIR)) from None
             else: raise
 
     def read(self, size=-1):
@@ -129,25 +139,6 @@ class _File(io.RawIOBase):
 
     def readall(self):
         return self.read()
-
-    def _update_path(self, entries):
-        if self._path_lower is None:
-            raise Exception("This should not be called for directories opened by id")
-
-        if entries == "reset":
-            self._invalid = True
-
-        if self._invalid:
-            return
-
-        for entry in entries:
-            if (isinstance(entry, dropbox.files.FileMetadata) and
-                entry.id == self._id):
-                self._path_lower = entry.path_lower
-
-    def close(self):
-        if self._watch_file_handle is not None:
-            self._fs._remove_watch(self._watch_file_handle)
 
 Change = collections.namedtuple('Change', ['action', 'path'])
 
@@ -269,49 +260,11 @@ class FileSystem(object):
         return md_to_stat(md)
 
     def open(self, path):
-        batched_entries_lock = threading.Lock()
-        was_reset = [False]
-        batched_entries = []
-        fobj = [None]
-        def update_path(entries):
-            if fobj[0] is not None:
-                return fobj[0]._update_path(entries)
-            with batched_entries_lock:
-                if fobj[0] is None:
-                    if entries == "reset":
-                        was_reset[0] = True
-                    else:
-                        batched_entries.extend(entries)
-                else:
-                    fobj[0]._update_path(entries)
+        md = self._get_md_inner(path)
+        return _File(self, md.id)
 
-        self._add_watch(update_path)
-
-        try:
-            while True:
-                md = self._get_md_inner(path)
-
-                with batched_entries_lock:
-                    if was_reset[0]:
-                        was_reset[0] = False
-                        batched_entries.clear()
-                        continue
-
-                    f = _File(self, md.path_lower, md.id, update_path)
-                    f._update_path(batched_entries)
-                    batched_entries = None
-                    fobj[0] = f
-                    return f
-        except:
-            self._remove_watch(update_path)
-            raise
-
-    # TODO: there should be no need to do the MVCC play in open_by_id
-    #       but we need path_lower for _File. We hack this for directories
     def open_by_id(self, id_, is_directory=False):
-        if is_directory:
-            return _File(self, None, id_, None)
-        return self.open(id_)
+        return _File(self, id_)
 
     def open_directory(self, path):
         md = self._get_md_inner(path)

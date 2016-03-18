@@ -29,7 +29,7 @@ setup(
     ],
     packages=["dropboxfs"],
     install_requires=[
-        "dropbox>=3.32,<4",
+        "dropbox>=3.38,<7",
         "pysmb>=1.1.16,<2",
     ],
     entry_points={

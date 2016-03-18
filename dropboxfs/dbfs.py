@@ -186,16 +186,12 @@ def delta_thread(dbfs):
         cursor = res.cursor
         if not res.has_more:
             try:
-                req = urllib.request.Request("https://notify.dropboxapi.com/2/files/list_folder/longpoll",
-                                             data=json.dumps({'cursor': cursor}).encode("utf8"),
-                                             headers={"Content-Type": "application/json"})
-
                 while True:
-                    with contextlib.closing(urllib.request.urlopen(req)) as resp:
-                        ret = resp.read()
-                        json_ret = json.loads(ret.decode('utf8'))
-                        if json_ret.get("changes"):
-                            break
+                    res = dbfs._clientv2.files_list_folder_longpoll(cursor)
+                    if res.changes:
+                        break
+                    if res.backoff is not None:
+                        time.sleep(res.backoff)
             except:
                 log.exception("failure during longpoll")
 

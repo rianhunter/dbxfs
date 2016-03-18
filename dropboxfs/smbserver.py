@@ -594,6 +594,7 @@ STATUS_OBJECT_PATH_NOT_FOUND = 0xc000003a
 STATUS_SMB_BAD_TID = 0x50002
 STATUS_SMB_BAD_UID = 0x5b0002
 STATUS_NOTIFY_ENUM_DIR = 0x10c
+STATUS_OS2_INVALID_LEVEL = 0x7c0001
 
 TREE_CONNECT_ANDX_DISCONNECT_TID = 0x1
 SMB_TRANS2_FIND_FIRST2 = 0x1
@@ -1257,7 +1258,9 @@ def handle_request(server_capabilities, cs, fs, req):
             try:
                 info_generator = INFO_GENERATORS[information_level]
             except KeyError:
-                raise Exception("Find First Information level not supported: %r" % (information_level,))
+                raise ProtocolError(STATUS_OS2_INVALID_LEVEL,
+                                    "Find First Information level not supported: %r" %
+                                    (information_level,))
 
             if filename == "\\":
                 is_directory_search = False
@@ -1348,7 +1351,9 @@ def handle_request(server_capabilities, cs, fs, req):
             try:
                 fs_info_generator = FS_INFO_GENERATORS[information_level]
             except KeyError:
-                raise Exception("QUERY FS Information level not supported: %r" % (information_level,))
+                raise ProtocolError(STATUS_OS2_INVALID_LEVEL,
+                                    "QUERY FS Information level not supported: %r" %
+                                    (information_level,))
 
             data_bytes = fs_info_generator()
 
@@ -1367,7 +1372,9 @@ def handle_request(server_capabilities, cs, fs, req):
             try:
                 query_path_info_generator = QUERY_FILE_INFO_GENERATORS[information_level]
             except KeyError:
-                raise Exception("QUERY PATH Information level not supported: %r" % (information_level,))
+                raise ProtocolError(STATUS_OS2_INVALID_LEVEL,
+                                    "QUERY PATH Information level not supported: %r" %
+                                    (information_level,))
 
             path = req.payload.params_bytes[6:].decode("utf-16-le").rstrip("\0")
             fspath = yield from smb_path_to_fs_path(path)

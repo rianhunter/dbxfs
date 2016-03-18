@@ -327,9 +327,8 @@ class FileSystem(object):
         return self._get_md(fobj._id)
 
     def create_watch(self, cb, dir_handle, completion_filter, watch_tree):
-        # NB: current MemoryFS is read-only so
-        #     cb will never be called and stop() can
-        #     be a no-op
+        # TODO: we don't support added, moved_from, or moved_to events
+
         if not isinstance(dir_handle, _File):
             raise OSError(errno.EINVAL, os.strerror(errno.EINVAL))
 

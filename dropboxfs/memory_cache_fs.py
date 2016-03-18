@@ -111,6 +111,8 @@ class FileSystem(object):
         self._open_files_by_id = {}
 
         # watch file system and clear cache on any changes
+        # NB: we need to use a 'db style' watch because we need the
+        #     ids, and create_watch() doesn't promise ids
         root_path = self._fs.create_path()
         self._watch_stop = self._fs.create_db_style_watch(self._handle_changes)
 

@@ -1465,8 +1465,7 @@ def handle_request(server_capabilities, cs, fs, req):
         yield from cs.verify_tid(req)
 
         if (request.flags &
-            (NT_CREATE_REQUEST_OPLOCK |
-             NT_CREATE_REQUEST_OPBATCH |
+            (
              NT_CREATE_OPEN_TARGET_DIR)):
             raise Exception("SMB_COM_NT_CREATE_ANDX doesn't support flags!")
 

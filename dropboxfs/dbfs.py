@@ -202,6 +202,9 @@ class FileSystem(object):
         self._watches = []
         self._watches_lock = threading.Lock()
 
+        # share this session (i.e. connection pool) across threads
+        self._db_session = dropbox.create_session()
+
         # kick off delta thread
         threading.Thread(target=delta_thread, args=(self,), daemon=True).start()
 
@@ -225,7 +228,8 @@ class FileSystem(object):
     def _clientv2(self):
         toret = getattr(self._local, '_clientv2', None)
         if toret is None:
-            self._local._clientv2 = toret = dropbox.Dropbox(self._access_token)
+            self._local._clientv2 = toret = dropbox.Dropbox(self._access_token,
+                                                            session=self._db_session)
         return toret
 
     def _get_md_inner(self, path):

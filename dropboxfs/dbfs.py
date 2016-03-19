@@ -135,6 +135,30 @@ class _File(io.RawIOBase):
                 raise OSError(errno.EISDIR, os.strerror(errno.EISDIR)) from None
             else: raise
 
+    def _seek(self, offset, whence=io.SEEK_SET):
+        if whence != io.SEEK_SET:
+            raise OSError(errno.ENOTSUP, os.strerror(errno.ENOTSUP))
+
+        if self._offset == offset:
+            return
+
+        if self._read_conn is not None:
+            self._read_conn.close()
+
+        self._offset = 0
+        (_, self._read_conn) = self._fs._clientv2.files_download(self._id)
+
+        # now skip those bytes
+        toread = offset
+        while toread:
+            r = self._read_conn.raw.read(min(toread, 2 ** 16))
+            toread -= len(r)
+            self._offset += len(r)
+
+    def seek(self, *n, **kw):
+        with self._lock:
+            return self._seek(*n, **kw)
+
     def readinto(self, buf):
         with self._lock:
             if self._read_conn is None:

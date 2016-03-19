@@ -103,8 +103,12 @@ class _File(io.RawIOBase):
         self._id = id_
         self._offset = 0
         self._lock = threading.Lock()
+        self._read_conn = None
 
     def pread(self, offset, size=-1):
+        # NB: We don't use self._read_conn to avoid locking
+        #     since pread() is usually parallel-friendly
+
         # This implementation is only efficient in the case of
         # offset=0, dropbox API doesn't support range requests
         try:
@@ -131,14 +135,17 @@ class _File(io.RawIOBase):
                 raise OSError(errno.EISDIR, os.strerror(errno.EISDIR)) from None
             else: raise
 
-    def read(self, size=-1):
+    def readinto(self, buf):
         with self._lock:
-            toret = self.pread(self._offset, size)
-            self._offset += len(toret)
+            if self._read_conn is None:
+                (_, self._read_conn) = self._fs._clientv2.files_download(self._id)
+            toret = self._read_conn.raw.readinto(buf)
+            self._offset += toret
             return toret
 
-    def readall(self):
-        return self.read()
+    def close(self):
+        if self._read_conn is not None:
+            self._read_conn.close()
 
 Change = collections.namedtuple('Change', ['action', 'path'])
 

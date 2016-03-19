@@ -167,6 +167,15 @@ class _File(io.RawIOBase):
             self._offset += toret
             return toret
 
+    def writable(self):
+        return False
+
+    def readable(self):
+        return True
+
+    def seekable(self):
+        return True
+
     def close(self):
         if self._read_conn is not None:
             self._read_conn.close()

@@ -92,7 +92,10 @@ class _File(object):
         self._f = f
         self._stat = stat
 
-        self._fs._open_files_by_id[self._stat.id] = self
+        if self._stat.id not in self._fs._open_files_by_id:
+            self._fs._open_files_by_id[self._stat.id] = set()
+
+        self._fs._open_files_by_id[self._stat.id].add(self)
 
     def __getattr__(self, name):
         return getattr(self._f, name)
@@ -100,7 +103,9 @@ class _File(object):
     def close(self):
         self._f.close()
         with self._fs._md_cache_lock:
-            del self._fs._open_files_by_id[self._stat.id]
+            self._fs._open_files_by_id[self._stat.id].remove(self)
+            if not self._fs._open_files_by_id[self._stat.id]:
+                del self._fs._open_files_by_id[self._stat.id]
 
 class FileSystem(object):
     def __init__(self, fs):
@@ -148,7 +153,8 @@ class FileSystem(object):
                         self._md_cache[path] = 'deleted'
                 else:
                     try:
-                        self._open_files_by_id[change.id]._stat = dbmd_to_stat(change)
+                        for f in self._open_files_by_id[change.id]:
+                            f._stat = dbmd_to_stat(change)
                     except KeyError:
                         pass
 

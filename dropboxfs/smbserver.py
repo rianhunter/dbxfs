@@ -1427,18 +1427,13 @@ def handle_request(server_capabilities, cs, fs, req):
                                 if not num_entries_to_ret else
                                 len(data_bytes) - len(data[-1]))
 
+            setup_bytes = struct.pack("<H", SMB_TRANS2_FIND_FIRST2),
             params_bytes = struct.pack("<HHHHH",
                                        sid, num_entries_to_ret,
                                        int(is_search_over),
                                        0x0,
                                        0 if is_search_over else
                                        last_name_offset)
-
-            args = response_args_from_req(req,
-                                          setup_bytes=struct.pack("<H", SMB_TRANS2_FIND_FIRST2),
-                                          params_bytes=params_bytes,
-                                          data_bytes=data_bytes)
-            return SMBMessage(ComTransaction2Response(**args))
         elif setup[0] == SMB_TRANS2_QUERY_FS_INFORMATION:
             if req.payload.flags:
                 raise Exception("Transaction 2 flags not supported!")
@@ -1456,11 +1451,8 @@ def handle_request(server_capabilities, cs, fs, req):
 
             data_bytes = fs_info_generator()
 
-            args = response_args_from_req(req,
-                                          setup_bytes=struct.pack("<H", SMB_TRANS2_QUERY_FS_INFORMATION),
-                                          params_bytes=b'',
-                                          data_bytes=data_bytes)
-            return SMBMessage(ComTransaction2Response(**args))
+            setup_bytes = struct.pack("<H", SMB_TRANS2_QUERY_FS_INFORMATION)
+            params_bytes = b''
         elif setup[0] == SMB_TRANS2_QUERY_PATH_INFORMATION:
             if req.payload.flags:
                 raise Exception("Transaction 2 flags not supported!")
@@ -1487,12 +1479,15 @@ def handle_request(server_capabilities, cs, fs, req):
             name = fspath.name if fspath.name else '\\'
             (ea_error_offset, data_bytes) = query_path_info_generator(name, normalize_stat(md))
             params_bytes = struct.pack("<H", ea_error_offset)
+        else:
+            log.warning("TRANS2 Sub command not supported: %02x, %s" % (setup[0], req))
+            raise ProtocolError(STATUS_NOT_SUPPORTED)
 
-            args = response_args_from_req(req,
-                                          setup_bytes=setup_bytes,
-                                          params_bytes=params_bytes,
-                                          data_bytes=data_bytes)
-            return SMBMessage(ComTransaction2Response(**args))
+        args = response_args_from_req(req,
+                                      setup_bytes=setup_bytes,
+                                      params_bytes=params_bytes,
+                                      data_bytes=data_bytes)
+        return SMBMessage(ComTransaction2Response(**args))
     elif req.command == SMB_COM_QUERY_INFORMATION_DISK:
         yield from cs.verify_uid(req)
         yield from cs.verify_tid(req)

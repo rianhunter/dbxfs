@@ -106,7 +106,11 @@ def main(argv=None):
         port = args.port
 
     address = ('127.0.0.1', port)
-    server = SMBServer(address, DisableQuickLookFileSystem(CachingFileSystem(DropboxFileSystem(access_token))))
+    fs = CachingFileSystem(DropboxFileSystem(access_token))
+    if sys.platform == 'darwin':
+        fs = DisableQuickLookFileSystem(fs)
+
+    server = SMBServer(address, fs)
 
     do_unmount = False
 

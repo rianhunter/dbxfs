@@ -1483,6 +1483,10 @@ def handle_request(server_capabilities, cs, fs, req):
             log.warning("TRANS2 Sub command not supported: %02x, %s" % (setup[0], req))
             raise ProtocolError(STATUS_NOT_SUPPORTED)
 
+        assert len(setup_bytes) <= req.payload.max_setup_count, "TRANSACTION2 setup bytes count is too large %r vs required %r" % (len(setup_bytes), req.payload.max_setup_count)
+        assert len(params_bytes) <= req.payload.max_params_count, "TRANSACTION2 params bytes count is too large %r vs required %r" % (len(params_bytes), req.payload.max_params_count)
+        assert len(params_bytes) <= req.payload.max_data_count, "TRANSACTION2 data bytes count is too large %r vs required %r" % (len(params_bytes), req.payload.max_data_count)
+
         args = response_args_from_req(req,
                                       setup_bytes=setup_bytes,
                                       params_bytes=params_bytes,

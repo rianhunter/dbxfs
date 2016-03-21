@@ -1338,6 +1338,10 @@ def handle_request(server_capabilities, cs, fs, req):
         if req.payload.timeout:
             raise Exception("Transaction2 Delayed request not supported!")
 
+        if (req.payload.total_params_count != len(req.payload.params_bytes) or
+            req.payload.total_data_count != len(req.payload.data_bytes)):
+            raise Exception("Multiple TRANSACTION2 packets not supported!")
+
         # go through another layer of parsing
         if setup[0] == SMB_TRANS2_FIND_FIRST2:
             if req.payload.flags:

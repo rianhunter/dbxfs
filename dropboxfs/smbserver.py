@@ -44,6 +44,7 @@ import smb.smb_structs as smb_structs
 log = logging.getLogger(__name__)
 
 SMB_COM_QUERY_INFORMATION_DISK = 0x80
+SMB_COM_CHECK_DIRECTORY = 0x10
 
 class SMBMessage(smb_structs.SMBMessage):
     # NB: default _decodePayload() assumes responses from servers
@@ -77,6 +78,8 @@ class SMBMessage(smb_structs.SMBMessage):
             self.payload = ComCloseRequest()
         elif self.command == smb_structs.SMB_COM_NT_TRANSACT:
             self.payload = ComNTTransactRequest()
+        elif self.command == SMB_COM_CHECK_DIRECTORY:
+            self.payload = ComCheckDirectoryRequest()
 
         if self.payload:
             self.payload.decode(self)
@@ -580,6 +583,23 @@ class ComNTTransactResponse(smb_structs.ComNTTransactResponse):
 
         message.data = b''.join([pad1, self.params_bytes, pad2, self.data_bytes])
 
+class ComCheckDirectoryRequest(smb_structs.Payload):
+    def decode(self, message):
+        self.filename = message.data[1:].decode('utf-16-le').rstrip('\0')
+
+class ComCheckDirectoryResponse(smb_structs.Payload):
+    def __init__(self, **kw):
+        for (k, v) in kw.items():
+            setattr(self, k, v)
+
+    def initMessage(self, message):
+        init_reply(self, message, SMB_COM_CHECK_DIRECTORY)
+
+    def prepare(self, message):
+        prepare(self, message)
+        message.parameters_data = b''
+        message.data = b''
+
 def response_args_from_req(req, **kw):
     return dict(pid=req.pid, tid=req.tid,
                 uid=req.uid, mid=req.mid, **kw)
@@ -599,6 +619,7 @@ STATUS_SMB_BAD_TID = 0x50002
 STATUS_SMB_BAD_UID = 0x5b0002
 STATUS_NOTIFY_ENUM_DIR = 0x10c
 STATUS_OS2_INVALID_LEVEL = 0x7c0001
+STATUS_NOT_A_DIRECTORY = 0xC0000000 | 0x0103
 
 TREE_CONNECT_ANDX_DISCONNECT_TID = 0x1
 SMB_TRANS2_FIND_FIRST2 = 0x1
@@ -1275,6 +1296,26 @@ def handle_request(server_capabilities, cs, fs, req):
                                       native_file_system="FAT")
         args['tid'] = tid
         return SMBMessage(ComTreeConnectAndxResponse(**args))
+    elif req.command == SMB_COM_CHECK_DIRECTORY:
+        yield from cs.verify_uid(req)
+        yield from cs.verify_tid(req)
+
+        fspath = yield from smb_path_to_fs_path(req.payload.filename)
+
+        try:
+            stat = yield from fs.stat(fspath)
+        except FileNotFoundError:
+            raise ProtocolError(STATUS_NO_SUCH_FILE)
+        except NotADirectoryError:
+            raise ProtocolError(STATUS_OBJECT_PATH_NOT_FOUND)
+        except PermissionError:
+            raise ProtocolError(STATUS_ACCESS_DENIED)
+
+        if stat.type != 'directory':
+            raise ProtocolError(STATUS_NOT_A_DIRECTORY)
+
+        args = response_args_from_req(req)
+        return SMBMessage(ComCheckDirectoryResponse(**args))
     elif req.command == smb_structs.SMB_COM_ECHO:
         log.debug("echo...")
         if req.payload.echo_count > 1:

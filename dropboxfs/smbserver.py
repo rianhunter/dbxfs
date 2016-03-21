@@ -1455,6 +1455,7 @@ def handle_request(server_capabilities, cs, fs, req):
                     yield from handle.close()
                     handle = None
                 sid = 0
+                is_search_over = True
             else:
                 sid = yield from cs.create_search()
 

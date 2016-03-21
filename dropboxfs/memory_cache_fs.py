@@ -1,8 +1,10 @@
 import collections
 import contextlib
 import errno
+import io
 import logging
 import os
+import tempfile
 import threading
 import sys
 
@@ -86,10 +88,48 @@ def remove_from_parent_entries(parent_entries, name):
             del parent_entries[i]
             break
 
-class _File(object):
-    def __init__(self, fs, f, stat, path):
+class CachedFile(object):
+    def __init__(self, base_file):
+        self.tempfile = tempfile.TemporaryFile()
+        self.stored = 0
+        self.eof = None
+        self.cond = threading.Condition()
+
+        self.base_file = base_file
+
+        # start thread to stream file in
+        def stream_file():
+            while True:
+                buf = self.base_file.read(2 ** 16)
+                if not buf: break
+                self.tempfile.write(buf)
+                self.tempfile.flush()
+                with self.cond:
+                    self.stored += len(buf)
+                    self.cond.notify_all()
+            with self.cond:
+                self.eof = self.stored
+                self.cond.notify_all()
+            self.base_file.close()
+
+        threading.Thread(target=stream_file, daemon=True).start()
+
+    def _wait_for_range(self, offset, size):
+        with self.cond:
+            while (self.stored < offset + size and self.eof is None):
+                self.cond.wait()
+
+    def pread(self, offset, size):
+        self._wait_for_range(offset, size)
+        # TODO: port to windows, can use ReadFile
+        return os.pread(self.tempfile.fileno(), size, offset)
+
+    def close(self):
+        self.tempfile.close()
+
+class _File(io.RawIOBase):
+    def __init__(self, fs, stat, path):
         self._fs = fs
-        self._f = f
         self._stat = stat
 
         if self._stat.id not in self._fs._open_files_by_id:
@@ -97,11 +137,29 @@ class _File(object):
 
         self._fs._open_files_by_id[self._stat.id].add(self)
 
-    def __getattr__(self, name):
-        return getattr(self._f, name)
+        if self._stat.id not in self._fs._file_cache_by_id:
+            f = self._fs._fs.open_by_id(stat.id)
+            self._fs._file_cache_by_id[self._stat.id] = CachedFile(f)
+
+        self._cached_file = self._fs._file_cache_by_id[self._stat.id]
+
+        self._lock = threading.Lock()
+        self._offset = 0
+
+    def pread(self, offset, size):
+        return self._cached_file.pread(offset, size)
+
+    def readinto(self, ibuf):
+        with self._lock:
+            obuf = self.pread(self._offset, len(ibuf))
+            ibuf[:len(obuf)] = obuf
+            self._offset += len(obuf)
+            return len(obuf)
+
+    def readable(self):
+        return True
 
     def close(self):
-        self._f.close()
         with self._fs._md_cache_lock:
             self._fs._open_files_by_id[self._stat.id].remove(self)
             if not self._fs._open_files_by_id[self._stat.id]:
@@ -114,6 +172,7 @@ class FileSystem(object):
         self._md_cache_entries = {}
         self._md_cache_lock = threading.Lock()
         self._open_files_by_id = {}
+        self._file_cache_by_id = {}
 
         # watch file system and clear cache on any changes
         # NB: we need to use a 'db style' watch because we need the
@@ -175,8 +234,7 @@ class FileSystem(object):
     def open(self, path):
         with self._md_cache_lock:
             stat = self._stat_unlocked(path)
-            return _File(self, self._fs.open_by_id(stat.id),
-                         stat, path)
+            return _File(self, stat, path)
 
     def open_directory(self, path):
         return _Directory(self, path)

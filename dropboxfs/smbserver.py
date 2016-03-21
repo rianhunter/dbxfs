@@ -623,6 +623,7 @@ STATUS_NOT_A_DIRECTORY = 0xC0000000 | 0x0103
 
 TREE_CONNECT_ANDX_DISCONNECT_TID = 0x1
 SMB_TRANS2_FIND_FIRST2 = 0x1
+SMB_TRANS2_FIND_NEXT2 = 0x2
 SMB_TRANS2_QUERY_FS_INFORMATION = 0x3
 SMB_TRANS2_QUERY_PATH_INFORMATION = 0x5
 SMB_INFO_STANDARD = 0x1
@@ -995,12 +996,38 @@ class SMBClientHandler(object):
     @asyncio.coroutine
     def create_search(self, **kw):
         sid = self._create_id(self._open_find_trans, INVALID_SIDS)
+        kw['lock'] = asyncio.Lock(loop=self._loop)
+        kw['closing'] = False
         self._open_find_trans[sid] = dict(**kw)
         return sid
 
     @asyncio.coroutine
+    def ref_search(self, sid):
+        toret = self._open_find_trans[sid]
+        if toret['closing']: raise KeyError()
+        yield from toret['lock'].acquire()
+        return toret
+
+    @asyncio.coroutine
+    def deref_search(self, sid):
+        toret = self._open_find_trans[sid]
+        toret['lock'].release()
+
+    @asyncio.coroutine
     def destroy_search(self, sid):
-        del self._open_find_trans[sid]
+        # flag file as closing
+        ret = self._open_find_trans[sid]
+        if ret['closing']: raise KeyError()
+
+        ret['closing'] = True
+
+        yield from ret['lock'].acquire()
+        try:
+            popped = self._open_find_trans.pop(sid)
+            assert popped is ret
+            return ret
+        finally:
+            ret['lock'].release()
 
     @asyncio.coroutine
     def verify_share(self, file_path, is_sharing):
@@ -1457,7 +1484,9 @@ def handle_request(server_capabilities, cs, fs, req):
                 sid = 0
                 is_search_over = True
             else:
-                sid = yield from cs.create_search()
+                sid = yield from cs.create_search(source=source, handle=handle,
+                                                  next_entry=next_entry,
+                                                  idx=num_entries_to_ret)
 
             data_bytes = b''.join(data)
             last_name_offset = (0
@@ -1473,6 +1502,61 @@ def handle_request(server_capabilities, cs, fs, req):
                                        int(is_search_over),
                                        ea_error_offset,
                                        0 if is_search_over else
+                                       last_name_offset)
+        elif setup[0] == SMB_TRANS2_FIND_NEXT2:
+            fmt = "<HHHIH"
+            fmt_size = struct.calcsize(fmt)
+            (sid, search_count, information_level,
+             resume_key, flags) = stuff = struct.unpack(fmt, req.payload.params_bytes[:fmt_size])
+            filename = req.payload.params_bytes[fmt_size:].decode("utf-16-le")[:-1]
+
+            try:
+                info_generator = INFO_GENERATORS[information_level]
+            except KeyError:
+                raise ProtocolError(STATUS_OS2_INVALID_LEVEL,
+                                    "Find First Information level not supported: %r" %
+                                    (information_level,))
+
+
+            search_md = yield from cs.ref_search(sid)
+
+            (data, num_entries_to_ret, next_entry) = \
+                yield from generate_find_data(req.payload.max_data_count,
+                                              search_count,
+                                              search_md['source'],
+                                              info_generator,
+                                              search_md['idx'],
+                                              search_md['next_entry'])
+
+            search_md['idx'] += num_entries_to_ret
+            search_md['next_entry'] = next_entry
+
+            is_search_over = next_entry is None
+
+            if (is_search_over and flags & SMB_FIND_CLOSE_AFTER_REQUEST or
+                flags & SMB_FIND_CLOSE_AFTER_REQUEST):
+                if search_md['handle'] is not None:
+                    yield from search_md['handle'].close()
+                    search_md['handle'] = None
+                yield from cs.deref_search(sid)
+                yield from cs.destroy_search(sid)
+                is_search_over = True
+            else:
+                yield from cs.deref_search(sid)
+
+            data_bytes = b''.join(data)
+            last_name_offset = (0
+                                if is_search_over else
+                                len(data_bytes) - len(data[-1]))
+
+            assert information_level != SMB_INFO_QUERY_EAS_FROM_LIST
+            ea_error_offset = 0
+
+            setup_bytes = b''
+            params_bytes = struct.pack("<HHHH",
+                                       num_entries_to_ret,
+                                       int(is_search_over),
+                                       ea_error_offset,
                                        last_name_offset)
         elif setup[0] == SMB_TRANS2_QUERY_FS_INFORMATION:
             if req.payload.flags:

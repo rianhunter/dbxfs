@@ -1342,11 +1342,12 @@ def handle_request(server_capabilities, cs, fs, req):
             req.payload.total_data_count != len(req.payload.data_bytes)):
             raise Exception("Multiple TRANSACTION2 packets not supported!")
 
+        if req.payload.flags:
+            # NBL we don't current support DISCONNECT_TID nor NO_RESPONSE
+            raise Exception("Transaction 2 flags not supported!")
+
         # go through another layer of parsing
         if setup[0] == SMB_TRANS2_FIND_FIRST2:
-            if req.payload.flags:
-                raise Exception("Transaction 2 flags not supported!")
-
             fmt = "<HHHHI"
             fmt_size = struct.calcsize(fmt)
             (search_attributes, search_count,

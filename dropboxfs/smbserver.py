@@ -1461,7 +1461,7 @@ def handle_request(server_capabilities, cs, fs, req):
 
             data_bytes = b''.join(data)
             last_name_offset = (0
-                                if not num_entries_to_ret else
+                                if is_search_over else
                                 len(data_bytes) - len(data[-1]))
 
             assert information_level != SMB_INFO_QUERY_EAS_FROM_LIST

@@ -1346,6 +1346,36 @@ def handle_request(server_capabilities, cs, fs, req):
             # NBL we don't current support DISCONNECT_TID nor NO_RESPONSE
             raise Exception("Transaction 2 flags not supported!")
 
+        @asyncio.coroutine
+        def generate_find_data(max_data, search_count, source,
+                               info_generator, idx, next_entry):
+            num_entries_to_ret = 0
+            offset = 0
+            data = []
+
+            # XXX: what's the right index to use here?
+            for i in range(idx, idx + search_count):
+                entry = next_entry
+                if entry is None:
+                    break
+
+                next_entry = yield from source(i + 1)
+
+                (name, md) = entry
+
+                is_last = next_entry is None
+
+                bufs = info_generator(i, offset, flags, name, md, is_last)
+                new_data_len = sum(map(len, bufs))
+                if new_data_len + offset > max_data:
+                    break
+
+                data.extend(bufs)
+                offset += new_data_len
+                num_entries_to_ret += 1
+
+            return (data, num_entries_to_ret, next_entry)
+
         # go through another layer of parsing
         if setup[0] == SMB_TRANS2_FIND_FIRST2:
             fmt = "<HHHHI"
@@ -1382,40 +1412,41 @@ def handle_request(server_capabilities, cs, fs, req):
                 if is_directory_search:
                     handle = yield from fs.open_directory(path)
 
-                    log.debug("HANDLE: %r", handle)
-
                     class Dir(object):
                         def __init__(self):
                             self.type = "directory"
                             self.size = 0
 
-                    entries_to_ret = [
-                        (".", normalize_stat(Dir())),
-                        ("..", normalize_stat(Dir())),
-                        ]
-
-                    for _ in range(search_count):
-                        entry = yield from handle.read()
-                        if entry is None: break
-                        nentry = yield from normalize_dir_entry(entry)
-                        entries_to_ret.append((entry.name, nentry))
+                    @asyncio.coroutine
+                    def source(i):
+                        if i == 0:
+                            return (".", normalize_stat(Dir()))
+                        elif i == 1:
+                            return ("..", normalize_stat(Dir()))
+                        else:
+                            entry = yield from handle.read()
+                            if entry is None: return None
+                            return (entry.name, (yield from normalize_dir_entry(entry)))
                 else:
                     handle = None
-                    stat = yield from fs.stat(path)
-                    entries_to_ret = [(path.name, normalize_stat(stat))][:search_count]
+                    @asyncio.coroutine
+                    def source(i):
+                        if i == 0:
+                            stat = yield from fs.stat(path)
+                            return (path.name, normalize_stat(stat))
+                        else:
+                            return None
             except FileNotFoundError:
                 raise ProtocolError(STATUS_NO_SUCH_FILE)
 
-            num_entries_to_ret = len(entries_to_ret)
-            is_search_over = num_entries_to_ret < search_count
+            (data, num_entries_to_ret, next_entry) = \
+                yield from generate_find_data(req.payload.max_data_count,
+                                              search_count,
+                                              source,
+                                              info_generator,
+                                              0, (yield from source(0)))
 
-            offset = 0
-            data = []
-            for (i, (name, md)) in enumerate(entries_to_ret):
-                bufs = info_generator(i, offset, flags, name, md,
-                                      i == len(entries_to_ret) - 1)
-                data.extend(bufs)
-                offset += sum(map(len, bufs))
+            is_search_over = next_entry is None
 
             if (is_search_over and flags & SMB_FIND_CLOSE_AT_EOS or
                 flags & SMB_FIND_CLOSE_AFTER_REQUEST):

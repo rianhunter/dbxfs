@@ -1751,7 +1751,6 @@ class AsyncWorkerPool(object):
             while True:
                 (done, _) = yield from asyncio.wait([conduit_get, sock_recv],
                                                     return_when=asyncio.FIRST_COMPLETED,
-                                                    timeout=1,
                                                     loop=loop)
 
                 if conduit_get in done:

@@ -626,6 +626,7 @@ SMB_TRANS2_FIND_FIRST2 = 0x1
 SMB_TRANS2_QUERY_FS_INFORMATION = 0x3
 SMB_TRANS2_QUERY_PATH_INFORMATION = 0x5
 SMB_INFO_STANDARD = 0x1
+SMB_INFO_QUERY_EAS_FROM_LIST = 0x3
 SMB_FIND_FILE_DIRECTORY_INFO = 0x101
 SMB_FIND_FILE_BOTH_DIRECTORY_INFO = 0x104
 SMB_FIND_RETURN_RESUME_KEYS = 0x4
@@ -1462,11 +1463,14 @@ def handle_request(server_capabilities, cs, fs, req):
                                 if not num_entries_to_ret else
                                 len(data_bytes) - len(data[-1]))
 
+            assert information_level != SMB_INFO_QUERY_EAS_FROM_LIST
+            ea_error_offset = 0
+
             setup_bytes = b''
             params_bytes = struct.pack("<HHHHH",
                                        sid, num_entries_to_ret,
                                        int(is_search_over),
-                                       0x0,
+                                       ea_error_offset,
                                        0 if is_search_over else
                                        last_name_offset)
         elif setup[0] == SMB_TRANS2_QUERY_FS_INFORMATION:

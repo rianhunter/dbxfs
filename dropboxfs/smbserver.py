@@ -1419,6 +1419,9 @@ def handle_request(server_capabilities, cs, fs, req):
 
             if (is_search_over and flags & SMB_FIND_CLOSE_AT_EOS or
                 flags & SMB_FIND_CLOSE_AFTER_REQUEST):
+                if handle is not None:
+                    yield from handle.close()
+                    handle = None
                 sid = 0
             else:
                 sid = yield from cs.create_search()

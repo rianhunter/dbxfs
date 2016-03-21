@@ -1744,27 +1744,27 @@ class AsyncWorkerPool(object):
         @asyncio.coroutine
         def worker_conduit():
             set_fd_non_blocking(self.rsock, True)
-            while True:
-                coros = list(map(functools.partial(asyncio.async, loop=loop),
-                                 [self.conduit_queue.get(),
-                                  loop.sock_recv(self.rsock, 1)]))
-                (done, pending) = yield from asyncio.wait(coros,
-                                                          return_when=asyncio.FIRST_COMPLETED,
-                                                          timeout=1,
-                                                          loop=loop)
 
-                if coros[0] in done:
-                    q = coros[0].result()
+            conduit_get = asyncio.async(self.conduit_queue.get(), loop=loop)
+            sock_recv = asyncio.async(loop.sock_recv(self.rsock, 1), loop=loop)
+
+            while True:
+                (done, _) = yield from asyncio.wait([conduit_get, sock_recv],
+                                                    return_when=asyncio.FIRST_COMPLETED,
+                                                    timeout=1,
+                                                    loop=loop)
+
+                if conduit_get in done:
+                    q = conduit_get.result()
                     to_worker_queue.put(q)
                     if q is None: break
+                    conduit_get = asyncio.async(self.conduit_queue.get(), loop=loop)
 
-                if coros[1] in done:
+                if sock_recv in done:
                     (res, is_exc, future) = from_worker_queue.get(block=False)
                     if is_exc: future.set_exception(res)
                     else: future.set_result(res)
-
-                for p in pending:
-                    p.cancel()
+                    sock_recv = asyncio.async(loop.sock_recv(self.rsock, 1), loop=loop)
 
         self.conduit_coro = asyncio.async(worker_conduit(),
                                           loop=loop)

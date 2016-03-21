@@ -1427,7 +1427,7 @@ def handle_request(server_capabilities, cs, fs, req):
                                 if not num_entries_to_ret else
                                 len(data_bytes) - len(data[-1]))
 
-            setup_bytes = struct.pack("<H", SMB_TRANS2_FIND_FIRST2),
+            setup_bytes = b''
             params_bytes = struct.pack("<HHHHH",
                                        sid, num_entries_to_ret,
                                        int(is_search_over),
@@ -1451,7 +1451,7 @@ def handle_request(server_capabilities, cs, fs, req):
 
             data_bytes = fs_info_generator()
 
-            setup_bytes = struct.pack("<H", SMB_TRANS2_QUERY_FS_INFORMATION)
+            setup_bytes = b''
             params_bytes = b''
         elif setup[0] == SMB_TRANS2_QUERY_PATH_INFORMATION:
             if req.payload.flags:
@@ -1475,7 +1475,7 @@ def handle_request(server_capabilities, cs, fs, req):
             except OSError as e:
                 raise ProtocolError(STATUS_NO_SUCH_FILE)
 
-            setup_bytes = struct.pack("<H", SMB_TRANS2_QUERY_PATH_INFORMATION)
+            setup_bytes = b''
             name = fspath.name if fspath.name else '\\'
             (ea_error_offset, data_bytes) = query_path_info_generator(name, normalize_stat(md))
             params_bytes = struct.pack("<H", ea_error_offset)

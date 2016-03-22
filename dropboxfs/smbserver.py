@@ -30,6 +30,7 @@ import sys
 import time
 import threading
 
+from collections import defaultdict
 from datetime import datetime, timezone
 from io import StringIO
 
@@ -1274,13 +1275,23 @@ def handle_request(server_capabilities, cs, fs, req):
 
     @asyncio.coroutine
     def normalize_dir_entry(entry):
+        try:
+            normalize_dir_entry.has_attr_cache
+        except AttributeError:
+            normalize_dir_entry.has_attr_cache = defaultdict(dict)
+
         need_to_stat = False
         for prop in ["birthtime", "mtime", "ctime", "atime",
                      "type", "size"]:
-            if (not hasattr(entry, prop) and
-                (yield from fs.stat_has_attr(prop))):
-                need_to_stat = True
-                break
+            if not hasattr(entry, prop):
+                # NB: memoize fs.stat_has_attr since it's an expensive call
+                try:
+                    has_attr = normalize_dir_entry.has_attr_cache[fs][prop]
+                except KeyError:
+                    has_attr = normalize_dir_entry.has_attr_cache[fs][prop] = (yield from fs.stat_has_attr(prop))
+                if has_attr:
+                    need_to_stat = True
+                    break
 
         to_normalize = entry
         if need_to_stat:

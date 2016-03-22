@@ -1386,9 +1386,31 @@ def handle_request(server_capabilities, cs, fs, req):
             raise Exception("Transaction 2 flags not supported!")
 
         @asyncio.coroutine
-        def generate_find_data(max_data, search_count, source,
+        def generate_find_data(max_data, search_count, handle,
                                info_generator, idx,
-                               entry, next_entry):
+                               entry, next_entry,
+                               buffered_entries, buffered_entries_idx):
+            @asyncio.coroutine
+            def get_next_entry():
+                nonlocal buffered_entries_idx, buffered_entries
+                try:
+                    toret = buffered_entries[buffered_entries_idx]
+                except IndexError:
+                    buffered_entries = []
+                    buffered_entries_idx = 0
+
+                    if handle is not None:
+                        # NB: 512 is roughly a single FIND_{FIRST,NEXT}2 request
+                        for ent in (yield from handle.readmany(512)):
+                            buffered_entries.append((ent.name, (yield from normalize_dir_entry(ent))))
+
+                    if not buffered_entries:
+                        return None
+
+                    toret = buffered_entries[buffered_entries_idx]
+                buffered_entries_idx += 1
+                return toret
+
             num_entries_to_ret = 0
             offset = 0
             data = []
@@ -1412,10 +1434,11 @@ def handle_request(server_capabilities, cs, fs, req):
                 num_entries_to_ret += 1
 
                 entry = next_entry
-                next_entry = yield from source(i + 2)
+                next_entry = yield from get_next_entry()
 
             return (data, num_entries_to_ret,
-                    entry, next_entry)
+                    entry, next_entry,
+                    buffered_entries, buffered_entries_idx)
 
         # go through another layer of parsing
         if setup[0] == SMB_TRANS2_FIND_FIRST2:
@@ -1458,34 +1481,28 @@ def handle_request(server_capabilities, cs, fs, req):
                             self.type = "directory"
                             self.size = 0
 
-                    @asyncio.coroutine
-                    def source(i):
-                        if i == 0:
-                            return (".", normalize_stat(Dir()))
-                        elif i == 1:
-                            return ("..", normalize_stat(Dir()))
-                        else:
-                            entry = yield from handle.read()
-                            if entry is None: return None
-                            return (entry.name, (yield from normalize_dir_entry(entry)))
+                    entry = (".", normalize_stat(Dir()))
+                    next_entry = ("..", normalize_stat(Dir()))
+                    buffered_entries = []
+                    buffered_entries_idx = 0
                 else:
                     handle = None
-                    @asyncio.coroutine
-                    def source(i):
-                        if i == 0:
-                            stat = yield from fs.stat(path)
-                            return (path.name, normalize_stat(stat))
-                        else:
-                            return None
+                    stat = yield from fs.stat(path)
+                    entry = (path.name, normalize_stat(stat))
+                    next_entry = None
+                    buffered_entries = []
+                    buffered_entries_idx = 0
             except FileNotFoundError:
                 raise ProtocolError(STATUS_NO_SUCH_FILE)
 
-            (data, num_entries_to_ret, entry, next_entry) = \
+            (data, num_entries_to_ret, entry, next_entry,
+             buffered_entries, buffered_entries_idx) = \
                 yield from generate_find_data(req.payload.max_data_count,
                                               search_count,
                                               handle,
                                               info_generator, 0,
-                                              (yield from source(0)), (yield from source(1)))
+                                              entry, next_entry,
+                                              buffered_entries, buffered_entries_idx)
 
             is_search_over = next_entry is None
 
@@ -1497,9 +1514,11 @@ def handle_request(server_capabilities, cs, fs, req):
                 sid = 0
                 is_search_over = True
             else:
-                sid = yield from cs.create_search(source=source, handle=handle,
+                sid = yield from cs.create_search(handle=handle,
                                                   entry=entry,
                                                   next_entry=next_entry,
+                                                  buffered_entries=buffered_entries,
+                                                  buffered_entries_idx=buffered_entries_idx,
                                                   idx=num_entries_to_ret)
 
             data_bytes = b''.join(data)
@@ -1535,14 +1554,17 @@ def handle_request(server_capabilities, cs, fs, req):
             search_md = yield from cs.ref_search(sid)
 
             (data, num_entries_to_ret,
-             entry, next_entry) = \
+             entry, next_entry,
+             search_md['buffered_entries'], search_md['buffered_entries_idx']) = \
                 yield from generate_find_data(req.payload.max_data_count,
                                               search_count,
-                                              search_md['source'],
+                                              search_md['handle'],
                                               info_generator,
                                               search_md['idx'],
                                               search_md['entry'],
-                                              search_md['next_entry'])
+                                              search_md['next_entry'],
+                                              search_md['buffered_entries'],
+                                              search_md['buffered_entries_idx'])
 
             search_md['idx'] += num_entries_to_ret
             search_md['entry'] = entry

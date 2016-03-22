@@ -1387,18 +1387,16 @@ def handle_request(server_capabilities, cs, fs, req):
 
         @asyncio.coroutine
         def generate_find_data(max_data, search_count, source,
-                               info_generator, idx, next_entry):
+                               info_generator, idx,
+                               entry, next_entry):
             num_entries_to_ret = 0
             offset = 0
             data = []
 
             # XXX: what's the right index to use here?
             for i in range(idx, idx + search_count):
-                entry = next_entry
                 if entry is None:
                     break
-
-                next_entry = yield from source(i + 1)
 
                 (name, md) = entry
 
@@ -1413,7 +1411,11 @@ def handle_request(server_capabilities, cs, fs, req):
                 offset += new_data_len
                 num_entries_to_ret += 1
 
-            return (data, num_entries_to_ret, next_entry)
+                entry = next_entry
+                next_entry = yield from source(i + 2)
+
+            return (data, num_entries_to_ret,
+                    entry, next_entry)
 
         # go through another layer of parsing
         if setup[0] == SMB_TRANS2_FIND_FIRST2:
@@ -1478,12 +1480,12 @@ def handle_request(server_capabilities, cs, fs, req):
             except FileNotFoundError:
                 raise ProtocolError(STATUS_NO_SUCH_FILE)
 
-            (data, num_entries_to_ret, next_entry) = \
+            (data, num_entries_to_ret, entry, next_entry) = \
                 yield from generate_find_data(req.payload.max_data_count,
                                               search_count,
-                                              source,
-                                              info_generator,
-                                              0, (yield from source(0)))
+                                              handle,
+                                              info_generator, 0,
+                                              (yield from source(0)), (yield from source(1)))
 
             is_search_over = next_entry is None
 
@@ -1496,6 +1498,7 @@ def handle_request(server_capabilities, cs, fs, req):
                 is_search_over = True
             else:
                 sid = yield from cs.create_search(source=source, handle=handle,
+                                                  entry=entry,
                                                   next_entry=next_entry,
                                                   idx=num_entries_to_ret)
 
@@ -1531,15 +1534,18 @@ def handle_request(server_capabilities, cs, fs, req):
 
             search_md = yield from cs.ref_search(sid)
 
-            (data, num_entries_to_ret, next_entry) = \
+            (data, num_entries_to_ret,
+             entry, next_entry) = \
                 yield from generate_find_data(req.payload.max_data_count,
                                               search_count,
                                               search_md['source'],
                                               info_generator,
                                               search_md['idx'],
+                                              search_md['entry'],
                                               search_md['next_entry'])
 
             search_md['idx'] += num_entries_to_ret
+            search_md['entry'] = entry
             search_md['next_entry'] = next_entry
 
             is_search_over = next_entry is None

@@ -2,6 +2,7 @@ import collections
 import contextlib
 import errno
 import io
+import itertools
 import logging
 import os
 import tempfile
@@ -69,6 +70,12 @@ class _Directory(object):
             return next(self._it)
         except StopIteration:
             return None
+
+    def readmany(self, size=None):
+        if size is None:
+            return list(self)
+        else:
+            return list(itertools.islice(self, size))
 
     def close(self):
         pass

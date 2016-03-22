@@ -1,4 +1,5 @@
 import errno
+import itertools
 import logging
 import os
 
@@ -16,6 +17,12 @@ class QLDir(object):
             return next(self._curiter)
         except StopIteration:
             return None
+
+    def readmany(self, size=None):
+        if size is None:
+            return list(self)
+        else:
+            return list(itertools.islice(self, size))
 
     def _myiter(self):
         for dir_ in self._dirs:

@@ -85,6 +85,12 @@ class _Directory(object):
         except StopIteration:
             return None
 
+    def readmany(self, size=None):
+        if size is None:
+            return list(self)
+        else:
+            return list(itertools.islice(self, size))
+
     def reset(self):
         self._md = self.__it()
 

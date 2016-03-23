@@ -96,30 +96,46 @@ def remove_from_parent_entries(parent_entries, name):
             break
 
 class CachedFile(object):
-    def __init__(self, base_file):
+    def __init__(self, fs, id_):
+        self.fs = fs
+        self.id = id_
         self.tempfile = tempfile.TemporaryFile()
-        self.stored = 0
-        self.eof = None
         self.cond = threading.Condition()
 
-        self.base_file = base_file
+        self._reset()
+
+    def _reset(self):
+        stop_signal = threading.Event()
 
         # start thread to stream file in
         def stream_file():
-            while True:
-                buf = self.base_file.read(2 ** 16)
-                if not buf: break
-                self.tempfile.write(buf)
-                self.tempfile.flush()
+            with contextlib.closing(self.fs.open_by_id(self.id)) as f:
+                self.tempfile.seek(0)
+                while not stop_signal.is_set():
+                    buf = f.read(2 ** 16)
+                    if not buf: break
+                    self.tempfile.write(buf)
+                    self.tempfile.flush()
+                    with self.cond:
+                        self.stored += len(buf)
+                        self.cond.notify_all()
+                self.tempfile.truncate()
                 with self.cond:
-                    self.stored += len(buf)
+                    self.eof = self.stored
                     self.cond.notify_all()
-            with self.cond:
-                self.eof = self.stored
-                self.cond.notify_all()
-            self.base_file.close()
 
-        threading.Thread(target=stream_file, daemon=True).start()
+        with self.cond:
+            self.stored = 0
+            self.eof = None
+
+        self.stop_signal = stop_signal
+        self.thread = threading.Thread(target=stream_file, daemon=True)
+        self.thread.start()
+
+    def reset(self):
+        self.stop_signal.set()
+        self.thread.join()
+        self._reset()
 
     def _wait_for_range(self, offset, size):
         with self.cond:
@@ -132,6 +148,8 @@ class CachedFile(object):
         return os.pread(self.tempfile.fileno(), size, offset)
 
     def close(self):
+        self.stop_signal.set()
+        self.thread.join()
         self.tempfile.close()
 
 class _File(io.RawIOBase):
@@ -145,8 +163,7 @@ class _File(io.RawIOBase):
         self._fs._open_files_by_id[self._stat.id].add(self)
 
         if self._stat.id not in self._fs._file_cache_by_id:
-            f = self._fs._fs.open_by_id(stat.id)
-            self._fs._file_cache_by_id[self._stat.id] = CachedFile(f)
+            self._fs._file_cache_by_id[self._stat.id] = CachedFile(self._fs._fs, stat.id)
 
         self._cached_file = self._fs._file_cache_by_id[self._stat.id]
 
@@ -195,6 +212,19 @@ class FileSystem(object):
             if changes == "reset":
                 self._md_cache = {}
                 self._md_cache_entries = {}
+
+                todel = []
+                for (id_, cached_file) in self._file_cache_by_id.items():
+                    if id_ in self._open_files_by_id:
+                        # Reset cached file if it's currently open
+                        cached_file.reset()
+                    else:
+                        # Otherwise drop the cached file
+                        todel.append(id_)
+
+                for id_ in todel:
+                    self._file_cache_by_id[id_].pop().close()
+
                 return
 
             for change in changes:
@@ -222,7 +252,16 @@ class FileSystem(object):
                         for f in self._open_files_by_id[change.id]:
                             f._stat = dbmd_to_stat(change)
                     except KeyError:
-                        pass
+                        # no open file with this id,
+                        # so dump the cached file if it exists
+                        try:
+                            self._file_cache_by_id[change.id].close()
+                            del self._file_cache_by_id[change.id]
+                        except KeyError:
+                            pass
+                    else:
+                        # we have some open files so reset the cached file
+                        self._file_cache_by_id[change.id].reset()
 
                     try:
                         parent_entries = self._md_cache_entries[parent_path]

@@ -252,7 +252,7 @@ class ComTreeConnectAndxRequest(smb_structs.ComTreeConnectAndxRequest):
         raw_offset = (SMBMessage.HEADER_STRUCT_SIZE + len(message.parameters_data) +
                       2 + password_len)
         if raw_offset % 2:
-            if message.data[raw_offset] != 0:
+            if message.raw_data[raw_offset] != 0:
                 raise Exception("Was expecting null byte padding!")
             raw_offset += 1
 

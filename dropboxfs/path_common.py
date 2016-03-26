@@ -76,3 +76,6 @@ class Path(object):
 
     def normed(self):
         return Path(self._norm())
+
+    def with_name(self, new_name):
+        return self.parent / new_name

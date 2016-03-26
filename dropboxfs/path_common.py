@@ -53,7 +53,7 @@ class Path(object):
         return 'Path' + str(self)
 
     def _norm(self):
-        return tuple(map(file_name_norm, self.parts))
+        return tuple(map(file_name_norm, self._comps))
 
     def __eq__(self, other):
         return self._norm() == other._norm()
@@ -73,3 +73,6 @@ class Path(object):
     def parent(self):
         if not self._comps: return self
         return Path(self._comps[:-1])
+
+    def normed(self):
+        return Path(self._norm())

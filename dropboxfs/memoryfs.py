@@ -125,7 +125,7 @@ class FileSystem(object):
         return parent
 
     def create_path(self, *args):
-        return Path.root_path().join(*args)
+        return Path.root_path().joinpath(*args)
 
     def open(self, path):
         md = self._get_file(path)

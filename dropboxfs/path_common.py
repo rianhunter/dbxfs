@@ -31,7 +31,7 @@ class Path(object):
     def root_path(cls):
         return cls([])
 
-    def join(self, *comps):
+    def joinpath(self, *comps):
         return self.__class__(itertools.chain(self._comps, comps))
 
     @property
@@ -40,7 +40,7 @@ class Path(object):
 
     # NB: This is probably an evil abuse of the '/' operator
     def __truediv__(self, elt):
-        return self.join(elt)
+        return self.joinpath(elt)
 
     def __repr__(self):
         return 'Path' + str(self)

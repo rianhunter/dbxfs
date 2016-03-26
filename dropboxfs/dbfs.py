@@ -267,7 +267,7 @@ class FileSystem(object):
         pass
 
     def create_path(self, *args):
-        return Path.root_path().join(*args)
+        return Path.root_path().joinpath(*args)
 
     # NB: This is probably evil opaque magic
     @property
@@ -425,7 +425,7 @@ def main(argv):
                 to_open = entry
             print("", entry)
 
-    file_path = root_path.join(to_open.name)
+    file_path = root_path.joinpath(to_open.name)
     file_md = fs.stat(file_path)
     print("File MD:", file_md)
 

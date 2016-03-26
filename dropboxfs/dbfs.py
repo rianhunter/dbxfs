@@ -42,7 +42,7 @@ def md_to_stat(md):
     size = 0 if isinstance(md, dropbox.files.FolderMetadata) else md.size
     mtime = (md.client_modified
              if not isinstance(md, dropbox.files.FolderMetadata) else
-             datetime.datetime.now())
+             datetime.datetime.utcnow())
     return _StatObject(name, type, size, mtime, md.id)
 
 class _Directory(object):

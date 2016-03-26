@@ -87,7 +87,7 @@ _Stat = collections.namedtuple("Stat", ['name', 'mtime', 'type', 'size'])
 
 class FileSystem(object):
     def __init__(self, tree):
-        self._mtime = datetime.now()
+        self._mtime = datetime.utcnow()
         self._parent = {"type": "directory",
                         "children": tree}
 

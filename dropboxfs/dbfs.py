@@ -269,6 +269,9 @@ class FileSystem(object):
     def create_path(self, *args):
         return Path.root_path().joinpath(*args)
 
+    def parse_path(self, p):
+        return Path.parse_path(p)
+
     # NB: This is probably evil opaque magic
     @property
     def _clientv2(self):

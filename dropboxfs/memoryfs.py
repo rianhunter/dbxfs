@@ -124,6 +124,9 @@ class FileSystem(object):
 
         return parent
 
+    def parse_path(self, path):
+        return Path.parse_path(path)
+
     def create_path(self, *args):
         return Path.root_path().joinpath(*args)
 

@@ -31,6 +31,13 @@ class Path(object):
     def root_path(cls):
         return cls([])
 
+    @classmethod
+    def parse_path(cls, p):
+        root = cls.root_path()
+        if p == "/":
+            return root
+        return root.joinpath(*p[1:].split("/"))
+
     def joinpath(self, *comps):
         return self.__class__(itertools.chain(self._comps, comps))
 

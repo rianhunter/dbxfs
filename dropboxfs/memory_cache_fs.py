@@ -162,15 +162,20 @@ class _File(io.RawIOBase):
 
         self._fs._open_files_by_id[self._stat.id].add(self)
 
-        if self._stat.id not in self._fs._file_cache_by_id:
-            self._fs._file_cache_by_id[self._stat.id] = CachedFile(self._fs._fs, stat.id)
+        if self._stat.type == "file":
+            if self._stat.id not in self._fs._file_cache_by_id:
+                self._fs._file_cache_by_id[self._stat.id] = CachedFile(self._fs._fs, stat.id)
 
-        self._cached_file = self._fs._file_cache_by_id[self._stat.id]
+            self._cached_file = self._fs._file_cache_by_id[self._stat.id]
+        else:
+            self._cached_file = None
 
         self._lock = threading.Lock()
         self._offset = 0
 
     def pread(self, offset, size):
+        if self._cached_file is None:
+            raise OSError(errno.EISDIR, os.strerror(errno.EISDIR))
         return self._cached_file.pread(offset, size)
 
     def readinto(self, ibuf):

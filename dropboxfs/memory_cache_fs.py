@@ -1,13 +1,21 @@
+import _sqlite3
 import collections
 import contextlib
+import ctypes
+import datetime
 import errno
+import functools
 import io
 import itertools
+import json
 import logging
 import os
 import tempfile
 import threading
+import traceback
+import sqlite3
 import sys
+import weakref
 
 from dropboxfs.path_common import file_name_norm
 from dropboxfs.dbfs import md_to_stat as dbmd_to_stat
@@ -32,17 +40,151 @@ Name = collections.namedtuple('Name', ['name'])
 def md_plus_name(name, md):
     return attr_merge(Name(name), md)
 
+REQUIRED_ATTRS = ["mtime", "type", "size", "id"]
+Stat = collections.namedtuple("Stat", REQUIRED_ATTRS)
+
+def stat_to_json(obj):
+    toret = {}
+    for name in REQUIRED_ATTRS:
+        elt = getattr(obj, name, None)
+        if elt is None: continue
+        if name == "mtime":
+            assert elt.tzinfo is None
+            elt = elt.replace(tzinfo=datetime.timezone.utc).timestamp()
+        toret[name] = elt
+    return json.dumps(toret)
+
+
+def json_to_stat(str_):
+    info = json.loads(str_)
+    toret = {}
+    for name in REQUIRED_ATTRS:
+        val = info.get(name)
+        if val is None:
+            info[name] = val
+        elif name == "mtime":
+            val = datetime.datetime.utcfromtimestamp(val)
+            info[name] = val
+    return Stat(**info)
+
+def attr_merge_sql(md_str_1, md_str_2):
+    if md_str_1 is None:
+        return md_str_2
+
+    if md_str_2 is None:
+        return md_str_1
+
+    md1 = json_to_stat(md_str_1)
+    md2 = json_to_stat(md_str_2)
+
+    return stat_to_json(attr_merge(md1, md2))
+
+def wrap_show_exc(fn):
+    @functools.wraps(fn)
+    def fn2(*n, **kw):
+        try:
+            return fn(*n, **kw)
+        except:
+            traceback.print_exc()
+            raise
+    return fn2
+
+def file_name_norm_2(*n, **kw):
+    return file_name_norm(*n, **kw)
+
+_hold_ref_lock = threading.Lock()
+_hold_ref = weakref.WeakKeyDictionary()
+def register_deterministic_function(conn, name, num_params, func):
+    if not isinstance(conn, sqlite3.Connection):
+        raise Exception("Bad connection object: %r" % (conn,))
+
+    # This is a hack, oh well this is how I roll
+    # TODO: submit patch to pysqlite to do this natively
+    sqlite3_dll = ctypes.CDLL(ctypes.util.find_library("sqlite3"))
+    pysqlite_dll = ctypes.PyDLL(_sqlite3.__file__)
+
+    sqlite3_create_function_proto = ctypes.CFUNCTYPE(ctypes.c_int,
+                                                     ctypes.c_void_p, # db
+                                                     ctypes.c_char_p, # zFunctionName
+                                                     ctypes.c_int, # nArg
+                                                     ctypes.c_int, # eTextRep
+                                                     ctypes.c_void_p, # pApp
+                                                     ctypes.c_void_p,
+                                                     ctypes.c_void_p,
+                                                     ctypes.c_void_p)
+
+    sqlite3_create_function = sqlite3_create_function_proto(("sqlite3_create_function",
+                                                             sqlite3_dll))
+
+    # get dp pointer from connection object
+    dbp = ctypes.cast(id(conn) +
+                      ctypes.sizeof(ctypes.c_ssize_t) +
+                      ctypes.sizeof(ctypes.c_void_p),
+                      ctypes.POINTER(ctypes.c_void_p)).contents
+
+    SQLITE_DETERMINISTIC = 0x800
+    SQLITE_UTF8 = 0x1
+    rc = sqlite3_create_function(dbp, name.encode("utf8"), num_params,
+                                 SQLITE_DETERMINISTIC | SQLITE_UTF8,
+                                 id(func),
+                                 pysqlite_dll._pysqlite_func_callback,
+                                 None,
+                                 None)
+    if rc:
+        raise Exception("Error while creating function: %r" % (rc,))
+
+    # hold ref on passed function object
+    with _hold_ref_lock:
+        if conn not in _hold_ref:
+            _hold_ref[conn] = []
+        _hold_ref[conn].append(func)
+
+@contextlib.contextmanager
+def trans(conn, isolation_level=""):
+    # NB: This exists because pysqlite will not start a transaction
+    # until it sees a DML statement. This sucks if we start a transaction
+    # with a SELECT statement.
+    iso = conn.isolation_level
+    conn.isolation_level = None
+
+    conn.execute("BEGIN " + isolation_level)
+    try:
+        yield conn
+    finally:
+        conn.commit()
+        conn.isolation_level = iso
+
+EMPTY_DIR_ENT = "/empty/"
+
+class WeakrefableConnection(sqlite3.Connection):
+    pass
+
 class _Directory(object):
     def __init__(self, fs, path):
-        with fs._md_cache_lock:
-            to_iter = []
+        conn = fs._get_db_conn()
+        with trans(conn, "IMMEDIATE"), contextlib.closing(conn.cursor()) as cursor:
+            path_key = str(path.normed())
 
-            try:
-                entries_names = fs._md_cache_entries[path]
-            except KeyError:
+            cursor.execute("SELECT name, (SELECT md FROM md_cache WHERE path_key = norm_join(md_cache_entries.path_key, md_cache_entries.name)) FROM md_cache_entries WHERE path_key = ?",
+                           (path_key,))
+
+            is_empty = False
+            to_iter = []
+            for (name, md_str) in cursor:
+                if name == EMPTY_DIR_ENT:
+                    is_empty = True
+                    break
+                assert md_str is not None, \
+                    ("We should have metadata if we have the directory entry %r / %r" %
+                     (path_key, name))
+                stat_ = json_to_stat(md_str)
+                to_iter.append(md_plus_name(name, stat_))
+
+            if not to_iter and not is_empty:
                 # NB: THIS SLOWS DOWN MD_CACHE_LOCK
                 # TODO: do mvcc by watching FS at the same time we pull directory info
                 entries_names = []
+                cache_updates = []
                 with contextlib.closing(fs._fs.open_directory(path)) as dir_:
                     for entry in dir_:
                         entries_names.append(entry.name)
@@ -56,12 +198,21 @@ class _Directory(object):
                         #     rather than inode.  i.e. if we move the directory,
                         #     the directory handle will still return entries
                         #     under the original path it was opened with.
-                        fs._md_cache[path / entry.name] = attr_merge(fs._md_cache.get(path / entry.name, object()), entry)
-                fs._md_cache_entries[path] = entries_names
-            else:
-                for entry_name in entries_names:
-                    md = fs._stat_unlocked(path / entry_name)
-                    to_iter.append(md_plus_name(entry_name, md))
+                        cache_updates.append((str((path / entry.name).normed()),
+                                              stat_to_json(entry)))
+
+                if not entries_names:
+                    entries_names.append(EMPTY_DIR_ENT)
+
+                # Cache the names we downloaded
+                cursor.executemany("INSERT INTO md_cache_entries (path_key, name) VALUES (?, ?)",
+                                   ((path_key, name) for name in entries_names))
+
+                # Cache the metadata we've received
+                cursor.executemany("REPLACE INTO md_cache (path_key, md) "
+                                   "VALUES (?, attr_merge((SELECT md FROM md_cache WHERE path_key = ?), ?))",
+                                   ((sub_path_key, sub_path_key, md_str)
+                                    for (sub_path_key, md_str) in cache_updates))
 
             self._it = iter(to_iter)
 
@@ -82,18 +233,6 @@ class _Directory(object):
 
     def __iter__(self):
         return self._it
-
-# NB: YES these are linear, saving complex data-structure for later
-
-def add_to_parent_entries(parent_entries, name):
-    remove_from_parent_entries(parent_entries, name)
-    parent_entries.append(name)
-
-def remove_from_parent_entries(parent_entries, name):
-    for (i, n) in enumerate(parent_entries):
-        if file_name_norm(n) == file_name_norm(name):
-            del parent_entries[i]
-            break
 
 class CachedFile(object):
     def __init__(self, fs, id_):
@@ -189,17 +328,24 @@ class _File(io.RawIOBase):
         return True
 
     def close(self):
-        with self._fs._md_cache_lock:
+        with self._fs._file_cache_lock:
             self._fs._open_files_by_id[self._stat.id].remove(self)
             if not self._fs._open_files_by_id[self._stat.id]:
                 del self._fs._open_files_by_id[self._stat.id]
 
 class FileSystem(object):
     def __init__(self, fs):
+        if sqlite3.sqlite_version_info < (3, 9, 0):
+            raise Exception("Need sqlite version >= 3.9.0, you have: %r" % (sqlite3.sqlite_version,))
+
+        self._db_file = "file:dropboxvfs-%d?mode=memory&cache=shared" % (id(self),)
         self._fs = fs
-        self._md_cache = {}
-        self._md_cache_entries = {}
-        self._md_cache_lock = threading.Lock()
+
+        self._local = threading.local()
+
+        self._init_db()
+
+        self._file_cache_lock = threading.Lock()
         self._open_files_by_id = {}
         self._file_cache_by_id = {}
 
@@ -207,28 +353,69 @@ class FileSystem(object):
         # NB: we need to use a 'db style' watch because we need the
         #     ids, and create_watch() doesn't promise ids
         root_path = self._fs.create_path()
-        self._watch_stop = self._fs.create_db_style_watch(self._handle_changes)
+        try:
+            create_db_watch = self._fs.create_db_style_watch
+        except AttributeError:
+            self._watch_stop = None
+        else:
+            self._watch_stop = create_db_watch(self._handle_changes)
+
+    def _init_db(self):
+        conn = self._get_db_conn()
+
+        conn.executescript("""
+        CREATE TABLE IF NOT EXISTS md_cache
+        ( path_key TEXT PRIMARY KEY
+        , md TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS md_cache_entries
+        ( path_key TEXT NOT NULL
+        , name TEXT NOT NULL
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS md_cache_entries_unique
+        on md_cache_entries (path_key, file_name_norm(name));
+        """)
+        conn.commit()
+
+    def _norm_join_sql(self, path_key, name):
+        return str((self._fs.parse_path(path_key) / name).normed())
+
+    def _get_db_conn(self):
+        conn = getattr(self._local, 'conn', None)
+        if conn is None:
+            conn = self._local.conn = sqlite3.connect(self._db_file, factory=WeakrefableConnection, uri=True)
+            conn.create_function("attr_merge", 2, wrap_show_exc(attr_merge_sql))
+            conn.create_function("norm_join", 2, wrap_show_exc(self._norm_join_sql))
+            register_deterministic_function(conn, "file_name_norm", 1, wrap_show_exc(file_name_norm_2))
+        return conn
 
     def close(self):
-        self._watch_stop()
+        if self._watch_stop is not None:
+            self._watch_stop()
 
     def _handle_changes(self, changes):
-        with self._md_cache_lock:
+        conn = self._get_db_conn()
+        with trans(conn, "IMMEDIATE"):
+            cursor = conn.cursor()
+
             if changes == "reset":
-                self._md_cache = {}
-                self._md_cache_entries = {}
+                cursor.execute("DELETE FROM md_cache");
+                cursor.execute("DELETE FROM md_cache_entries");
 
-                todel = []
-                for (id_, cached_file) in self._file_cache_by_id.items():
-                    if id_ in self._open_files_by_id:
-                        # Reset cached file if it's currently open
-                        cached_file.reset()
-                    else:
-                        # Otherwise drop the cached file
-                        todel.append(id_)
+                with self._file_cache_lock:
+                    todel = []
+                    for (id_, cached_file) in self._file_cache_by_id.items():
+                        if id_ in self._open_files_by_id:
+                            # Reset cached file if it's currently open
+                            cached_file.reset()
+                        else:
+                            # Otherwise drop the cached file
+                            todel.append(id_)
 
-                for id_ in todel:
-                    self._file_cache_by_id[id_].pop().close()
+                    for id_ in todel:
+                        self._file_cache_by_id[id_].pop().close()
 
                 return
 
@@ -238,53 +425,71 @@ class FileSystem(object):
                 # TODO: don't process stale data, need 'server_modified' on all metadata
                 #       entries from the dropbox api
 
-                parent_path_str = "/" if change.path_lower.count("/") == 1 else change.path_lower[:change.path_lower.rfind("/")]
-                parent_path = self.create_path(*([] if parent_path_str == "/" else parent_path_str[1:].split("/")))
+                path_key = change.path_lower
+                normed_path = self.create_path(*([] if change.path_lower == "/" else change.path_lower[1:].split("/")))
                 name = change.name
-                path = parent_path / name
+                parent_path_key = str(normed_path.parent)
                 if isinstance(change, dropbox.files.DeletedMetadata):
-                    try:
-                        parent_entries = self._md_cache_entries[parent_path]
-                    except KeyError:
-                        pass
-                    else:
-                        remove_from_parent_entries(parent_entries, name)
+                    # remove from the directory tree cache
+                    cursor.execute("DELETE FROM md_cache_entries WHERE path_key = ? and file_name_norm(name) = ?",
+                                   (parent_path_key, file_name_norm(name)))
+                    if cursor.rowcount:
+                        # insert directory empty marker if there are no more
+                        # files under this directory
+                        conn.execute("""
+                        INSERT INTO md_cache_entries (path_key, name)
+                        SELECT ?, ? WHERE
+                        (SELECT EXISTS(SELECT * FROM md_cache_entries WHERE
+                                       path_key = ?)) = 0
+                        """,
+                        (parent_path_key, name, parent_path_key))
 
-                    if path in self._md_cache:
-                        self._md_cache[path] = 'deleted'
+                    # set deleted in the metadata cache
+                    cursor.execute("UPDATE md_cache SET md = ? WHERE path_key = ?",
+                                   (json.dumps(None), path_key,))
                 else:
-                    try:
-                        for f in self._open_files_by_id[change.id]:
-                            f._stat = dbmd_to_stat(change)
-                    except KeyError:
-                        # no open file with this id,
-                        # so dump the cached file if it exists
+                    with self._file_cache_lock:
                         try:
-                            self._file_cache_by_id[change.id].close()
-                            del self._file_cache_by_id[change.id]
+                            for f in self._open_files_by_id[change.id]:
+                                f._stat = dbmd_to_stat(change)
                         except KeyError:
-                            pass
-                    else:
-                        # we have some open files so reset the cached file
-                        self._file_cache_by_id[change.id].reset()
+                            # no open file with this id,
+                            # so dump the cached file if it exists
+                            try:
+                                self._file_cache_by_id[change.id].close()
+                                del self._file_cache_by_id[change.id]
+                            except KeyError:
+                                pass
+                        else:
+                            # we have some open files so reset the cached file
+                            self._file_cache_by_id[change.id].reset()
 
-                    try:
-                        parent_entries = self._md_cache_entries[parent_path]
-                    except KeyError:
-                        pass
-                    else:
-                        add_to_parent_entries(parent_entries, name)
+                    # add to directory tree cache if parent is in cache
+                    cursor.execute("""
+                    INSERT OR REPLACE INTO md_cache_entries (path_key, name)
+                    SELECT ?, ? WHERE
+                    (SELECT EXISTS(SELECT * FROM md_cache_entries WHERE path_key = ?))
+                    """, (parent_path_key, name, parent_path_key))
 
-                    # update the metadata we have on this file
-                    if path in self._md_cache:
-                        self._md_cache[path] = dbmd_to_stat(change)
+                    if cursor.rowcount:
+                        # delete directory empty marker if it existed
+                        cursor.execute("DELETE FROM md_cache_entries WHERE path_key = ? and name = ?", (parent_path_key, EMPTY_DIR_ENT))
+
+                        # since we have the directory in cache, we should cache this entry
+                        cursor.execute("INSERT OR REPLACE INTO md_cache (path_key, md) "
+                                       "VALUES (?, ?)",
+                                       (path_key, stat_to_json(dbmd_to_stat(change))))
+                    else:
+                        # update the metadata we have on this file
+                        cursor.execute("UPDATE md_cache SET md = ? WHERE path_key = ?",
+                                       (stat_to_json(dbmd_to_stat(change)), path_key))
 
     def create_path(self, *args):
         return self._fs.create_path(*args)
 
     def open(self, path):
-        with self._md_cache_lock:
-            stat = self._stat_unlocked(path)
+        stat = self.stat(path)
+        with self._file_cache_lock:
             return _File(self, stat, path)
 
     def open_directory(self, path):
@@ -293,28 +498,42 @@ class FileSystem(object):
     def stat_has_attr(self, attr):
         return self._fs.stat_has_attr(attr)
 
-    def _stat_unlocked(self, path):
-        try:
-            stat = self._md_cache[path]
-        except KeyError:
-            # NB: Potentially slow!
-            # TODO: do mvcc before storing back in md_cache
-            try:
-                stat = self._fs.stat(path)
-            except FileNotFoundError:
-                stat = 'deleted'
-            self._md_cache[path] = stat
-        if stat == 'deleted':
+    def stat(self, path):
+        conn = self._get_db_conn()
+        # We use BEGIN IMMEDIATE here because SQLite's deferred transactions
+        # will immediately throw a BUSY error if two threads concurrently attempt to
+        # upgrade from READ->WRITE.
+        # TODO: Start transaction with DEFERRED and restart with IMMEDIATE
+        #       if a write is necessary
+        with trans(conn, "IMMEDIATE"), contextlib.closing(conn.cursor()) as cursor:
+            path_key = str(path.normed())
+
+            cursor.execute("SELECT md FROM md_cache WHERE path_key = ? limit 1",
+                           (path_key,))
+            row = cursor.fetchone()
+            if row is None:
+                # NB: Potentially slow!
+                # TODO: do mvcc before storing back in md_cache
+                try:
+                    stat = self._fs.stat(path)
+                except FileNotFoundError:
+                    stat = None
+
+                md_str = None if stat is None else stat_to_json(stat)
+
+                cursor.execute("INSERT INTO md_cache (path_key, md) values (?, ?)",
+                               (path_key, md_str))
+            else:
+                (md,) = row
+                stat =  None if md is None else json_to_stat(md)
+
+        if stat is None:
             raise OSError(errno.ENOENT, os.strerror(errno.ENOENT))
+
         return stat
 
-    def stat(self, path):
-        with self._md_cache_lock:
-            return self._stat_unlocked(path)
-
     def fstat(self, fobj):
-        with self._md_cache_lock:
-            return fobj._stat
+        return fobj._stat
 
     def create_watch(self, cb, handle, *n, **kw):
         return self._fs.create_watch(cb, handle._f, *n, **kw)

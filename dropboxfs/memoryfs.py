@@ -16,11 +16,13 @@
 # along with dropboxfs.  If not, see <http://www.gnu.org/licenses/>.
 
 import collections
+import ctypes
 import errno
 import io
 import itertools
 import logging
 import os
+import warnings
 
 from datetime import datetime
 
@@ -83,7 +85,7 @@ class _Directory(object):
     def __next__(self):
         return next(self._iter)
 
-_Stat = collections.namedtuple("Stat", ['name', 'mtime', 'type', 'size'])
+_Stat = collections.namedtuple("Stat", ['name', 'mtime', 'type', 'size', 'id'])
 
 class FileSystem(object):
     def __init__(self, tree):
@@ -100,7 +102,7 @@ class FileSystem(object):
         type = md["type"]
         size = get_size(md)
 
-        return _Stat(name, mtime, type, size)
+        return _Stat(name, mtime, type, size, id=id(md))
 
     def _get_file(self, path):
         parent = self._parent
@@ -133,6 +135,11 @@ class FileSystem(object):
     def open(self, path):
         md = self._get_file(path)
         return _File(md)
+
+    def open_by_id(self, id_):
+        warnings.warn("Don't use this in production, could cause segfault if used with an invalid ID")
+        # id is the memory address of the md object
+        return _File(ctypes.cast(id_, ctypes.py_object).value)
 
     def open_directory(self, path):
         md = self._get_file(path)

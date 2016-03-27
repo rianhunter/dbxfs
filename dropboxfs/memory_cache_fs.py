@@ -40,7 +40,7 @@ Name = collections.namedtuple('Name', ['name'])
 def md_plus_name(name, md):
     return attr_merge(Name(name), md)
 
-REQUIRED_ATTRS = ["mtime", "type", "size", "id"]
+REQUIRED_ATTRS = ["mtime", "type", "size", "id", "ctime"]
 Stat = collections.namedtuple("Stat", REQUIRED_ATTRS)
 
 def stat_to_json(obj):
@@ -48,7 +48,7 @@ def stat_to_json(obj):
     for name in REQUIRED_ATTRS:
         elt = getattr(obj, name, None)
         if elt is None: continue
-        if name == "mtime":
+        if name in ("mtime", "ctime"):
             assert elt.tzinfo is None
             elt = elt.replace(tzinfo=datetime.timezone.utc).timestamp()
         toret[name] = elt
@@ -62,7 +62,7 @@ def json_to_stat(str_):
         val = info.get(name)
         if val is None:
             info[name] = val
-        elif name == "mtime":
+        elif name in ("mtime", "ctime"):
             val = datetime.datetime.utcfromtimestamp(val)
             info[name] = val
     return Stat(**info)

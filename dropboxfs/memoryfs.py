@@ -85,11 +85,12 @@ class _Directory(object):
     def __next__(self):
         return next(self._iter)
 
-_Stat = collections.namedtuple("Stat", ['name', 'mtime', 'type', 'size', 'id'])
+_Stat = collections.namedtuple("Stat", ['name', 'mtime', 'type', 'size', 'id', 'ctime'])
 
 class FileSystem(object):
     def __init__(self, tree):
         self._mtime = datetime.utcnow()
+        self._ctime = datetime.utcnow()
         self._parent = {"type": "directory",
                         "children": tree}
 
@@ -99,10 +100,15 @@ class FileSystem(object):
         else:
             mtime = self._mtime
 
+        if 'ctime' in md:
+            ctime = md['ctime']
+        else:
+            ctime = self._ctime
+
         type = md["type"]
         size = get_size(md)
 
-        return _Stat(name, mtime, type, size, id=id(md))
+        return _Stat(name, mtime, type, size, id=id(md), ctime=ctime)
 
     def _get_file(self, path):
         parent = self._parent

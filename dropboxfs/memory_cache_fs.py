@@ -304,30 +304,60 @@ class SharedLock(object):
         self.release()
 
 class CachedFile(object):
-    def __init__(self, fs, id_):
+    def __init__(self, cache_folder, fs, stat):
+        self.cache_folder = cache_folder
         self.fs = fs
-        self.id = id_
-        self.tempfile = tempfile.TemporaryFile()
+        self.id = stat.id
+        self.stat = stat
         self.cond = threading.Condition()
+        self.reset_lock = SharedLock()
 
         self._reset()
 
     def _reset(self):
-        stop_signal = threading.Event()
-
         # start thread to stream file in
         def stream_file():
-            with contextlib.closing(self.fs.open_by_id(self.id)) as f:
-                self.tempfile.seek(0)
-                while not stop_signal.is_set():
-                    buf = f.read(2 ** 16)
+            # XXX: Handle errors
+            with contextlib.closing(self.fs.open_by_id(self.id)) as fsource:
+                if self.stat is None:
+                    stat = self.fs.fstat(fsource)
+                else:
+                    stat = self.stat
+
+                if self.cache_folder is None:
+                    self.cached_file = tempfile.TemporaryFile()
+                else:
+                    fn = '%s-%d.bin' % (self.id, utctimestamp(stat.ctime))
+                    self.cached_file = open(os.path.join(self.cache_folder, fn), 'a+b')
+                    # XXX: make sure no other process has `cached_file` open
+
+                    # Restart a previous download
+                    # TODO: check integrity of file
+                    amt = self.cached_file.tell()
+
+                    with self.cond:
+                        assert not self.stored and self.eof is None
+                        self.stored = amt
+                        self.eof = amt if amt == stat.size else None
+                        self.cond.notify_all()
+                        if self.eof is not None: return
+
+                    if self.stat is not None:
+                        stat2 = self.fs.fstat(fsource)
+                        if stat2.ctime != self.stat.ctime:
+                            log.warning("Current file version does not match expected!")
+                            return
+
+                    fsource.seek(amt)
+                while not self.stop_signal.is_set():
+                    buf = fsource.read(2 ** 16)
                     if not buf: break
-                    self.tempfile.write(buf)
-                    self.tempfile.flush()
+                    self.cached_file.write(buf)
+                    self.cached_file.flush()
                     with self.cond:
                         self.stored += len(buf)
                         self.cond.notify_all()
-                self.tempfile.truncate()
+
                 with self.cond:
                     self.eof = self.stored
                     self.cond.notify_all()
@@ -336,14 +366,18 @@ class CachedFile(object):
             self.stored = 0
             self.eof = None
 
-        self.stop_signal = stop_signal
+        self.stop_signal = threading.Event()
         self.thread = threading.Thread(target=stream_file, daemon=True)
         self.thread.start()
 
-    def reset(self):
-        self.stop_signal.set()
-        self.thread.join()
-        self._reset()
+    def reset(self, stat=None):
+        with self.reset_lock:
+            self.stop_signal.set()
+            self.thread.join()
+            self.cached_file.close()
+            assert stat is None or stat.id == self.id
+            self.stat = stat
+            self._reset()
 
     def _wait_for_range(self, offset, size):
         with self.cond:
@@ -351,14 +385,16 @@ class CachedFile(object):
                 self.cond.wait()
 
     def pread(self, offset, size):
-        self._wait_for_range(offset, size)
-        # TODO: port to windows, can use ReadFile
-        return os.pread(self.tempfile.fileno(), size, offset)
+        with self.reset_lock.shared_context():
+            self._wait_for_range(offset, size)
+            # TODO: port to windows, can use ReadFile
+            return os.pread(self.cached_file.fileno(), size, offset)
 
     def close(self):
-        self.stop_signal.set()
-        self.thread.join()
-        self.tempfile.close()
+        with self.reset_lock:
+            self.stop_signal.set()
+            self.thread.join()
+            self.cached_file.close()
 
 class _File(io.RawIOBase):
     def __init__(self, fs, stat, path):
@@ -372,7 +408,7 @@ class _File(io.RawIOBase):
 
         if self._stat.type == "file":
             if self._stat.id not in self._fs._file_cache_by_id:
-                self._fs._file_cache_by_id[self._stat.id] = CachedFile(self._fs._fs, stat.id)
+                self._fs._file_cache_by_id[self._stat.id] = CachedFile(fs._cache_folder, self._fs._fs, stat)
 
             self._cached_file = self._fs._file_cache_by_id[self._stat.id]
         else:
@@ -403,10 +439,11 @@ class _File(io.RawIOBase):
                 del self._fs._open_files_by_id[self._stat.id]
 
 class FileSystem(object):
-    def __init__(self, fs):
+    def __init__(self, fs, cache_folder=None):
         if sqlite3.sqlite_version_info < (3, 9, 0):
             raise Exception("Need sqlite version >= 3.9.0, you have: %r" % (sqlite3.sqlite_version,))
 
+        self._cache_folder = cache_folder
         self._db_file = "file:dropboxvfs-%d?mode=memory&cache=shared" % (id(self),)
         self._fs = fs
 
@@ -518,9 +555,10 @@ class FileSystem(object):
                                    (json.dumps(None), path_key,))
                 else:
                     with self._file_cache_lock:
+                        new_stat = dbmd_to_stat(change)
                         try:
                             for f in self._open_files_by_id[change.id]:
-                                f._stat = dbmd_to_stat(change)
+                                f._stat = new_stat
                         except KeyError:
                             # no open file with this id,
                             # so dump the cached file if it exists
@@ -531,7 +569,7 @@ class FileSystem(object):
                                 pass
                         else:
                             # we have some open files so reset the cached file
-                            self._file_cache_by_id[change.id].reset()
+                            self._file_cache_by_id[change.id].reset(new_stat)
 
                     # add to directory tree cache if parent is in cache
                     cursor.execute("""

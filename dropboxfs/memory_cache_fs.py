@@ -13,6 +13,7 @@ import os
 import tempfile
 import threading
 import traceback
+import shutil
 import sqlite3
 import sys
 import weakref
@@ -658,42 +659,46 @@ def main(argv):
                                             ]
                                         }),
                                    ("bar", {"type": "file", "data": b"f"})])
-    fs = FileSystem(backing_fs)
 
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        fs = FileSystem(backing_fs, cache_folder=tmp_dir)
 
-    # Test Directory listing
-    def list_fs(fs):
-        print("Complete File Listing:")
-        q = [fs.create_path()]
-        while q:
-            path = q.pop()
+        # Test Directory listing
+        def list_fs(fs):
+            print("Complete File Listing:")
+            q = [fs.create_path()]
+            while q:
+                path = q.pop()
 
-            stat = fs.stat(path)
-            print(path, stat.type)
+                stat = fs.stat(path)
+                print(path, stat.type)
 
-            with contextlib.closing(fs.open(path)) as f:
+                with contextlib.closing(fs.open(path)) as f:
+                    try:
+                        data = f.read()
+                    except IsADirectoryError:
+                        assert stat.type == "directory"
+                    else:
+                        assert stat.type == "file"
+                        print(" Contents:", data)
+
                 try:
-                    data = f.read()
-                except IsADirectoryError:
-                    assert stat.type == "directory"
+                    dir_handle = fs.open_directory(path)
+                except NotADirectoryError:
+                    assert stat.type != "directory"
                 else:
-                    assert stat.type == "file"
-                    print(" Contents:", data)
+                    assert stat.type == "directory"
+                    with contextlib.closing(dir_handle) as dir_:
+                        for n in dir_:
+                            q.append(path.joinpath(n.name))
 
-            try:
-                dir_handle = fs.open_directory(path)
-            except NotADirectoryError:
-                assert stat.type != "directory"
-            else:
-                assert stat.type == "directory"
-                with contextlib.closing(dir_handle) as dir_:
-                    for n in dir_:
-                        q.append(path.joinpath(n.name))
+        list_fs(fs)
 
-    list_fs(fs)
-
-    # Do it again to test caching
-    list_fs(fs)
+        # Do it again to test caching
+        list_fs(fs)
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv))

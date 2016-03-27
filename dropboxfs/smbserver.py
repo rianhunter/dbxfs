@@ -741,9 +741,9 @@ def generate_info_standard(idx, offset, flags, name, md, _):
     name += '\0'
     file_name_encoded = name.encode("utf-16-le")
 
-    (creation_date, creation_time) = encode_smb_datetime(md.mtime)
+    (creation_date, creation_time) = encode_smb_datetime(md.birthtime)
     (last_access_date, last_access_time) = encode_smb_datetime(md.atime)
-    (last_write_date, last_write_time) = encode_smb_datetime(md.birthtime)
+    (last_write_date, last_write_time) = encode_smb_datetime(md.mtime)
 
     file_data_size = get_size(md)
     allocation_size = 4096

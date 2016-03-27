@@ -237,6 +237,72 @@ class _Directory(object):
     def __iter__(self):
         return self._it
 
+class SharedLock(object):
+    def __init__(self):
+        self.cond = threading.Condition()
+        self.readers = 0
+        self.want_write = 0
+        self.writers = 0
+
+    def _rep(self):
+        if self.writers > 1 or self.writers < 0:
+            return False
+
+        if self.want_write < self.writers:
+            return False
+
+        if self.writers and self.readers:
+            return False
+
+        return True
+
+    def acquire(self):
+        with self.cond:
+            assert self._rep()
+            self.want_write += 1
+            while self.readers or self.writers:
+                self.cond.wait()
+            self.writers += 1
+            assert self._rep()
+
+    def release(self):
+        with self.cond:
+            assert self._rep()
+            self.writers -= 1
+            self.want_write -= 1
+            self.cond.notify_all()
+            assert self._rep()
+
+    def acquire_shared(self):
+        with self.cond:
+            assert self._rep()
+            while self.want_write or self.writers:
+                self.cond.wait()
+            self.readers += 1
+            assert self._rep()
+
+    def release_shared(self):
+        with self.cond:
+            assert self._rep()
+            self.readers -= 1
+            self.cond.notify_all()
+            assert self._rep()
+
+    @contextlib.contextmanager
+    def shared_context(self):
+        self.acquire_shared()
+        try:
+            yield
+        finally:
+            self.release_shared()
+
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, *n):
+        self.release()
+
 class CachedFile(object):
     def __init__(self, fs, id_):
         self.fs = fs

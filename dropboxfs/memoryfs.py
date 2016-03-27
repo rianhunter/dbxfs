@@ -60,6 +60,11 @@ class _File(io.RawIOBase):
     def readall(self):
         return self.read()
 
+    def seek(self, amt, whence=0):
+        if whence:
+            raise Exception("not supported")
+        self._offset += amt
+
 class _Directory(object):
     def __init__(self, fs, md):
         self._fs = fs

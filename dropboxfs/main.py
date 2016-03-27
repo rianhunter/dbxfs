@@ -16,6 +16,7 @@
 # along with dropboxfs.  If not, see <http://www.gnu.org/licenses/>.
 
 import argparse
+import contextlib
 import errno
 import json
 import logging
@@ -25,6 +26,8 @@ import signal
 import subprocess
 import sys
 import threading
+
+import appdirs
 
 import dropbox
 
@@ -105,8 +108,12 @@ def main(argv=None):
     else:
         port = args.port
 
+    cache_folder = os.path.join(appdirs.user_cache_dir(), "dropboxfs", "file_cache")
+    with contextlib.suppress(FileExistsError):
+        os.makedirs(cache_folder)
+
     address = ('127.0.0.1', port)
-    fs = CachingFileSystem(DropboxFileSystem(access_token))
+    fs = CachingFileSystem(DropboxFileSystem(access_token), cache_folder=cache_folder)
     if sys.platform == 'darwin':
         fs = DisableQuickLookFileSystem(fs)
 

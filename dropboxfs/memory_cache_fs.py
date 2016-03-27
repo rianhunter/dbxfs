@@ -43,14 +43,17 @@ def md_plus_name(name, md):
 REQUIRED_ATTRS = ["mtime", "type", "size", "id", "ctime"]
 Stat = collections.namedtuple("Stat", REQUIRED_ATTRS)
 
+def utctimestamp(dt):
+    assert dt.tzinfo is None
+    return dt.replace(tzinfo=datetime.timezone.utc).timestamp()
+
 def stat_to_json(obj):
     toret = {}
     for name in REQUIRED_ATTRS:
         elt = getattr(obj, name, None)
         if elt is None: continue
         if name in ("mtime", "ctime"):
-            assert elt.tzinfo is None
-            elt = elt.replace(tzinfo=datetime.timezone.utc).timestamp()
+            elt = utctimestamp(elt)
         toret[name] = elt
     return json.dumps(toret)
 

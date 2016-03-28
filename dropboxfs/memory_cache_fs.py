@@ -381,6 +381,9 @@ class CachedFile(object):
 
     def reset(self, stat=None):
         with self.reset_lock:
+            if self.cached_file is None:
+                raise Exception("file is closed")
+
             self.stop_signal.set()
             self.thread.join()
             self.cached_file.close()
@@ -404,6 +407,7 @@ class CachedFile(object):
             self.stop_signal.set()
             self.thread.join()
             self.cached_file.close()
+            self.cached_file  = None
 
 LiveFileMetadata = collections.namedtuple('LiveFileMetadata',
                                           ["stat", "cached_file", "open_files"])

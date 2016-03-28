@@ -305,9 +305,10 @@ class SharedLock(object):
         self.release()
 
 class CachedFile(object):
-    def __init__(self, cache_folder, fs, stat):
-        self.cache_folder = cache_folder
-        self.fs = fs
+    def __init__(self, fs, stat):
+        self._real_fs = fs
+        self.cache_folder = fs._cache_folder
+        self.fs = fs._fs
         self.id = stat.id
         self.stat = stat
         self.cond = threading.Condition()
@@ -325,8 +326,10 @@ class CachedFile(object):
                 else:
                     stat = self.stat
 
+                is_temp = False
                 if self.cache_folder is None:
                     self.cached_file = tempfile.TemporaryFile()
+                    is_temp = True
                 else:
                     fn = '%s-%d.bin' % (self.id, utctimestamp(stat.ctime))
                     self.cached_file = open(os.path.join(self.cache_folder, fn), 'a+b')
@@ -362,6 +365,11 @@ class CachedFile(object):
                 with self.cond:
                     self.eof = self.stored
                     self.cond.notify_all()
+
+                if not is_temp:
+                    # now that we have a new file, prune cache
+                    # in case the cache has exceeded its limit
+                    self._real_fs._prune_event.set()
 
         with self.cond:
             self.stored = 0
@@ -409,7 +417,7 @@ class _File(io.RawIOBase):
                 live_md = self._fs._open_files_by_id[stat.id]
             except KeyError:
                 if stat.type == "file":
-                    cached_file = CachedFile(fs._cache_folder, fs._fs, stat)
+                    cached_file = CachedFile(fs, stat)
                 else:
                     cached_file = None
 
@@ -480,6 +488,56 @@ class FileSystem(object):
             self._watch_stop = None
         else:
             self._watch_stop = create_db_watch(self._handle_changes)
+
+        # start thread that prunes cache
+        self._prune_event = threading.Event()
+        self._close_prune_thread = False
+        threading.Thread(target=self._prune_thread, daemon=True).start()
+
+    def close(self):
+        self._close_prune_thread = True
+        self._prune_event.set()
+
+    def _prune_thread(self):
+        if not self._cache_folder:
+            return
+
+        # prune every 30 minutes
+        PRUNE_PERIOD = 30 * 60
+
+        while not self._close_prune_thread:
+            # compute total free space on disk
+            vfs_stat = os.statvfs(self._cache_folder)
+            free_space = vfs_stat.f_bsize * vfs_stat.f_bavail;
+
+            # compute total space taken by cache
+            cache_entries = []
+            for name in os.listdir(self._cache_folder):
+                cache_entries.append((name, os.lstat(os.path.join(self._cache_folder, name))))
+
+            cache_size = sum(st.st_size for (_, st) in cache_entries)
+
+            # sort by ascending atime, descending size
+            cache_entries.sort(key=lambda name_st_pair: (name_st_pair[1].st_atime,
+                                                         -name_st_pair[1].st_size))
+
+            # P: `cache / (cache + free_space)`
+            # N: configurable value from [0, 1]
+
+            N = 0.10
+
+            # delete oldest accessed files, largest files until P<=N
+            potential_free_space = cache_size + free_space
+            for (name, st) in cache_entries:
+                if cache_size / potential_free_space <= N:
+                    break
+
+                os.unlink(os.path.join(self._cache_folder, name))
+
+                cache_size -= st.st_size
+
+            self._prune_event.wait(PRUNE_PERIOD)
+            self._prune_event.clear()
 
     def _init_db(self):
         conn = self._get_db_conn()

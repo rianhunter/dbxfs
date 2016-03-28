@@ -1795,7 +1795,7 @@ def handle_request(server_capabilities, cs, fs, req):
         try:
             fidmd = yield from cs.destroy_file(request.fid)
             assert 'handle' in fidmd
-            fidmd['handle'].close()
+            yield from fidmd['handle'].close()
         except KeyError:
             raise ProtocolError(STATUS_INVALID_HANDLE)
 

@@ -398,7 +398,7 @@ class CachedFile(object):
             self.cached_file.close()
 
 class _File(io.RawIOBase):
-    def __init__(self, fs, stat, path):
+    def __init__(self, fs, stat):
         self._fs = fs
         self._stat = stat
 
@@ -598,7 +598,7 @@ class FileSystem(object):
     def open(self, path):
         stat = self.stat(path)
         with self._file_cache_lock:
-            return _File(self, stat, path)
+            return _File(self, stat)
 
     def open_directory(self, path):
         return _Directory(self, path)

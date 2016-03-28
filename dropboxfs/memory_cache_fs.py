@@ -396,7 +396,6 @@ class CachedFile(object):
             self.stop_signal.set()
             self.thread.join()
             self.cached_file.close()
-            self.cached_file  = None
 
 LiveFileMetadata = collections.namedtuple('LiveFileMetadata',
                                           ["stat", "cached_file", "open_files"])
@@ -404,31 +403,35 @@ LiveFileMetadata = collections.namedtuple('LiveFileMetadata',
 class _File(io.RawIOBase):
     def __init__(self, fs, stat):
         self._fs = fs
-        self._stat = stat
 
-        if self._stat.id not in self._fs._open_files_by_id:
-            self._fs._open_files_by_id[self._stat.id] = set()
+        with self._fs._file_cache_lock:
+            try:
+                live_md = self._fs._open_files_by_id[stat.id]
+            except KeyError:
+                if stat.type == "file":
+                    cached_file = CachedFile(fs._cache_folder, fs._fs, stat)
+                else:
+                    cached_file = None
 
-        self._fs._open_files_by_id[self._stat.id].add(self)
+                live_md = self._fs._open_files_by_id[stat.id] = \
+                          LiveFileMetadata(stat=stat,
+                                           cached_file=cached_file,
+                                           open_files=set())
 
-        if self._stat.type == "file":
-            if self._stat.id not in self._fs._file_cache_by_id:
-                self._fs._file_cache_by_id[self._stat.id] = CachedFile(fs._cache_folder, self._fs._fs, stat)
+            live_md.open_files.add(self)
 
-            self._cached_file = self._fs._file_cache_by_id[self._stat.id]
-        else:
-            self._cached_file = None
+        self._live_md = live_md
 
         self._lock = threading.Lock()
         self._offset = 0
 
     def stat(self):
-        return self._stat
+        return self._live_md.stat
 
     def pread(self, offset, size):
-        if self._cached_file is None:
+        if self._live_md.cached_file is None:
             raise OSError(errno.EISDIR, os.strerror(errno.EISDIR))
-        return self._cached_file.pread(offset, size)
+        return self._live_md.cached_file.pread(offset, size)
 
     def readinto(self, ibuf):
         with self._lock:
@@ -441,10 +444,15 @@ class _File(io.RawIOBase):
         return True
 
     def close(self):
+        toclose = None
         with self._fs._file_cache_lock:
-            self._fs._open_files_by_id[self._stat.id].remove(self)
-            if not self._fs._open_files_by_id[self._stat.id]:
-                del self._fs._open_files_by_id[self._stat.id]
+            self._live_md.open_files.remove(self)
+            if not self._live_md.open_files:
+                toclose = self._live_md.cached_file
+                popped = self._fs._open_files_by_id.pop(self._live_md.stat.id)
+                assert popped is self._live_md
+        if toclose is not None:
+            toclose.close()
 
 class FileSystem(object):
     def __init__(self, fs, cache_folder=None):
@@ -461,7 +469,6 @@ class FileSystem(object):
 
         self._file_cache_lock = threading.Lock()
         self._open_files_by_id = {}
-        self._file_cache_by_id = {}
 
         # watch file system and clear cache on any changes
         # NB: we need to use a 'db style' watch because we need the
@@ -519,17 +526,8 @@ class FileSystem(object):
                 cursor.execute("DELETE FROM md_cache_entries");
 
                 with self._file_cache_lock:
-                    todel = []
-                    for (id_, cached_file) in self._file_cache_by_id.items():
-                        if id_ in self._open_files_by_id:
-                            # Reset cached file if it's currently open
-                            cached_file.reset()
-                        else:
-                            # Otherwise drop the cached file
-                            todel.append(id_)
-
-                    for id_ in todel:
-                        self._file_cache_by_id[id_].pop().close()
+                    for live_md in self._open_files_by_id.values():
+                        live_md.cached_file.reset()
 
                 return
 
@@ -563,21 +561,15 @@ class FileSystem(object):
                                    (json.dumps(None), path_key,))
                 else:
                     with self._file_cache_lock:
-                        new_stat = dbmd_to_stat(change)
                         try:
-                            for f in self._open_files_by_id[change.id]:
-                                f._stat = new_stat
+                            live_md = self._open_files_by_id[change.id]
                         except KeyError:
-                            # no open file with this id,
-                            # so dump the cached file if it exists
-                            try:
-                                self._file_cache_by_id[change.id].close()
-                                del self._file_cache_by_id[change.id]
-                            except KeyError:
-                                pass
+                            pass
                         else:
-                            # we have some open files so reset the cached file
-                            self._file_cache_by_id[change.id].reset(new_stat)
+                            new_stat = dbmd_to_stat(change)
+                            live_md.stat = new_stat
+                            if live_md.cached_file is not None:
+                                live_md.cached_file.reset(new_stat)
 
                     # add to directory tree cache if parent is in cache
                     cursor.execute("""
@@ -603,9 +595,7 @@ class FileSystem(object):
         return self._fs.create_path(*args)
 
     def open(self, path):
-        stat = self.stat(path)
-        with self._file_cache_lock:
-            return _File(self, stat)
+        return _File(self, self.stat(path))
 
     def open_directory(self, path):
         return _Directory(self, path)

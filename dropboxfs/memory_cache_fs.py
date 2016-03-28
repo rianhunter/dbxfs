@@ -396,6 +396,10 @@ class CachedFile(object):
             self.stop_signal.set()
             self.thread.join()
             self.cached_file.close()
+            self.cached_file  = None
+
+LiveFileMetadata = collections.namedtuple('LiveFileMetadata',
+                                          ["stat", "cached_file", "open_files"])
 
 class _File(io.RawIOBase):
     def __init__(self, fs, stat):
@@ -417,6 +421,9 @@ class _File(io.RawIOBase):
 
         self._lock = threading.Lock()
         self._offset = 0
+
+    def stat(self):
+        return self._stat
 
     def pread(self, offset, size):
         if self._cached_file is None:
@@ -641,7 +648,7 @@ class FileSystem(object):
         return stat
 
     def fstat(self, fobj):
-        return fobj._stat
+        return fobj.stat()
 
     def create_watch(self, cb, handle, *n, **kw):
         return self._fs.create_watch(cb, handle._f, *n, **kw)

@@ -1795,9 +1795,14 @@ def handle_request(server_capabilities, cs, fs, req):
         try:
             fidmd = yield from cs.destroy_file(request.fid)
             assert 'handle' in fidmd
-            yield from fidmd['handle'].close()
         except KeyError:
             raise ProtocolError(STATUS_INVALID_HANDLE)
+
+        # Close asynchronously
+        def on_fail():
+            log.warning("Closing %r failed!", fidmd['handle'])
+        asyncio.async(cant_fail(on_fail, fidmd['handle'].close()),
+                      loop=cs._loop)
 
         log.debug("CLose done! %r", request.fid)
 

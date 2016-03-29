@@ -111,6 +111,8 @@ class _File(io.RawIOBase):
         self._offset = 0
         self._lock = threading.Lock()
         self._read_conn = None
+        self._rev = None
+        self._read_conn_is_invalid = True
 
     def pread(self, offset, size=-1):
         # NB: We don't use self._read_conn to avoid locking
@@ -120,6 +122,12 @@ class _File(io.RawIOBase):
         # offset=0, dropbox API doesn't support range requests
         try:
             (md, resp) = self._fs._clientv2.files_download(self._id)
+
+            # NB: pread() may restart file download
+            #     this is so we never can read() something older
+            #     that what we pread() previously
+            self._read_conn_is_invalid = md.rev != self._rev
+
             with contextlib.closing(resp):
                 cur_offset = 0
                 bufs = []
@@ -142,6 +150,22 @@ class _File(io.RawIOBase):
                 raise OSError(errno.EISDIR, os.strerror(errno.EISDIR)) from None
             else: raise
 
+    def _restart_read_conn(self):
+        if self._read_conn is not None:
+            self._read_conn.close()
+
+        (md, self._read_conn) = self._fs._clientv2.files_download(self._id)
+        self._rev = md.rev
+        stat = md_to_stat(md)
+
+        # now skip those bytes
+        toread = self._offset
+        while toread:
+            r = self._read_conn.raw.read(min(toread, 2 ** 16))
+            toread -= len(r)
+
+        return stat
+
     def _seek(self, offset, whence=io.SEEK_SET):
         if whence != io.SEEK_SET:
             raise OSError(errno.ENOTSUP, os.strerror(errno.ENOTSUP))
@@ -149,18 +173,8 @@ class _File(io.RawIOBase):
         if self._offset == offset:
             return
 
-        if self._read_conn is not None:
-            self._read_conn.close()
-
-        self._offset = 0
-        (_, self._read_conn) = self._fs._clientv2.files_download(self._id)
-
-        # now skip those bytes
-        toread = offset
-        while toread:
-            r = self._read_conn.raw.read(min(toread, 2 ** 16))
-            toread -= len(r)
-            self._offset += len(r)
+        self._offset = offset
+        self._restart_read_conn()
 
     def seek(self, *n, **kw):
         with self._lock:
@@ -168,8 +182,9 @@ class _File(io.RawIOBase):
 
     def readinto(self, buf):
         with self._lock:
-            if self._read_conn is None:
-                (_, self._read_conn) = self._fs._clientv2.files_download(self._id)
+            if self._read_conn_is_invalid:
+                self._restart_read_conn()
+                self._read_conn_is_invalid = False
             toret = self._read_conn.raw.readinto(buf)
             self._offset += toret
             return toret
@@ -186,6 +201,25 @@ class _File(io.RawIOBase):
     def close(self):
         if self._read_conn is not None:
             self._read_conn.close()
+
+    def stat(self):
+        with self._lock:
+            if self._read_conn is not None:
+                md = self._fs._get_md_inner(self._id)
+                # Restart read conn if this stat is newer
+                self._read_conn_is_invalid = md.rev != self._rev
+                return md_to_stat(md)
+            else:
+                # NB: This is optimized for the case when an fstat()
+                #     is done before any reading.
+                #     => only a single request is made
+                assert not self._offset and self._read_conn_is_invalid, \
+                    ("There should be no instance when offset "
+                     "is non-zero or read_conn_is_invalid is false "
+                     "and read_conn is None")
+                toret = self._restart_read_conn()
+                self._read_conn_is_invalid = False
+                return toret
 
 Change = collections.namedtuple('Change', ['action', 'path'])
 
@@ -319,7 +353,7 @@ class FileSystem(object):
         return self._get_md(path)
 
     def fstat(self, fobj):
-        return self._get_md(fobj._id)
+        return fobj.stat()
 
     def create_watch(self, cb, dir_handle, completion_filter, watch_tree):
         # TODO: we don't support added, moved_from, or moved_to events

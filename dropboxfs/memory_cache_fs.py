@@ -352,7 +352,7 @@ class CachedFile(object):
                             log.warning("Current file version does not match expected!")
                             return
 
-                    fsource.seek(amt)
+                    fsource.seek(amt, io.SEEK_CUR)
                 while True:
                     if self.stop_signal.is_set():
                         log.debug("File download stopped early!")

@@ -167,6 +167,22 @@ class _File(io.RawIOBase):
         return stat
 
     def _seek(self, offset, whence=io.SEEK_SET):
+        if whence == io.SEEK_CUR:
+            if offset < 0:
+                self._offset += offset
+                whence = io.SEEK_SET
+            else:
+                if self._read_conn_is_invalid:
+                    self._restart_read_conn()
+                    self._read_conn_is_invalid = False
+                # just skip the requested amount of bytes
+                toread = offset
+                while toread:
+                    r = self._read_conn.raw.read(min(toread, 2 ** 16))
+                    toread -= len(r)
+                    self._offset += len(r)
+                return
+
         if whence != io.SEEK_SET:
             raise OSError(errno.ENOTSUP, os.strerror(errno.ENOTSUP))
 

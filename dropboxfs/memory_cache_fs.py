@@ -371,6 +371,8 @@ class CachedFile(object):
                     # in case the cache has exceeded its limit
                     self._real_fs._prune_event.set()
 
+                log.debug("Done downloading %r", self.id)
+
         with self.cond:
             self.stored = 0
             self.eof = None

@@ -353,7 +353,11 @@ class CachedFile(object):
                             return
 
                     fsource.seek(amt)
-                while not self.stop_signal.is_set():
+                while True:
+                    if self.stop_signal.is_set():
+                        log.debug("File download stopped early!")
+                        return
+
                     buf = fsource.read(2 ** 16)
                     if not buf: break
                     self.cached_file.write(buf)

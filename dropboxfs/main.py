@@ -43,6 +43,24 @@ from dropboxfs.disable_quick_look import FileSystem as DisableQuickLookFileSyste
 
 log = logging.getLogger(__name__)
 
+def daemonize():
+    res = os.fork()
+    if res:
+        sys.exit(0)
+        raise Exception("should never get here")
+
+    os.setsid()
+
+    os.chdir("/")
+
+    nullfd = os.open("/dev/null", os.O_RDWR)
+    try:
+        os.dup2(nullfd, 0)
+        os.dup2(nullfd, 1)
+        os.dup2(nullfd, 2)
+    finally:
+        os.close(nullfd)
+
 def main(argv=None):
     if argv is None:
         argv = sys.argv
@@ -54,6 +72,7 @@ def main(argv=None):
         return port
 
     parser = argparse.ArgumentParser()
+    parser.add_argument("-f", "--foreground", action="store_true")
     parser.add_argument("-c", "--config-file")
     parser.add_argument("-p", "--port", type=ensure_port)
     parser.add_argument("mount_point", nargs=1)
@@ -124,7 +143,7 @@ def main(argv=None):
 
     if run_fuse_mount is not None:
         log.debug("Attempting fuse mount")
-        run_fuse_mount(fs, mount_point)
+        run_fuse_mount(fs, mount_point, foreground=args.foreground)
         return 0
 
     server = SMBServer(address, fs)
@@ -138,10 +157,16 @@ def main(argv=None):
             _thread.interrupt_main()
             raise
 
+    can_mount_smb_automatically = sys.platform == "darwin"
+    if not can_mount_smb_automatically:
+        print("Can't mount file system automatically, you can access the SMB server at cifs://guest:@127.0.0.01:%d/dropboxfs" % (port,))
+
+    if not args.foreground:
+        daemonize()
+
     threading.Thread(target=run_server, daemon=True).start()
 
-    if sys.platform != "darwin":
-        log.warn("Couldn't mount file system automatically, you can access the SMB server at cifs://guest:@127.0.0.01:%d/dropboxfs" % (port,))
+    if not can_mount_smb_automatically:
         signal.pause()
     else:
         subprocess.check_call(["mount", "-t", "smbfs",

@@ -20,6 +20,7 @@ import weakref
 
 from dropboxfs.path_common import file_name_norm
 from dropboxfs.dbfs import md_to_stat as dbmd_to_stat
+from dropboxfs.util_dumpster import utctimestamp
 
 import dropbox
 
@@ -43,10 +44,6 @@ def md_plus_name(name, md):
 
 REQUIRED_ATTRS = ["mtime", "type", "size", "id", "ctime"]
 Stat = collections.namedtuple("Stat", REQUIRED_ATTRS)
-
-def utctimestamp(dt):
-    assert dt.tzinfo is None
-    return dt.replace(tzinfo=datetime.timezone.utc).timestamp()
 
 def stat_to_json(obj):
     toret = {}

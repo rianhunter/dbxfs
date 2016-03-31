@@ -141,6 +141,10 @@ def register_deterministic_function(conn, name, num_params, func):
         _hold_ref[conn].append(func)
 
 @contextlib.contextmanager
+def null_context():
+    yield
+
+@contextlib.contextmanager
 def trans(conn, isolation_level=""):
     # NB: This exists because pysqlite will not start a transaction
     # until it sees a DML statement. This sucks if we start a transaction

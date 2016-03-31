@@ -76,6 +76,7 @@ def main(argv=None):
     parser.add_argument("-c", "--config-file")
     parser.add_argument("-p", "--port", type=ensure_port)
     parser.add_argument("-v", "--verbose", action="count", default=0)
+    parser.add_argument("-s", "--smb-only", action="store_true")
     parser.add_argument("mount_point", nargs=1)
     args = parser.parse_args(argv[1:])
 
@@ -143,7 +144,7 @@ def main(argv=None):
     if sys.platform == 'darwin':
         fs = DisableQuickLookFileSystem(fs)
 
-    if run_fuse_mount is not None:
+    if not args.smb_only and run_fuse_mount is not None:
         log.debug("Attempting fuse mount")
         run_fuse_mount(fs, mount_point, foreground=args.foreground)
         return 0

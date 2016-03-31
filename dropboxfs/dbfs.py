@@ -156,7 +156,7 @@ def download_connection(access_token, path, start=None, length=None):
 
     md = json.loads(resp.getheader("dropbox-api-result"))
 
-    return (md, resp.getheader("content-range"), resp)
+    return (md, resp)
 
 class _File(io.RawIOBase):
     def __init__(self, fs, id_):
@@ -172,35 +172,54 @@ class _File(io.RawIOBase):
         # NB: We don't use self._read_conn to avoid locking
         #     since pread() is usually parallel-friendly
 
-        # This implementation is only efficient in the case of
-        # offset=0, dropbox API doesn't support range requests
         try:
-            (md, resp) = self._fs._clientv2.files_download(self._id)
+            (md, resp) = download_connection(self._fs._access_token, self._id,
+                                             start=offset,
+                                             length=None if size < 0 else size)
+
+            range_was_honored = resp.getheader("content-range")
+
+            if not range_was_honored:
+                log.warning("Range wasn't honored: %r", (offset, size))
 
             # NB: pread() may restart file download
             #     this is so we never can read() something older
             #     that what we pread() previously
-            self._read_conn_is_invalid = md.rev != self._rev
+            self._read_conn_is_invalid = md['rev'] != self._rev
 
             with contextlib.closing(resp):
-                cur_offset = 0
                 bufs = []
-                bufs_len = 0
-                for c in resp.iter_content(2**16):
-                    bufs.append(c[max(0, offset - cur_offset):
-                                  min(len(c), (offset + size - cur_offset
-                                               if size >= 0 else
-                                               len(c)))])
-                    bufs_len += len(bufs[-1])
-                    assert size < 0 or bufs_len <= size
-                    if size >= 0 and bufs_len == size:
-                        break
-                    cur_offset += len(c)
+                if range_was_honored:
+                    while True:
+                        c = resp.read(2 ** 16)
+                        if not c: break
+                        bufs.append(c)
+                else:
+                    # handle case where range isn't honored because
+                    # offset is past the EOF
+                    content_length = resp.getheader('content-length')
+                    if (content_length is not None and
+                        offset >= int(content_length)):
+                        return b''
+
+                    cur_offset = 0
+                    bufs_len = 0
+                    while True:
+                        c = resp.read(2 ** 16)
+                        if not c: break
+                        bufs.append(c[max(0, offset - cur_offset):
+                                      min(len(c), (offset + size - cur_offset
+                                                   if size >= 0 else
+                                                   len(c)))])
+                        bufs_len += len(bufs[-1])
+                        assert size < 0 or bufs_len <= size
+                        if size >= 0 and bufs_len == size:
+                            break
+                        cur_offset += len(c)
                 return b''.join(bufs)
-        except dropbox.exceptions.ApiError as e:
-            if (isinstance(e.error, dropbox.files.DownloadError) and
-                e.error.is_path() and
-                e.error.get_path().is_not_file()):
+        except DropboxAPIError as e:
+            if (e.args[0]['error']['.tag'] == "path" and
+                e.args[0]['error']['path']['.tag'] == "not_file"):
                 raise OSError(errno.EISDIR, os.strerror(errno.EISDIR)) from None
             else: raise
 

@@ -402,7 +402,8 @@ class CachedFile(object):
     def _should_wait(self, offset, size):
         with self.cond:
             # if this is currently being downloaded, then just wait
-            if offset + size <= self.stored + 2 ** 16:
+            if (offset + size <= self.stored + 2 ** 16 or
+                offset == self.stored):
                 return True
 
             return not (self.stored < offset + size and self.eof is None)

@@ -75,12 +75,14 @@ def main(argv=None):
     parser.add_argument("-f", "--foreground", action="store_true")
     parser.add_argument("-c", "--config-file")
     parser.add_argument("-p", "--port", type=ensure_port)
+    parser.add_argument("-v", "--verbose", action="count", default=0)
     parser.add_argument("mount_point", nargs=1)
     args = parser.parse_args(argv[1:])
 
     (mount_point,) = args.mount_point
 
-    logging.basicConfig(level=logging.DEBUG)
+    level = [logging.WARNING, logging.INFO, logging.DEBUG][min(2, args.verbose)]
+    logging.basicConfig(level=level)
 
     if args.config_file is not None:
         config_file = args.config_file

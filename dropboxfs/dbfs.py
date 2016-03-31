@@ -15,10 +15,12 @@
 # You should have received a copy of the GNU General Public License
 # along with dropboxfs.  If not, see <http://www.gnu.org/licenses/>.
 
+import codecs
 import collections
 import contextlib
 import datetime
 import errno
+import http
 import io
 import itertools
 import json
@@ -26,7 +28,9 @@ import logging
 import os
 import threading
 import time
+import ssl
 import sys
+import urllib
 import urllib.request
 
 import dropbox
@@ -103,6 +107,56 @@ class _Directory(object):
 
     def __next__(self):
         return next(self._md)
+
+class DropboxAPIError(Exception):
+    def __init__(self, json_):
+        super().__init__(json_)
+
+def download_connection(access_token, path, start=None, length=None):
+    target_host_port = ("content.dropboxapi.com", 443)
+
+    ssl_context = ssl.create_default_context()
+    ca_bundle = os.getenv("REQUESTS_CA_BUNDLE")
+    if ca_bundle is not None:
+        ssl_context.load_verify_locations(ca_bundle)
+
+    proxy = os.getenv("HTTPS_PROXY")
+    if proxy is not None:
+        o = urllib.parse.urlparse(proxy)
+        conn = http.client.HTTPSConnection(o.hostname, o.port, context=ssl_context)
+        conn.set_tunnel(*target_host_port)
+    else:
+        conn = http.client.HTTPSConnection(*target_host_port, context=ssl_context)
+
+    args = {"path" : path}
+
+    path = "/2/files/download?" + urllib.parse.urlencode({'arg' : json.dumps(args)})
+
+    headers = {}
+    headers['Authorization'] = 'Bearer {}'.format(access_token)
+
+    if start is not None:
+        if length is not None:
+          headers['Range'] = 'bytes=%s-%s' % (start, start + length - 1)
+        else:
+          headers['Range'] = 'bytes=%s-' % start
+    elif length is not None:
+        headers['Range'] = 'bytes=-%s' % length
+
+    conn.request("GET", path, None, headers)
+    resp = conn.getresponse()
+
+    if resp.status == 409:
+        reader = codecs.getreader("utf-8")
+        error = json.load(reader(resp))
+        raise DropboxAPIError(error)
+    elif resp.status not in (200, 206):
+        data = resp.read()
+        raise Exception("HTTPError %r %r" % (resp.status, data))
+
+    md = json.loads(resp.getheader("dropbox-api-result"))
+
+    return (md, resp.getheader("content-range"), resp)
 
 class _File(io.RawIOBase):
     def __init__(self, fs, id_):

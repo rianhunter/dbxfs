@@ -39,6 +39,7 @@ class Path(object):
         return root.joinpath(*p[1:].split("/"))
 
     def joinpath(self, *comps):
+        assert all(a for a in comps), "empty path components are  not allowed!"
         return self.__class__(itertools.chain(self._comps, comps))
 
     @property

@@ -699,17 +699,27 @@ class FileSystem(object):
                            (path_key,))
             row = cursor.fetchone()
             if row is None:
-                # NB: Potentially slow!
-                # TODO: do mvcc before storing back in md_cache
-                try:
-                    stat = self._fs.stat(path)
-                except FileNotFoundError:
+                # if it didn't exist in the md_cache, check if the
+                # parent exists in md_cache_entries, if so then this
+                # file doesn't exist
+                (parent_has_been_iterated,) = cursor.execute("""
+                SELECT EXISTS(SELECT * FROM md_cache_entries WHERE path_key = ?)
+                """, (str(path.parent.normed()),)).fetchone()
+
+                if parent_has_been_iterated:
                     stat = None
+                else:
+                    # NB: Potentially slow!
+                    # TODO: do mvcc before storing back in md_cache
+                    try:
+                        stat = self._fs.stat(path)
+                    except FileNotFoundError:
+                        stat = None
 
-                md_str = None if stat is None else stat_to_json(stat)
+                    md_str = None if stat is None else stat_to_json(stat)
 
-                cursor.execute("INSERT INTO md_cache (path_key, md) values (?, ?)",
-                               (path_key, md_str))
+                    cursor.execute("INSERT INTO md_cache (path_key, md) values (?, ?)",
+                                   (path_key, md_str))
             else:
                 (md,) = row
                 stat =  None if md is None else json_to_stat(md)

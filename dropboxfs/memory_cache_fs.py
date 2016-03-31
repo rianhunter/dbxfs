@@ -500,12 +500,21 @@ class FileSystem(object):
         if sqlite3.sqlite_version_info < (3, 9, 0):
             raise Exception("Need sqlite version >= 3.9.0, you have: %r" % (sqlite3.sqlite_version,))
 
+        use_shared_cache = True
+
         self._cache_folder = cache_folder
-        self._db_file = "file:dropboxvfs-%d?mode=memory&cache=shared" % (id(self),)
+        self._db_file = "file:dropboxvfs-%d?mode=memory" % (id(self),)
         self._fs = fs
-        # Application locking is only necessary in shared cache mode
-        # otherwise SQLite will do locking for us
-        self._db_lock = SharedLock()
+
+        if use_shared_cache:
+            self._db_file += "&cache=shared"
+            # Application locking is only necessary in shared cache mode
+            # otherwise SQLite will do locking for us
+            self._db_lock = SharedLock()
+        else:
+            assert ("mode=memory" in self._db_file or
+                    ":memory:" in self._db_file)
+            self._db_lock = None
 
         self._local = threading.local()
 

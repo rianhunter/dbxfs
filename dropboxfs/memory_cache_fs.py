@@ -145,19 +145,24 @@ def null_context():
     yield
 
 @contextlib.contextmanager
-def trans(conn, isolation_level=""):
+def trans(conn, lock, is_exclusive=False):
     # NB: This exists because pysqlite will not start a transaction
     # until it sees a DML statement. This sucks if we start a transaction
     # with a SELECT statement.
-    iso = conn.isolation_level
-    conn.isolation_level = None
-
-    conn.execute("BEGIN " + isolation_level)
-    try:
-        yield conn
-    finally:
-        conn.commit()
-        conn.isolation_level = iso
+    with (null_context()
+          if lock is None else
+          lock
+          if is_exclusive else
+          lock.shared_context()):
+        isolation_level = "IMMEDIATE" if is_exclusive else "DEFERRED"
+        iso = conn.isolation_level
+        conn.isolation_level = None
+        conn.execute("BEGIN " + isolation_level)
+        try:
+            yield conn
+        finally:
+            conn.commit()
+            conn.isolation_level = iso
 
 EMPTY_DIR_ENT = "/empty/"
 
@@ -167,7 +172,7 @@ class WeakrefableConnection(sqlite3.Connection):
 class _Directory(object):
     def __init__(self, fs, path):
         conn = fs._get_db_conn()
-        with trans(conn, "IMMEDIATE"), contextlib.closing(conn.cursor()) as cursor:
+        with trans(conn, fs._db_lock, is_exclusive=True), contextlib.closing(conn.cursor()) as cursor:
             path_key = str(path.normed())
 
             cursor.execute("SELECT name, (SELECT md FROM md_cache WHERE path_key = norm_join(md_cache_entries.path_key, md_cache_entries.name)) FROM md_cache_entries WHERE path_key = ?",
@@ -498,6 +503,9 @@ class FileSystem(object):
         self._cache_folder = cache_folder
         self._db_file = "file:dropboxvfs-%d?mode=memory&cache=shared" % (id(self),)
         self._fs = fs
+        # Application locking is only necessary in shared cache mode
+        # otherwise SQLite will do locking for us
+        self._db_lock = SharedLock()
 
         self._local = threading.local()
 
@@ -604,7 +612,7 @@ class FileSystem(object):
 
     def _handle_changes(self, changes):
         conn = self._get_db_conn()
-        with trans(conn, "IMMEDIATE"):
+        with trans(conn, self._db_lock, is_exclusive=True):
             cursor = conn.cursor()
 
             if changes == "reset":
@@ -696,7 +704,7 @@ class FileSystem(object):
         # upgrade from READ->WRITE.
         # TODO: Start transaction with DEFERRED and restart with IMMEDIATE
         #       if a write is necessary
-        with trans(conn, "IMMEDIATE"), contextlib.closing(conn.cursor()) as cursor:
+        with trans(conn, self._db_lock, is_exclusive=True), contextlib.closing(conn.cursor()) as cursor:
             path_key = str(path.normed())
 
             cursor.execute("SELECT md FROM md_cache WHERE path_key = ? limit 1",

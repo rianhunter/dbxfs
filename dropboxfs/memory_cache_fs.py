@@ -402,8 +402,24 @@ class CachedFile(object):
             while (self.stored < offset + size and self.eof is None):
                 self.cond.wait()
 
+    def _should_wait(self, offset, size):
+        with self.cond:
+            # if this is currently being downloaded, then just wait
+            if offset + size <= self.stored + 2 ** 16:
+                return True
+
+            return not (self.stored < offset + size and self.eof is None)
+
     def pread(self, offset, size):
         with self.reset_lock.shared_context():
+            if not self._should_wait(offset, size):
+                log.debug("Bypassing file cache %r", (offset, size))
+                try:
+                    with contextlib.closing(self.fs.open_by_id(self.id)) as fsource:
+                        return fsource.pread(offset, size)
+                finally:
+                    log.debug("Done bypassing file cache %r", (offset, size))
+
             self._wait_for_range(offset, size)
             # TODO: port to windows, can use ReadFile
             return os.pread(self.cached_file.fileno(), size, offset)

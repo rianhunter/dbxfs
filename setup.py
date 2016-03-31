@@ -32,6 +32,7 @@ setup(
         "dropbox>=3.38,<7",
         "pysmb>=1.1.16,<2",
         "appdirs>=1.4,<2",
+        "fusepy>=2,<3",
     ],
     entry_points={
         'console_scripts': [

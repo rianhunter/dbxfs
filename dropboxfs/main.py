@@ -31,6 +31,11 @@ import appdirs
 
 import dropbox
 
+try:
+    from dropboxfs.fuse_adapter import run_fuse_mount
+except EnvironmentError:
+    run_fuse_mount = None
+
 from dropboxfs.smbserver import SMBServer
 from dropboxfs.dbfs import FileSystem as DropboxFileSystem
 from dropboxfs.memory_cache_fs import FileSystem as CachingFileSystem
@@ -116,6 +121,11 @@ def main(argv=None):
     fs = CachingFileSystem(DropboxFileSystem(access_token), cache_folder=cache_folder)
     if sys.platform == 'darwin':
         fs = DisableQuickLookFileSystem(fs)
+
+    if run_fuse_mount is not None:
+        log.debug("Attempting fuse mount")
+        run_fuse_mount(fs, mount_point)
+        return 0
 
     server = SMBServer(address, fs)
 

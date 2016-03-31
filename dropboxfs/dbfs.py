@@ -39,8 +39,21 @@ from dropboxfs.path_common import Path
 
 log = logging.getLogger(__name__)
 
+_StatObject = collections.namedtuple("Stat", ["name", "type", "size", "mtime", "id", "ctime"])
+
+def md_dict_to_stat(md):
+    name = md['name']
+    type = 'directory' if md.get('.tag') == 'folder' else 'file'
+    size = md.get('size', 0)
+    mtime = (datetime.datetime.strptime(md['client_modified'], '%Y-%m-%dT%H:%M:%SZ')
+             if 'client_modified' in md else
+             datetime.datetime.utcnow())
+    ctime = (datetime.datetime.strptime(md['server_modified'], '%Y-%m-%dT%H:%M:%SZ')
+             if 'server_modified' in md else
+             datetime.datetime.utcnow())
+    return _StatObject(name, type, size, mtime, md['id'], ctime=ctime)
+
 def md_to_stat(md):
-    _StatObject = collections.namedtuple("Stat", ["name", "type", "size", "mtime", "id", "ctime"])
     name = md.name
     type = 'directory' if isinstance(md, dropbox.files.FolderMetadata) else 'file'
     size = 0 if isinstance(md, dropbox.files.FolderMetadata) else md.size
@@ -227,14 +240,15 @@ class _File(io.RawIOBase):
         if self._read_conn is not None:
             self._read_conn.close()
 
-        (md, self._read_conn) = self._fs._clientv2.files_download(self._id)
-        self._rev = md.rev
-        stat = md_to_stat(md)
+        (md, self._read_conn) = download_connection(self._fs._access_token,
+                                                    self._id)
+        self._rev = md['rev']
+        stat = md_dict_to_stat(md)
 
         # now skip those bytes
         toread = self._offset
         while toread:
-            r = self._read_conn.raw.read(min(toread, 2 ** 16))
+            r = self._read_conn.read(min(toread, 2 ** 16))
             toread -= len(r)
 
         return stat
@@ -251,7 +265,7 @@ class _File(io.RawIOBase):
                 # just skip the requested amount of bytes
                 toread = offset
                 while toread:
-                    r = self._read_conn.raw.read(min(toread, 2 ** 16))
+                    r = self._read_conn.read(min(toread, 2 ** 16))
                     toread -= len(r)
                     self._offset += len(r)
                 return
@@ -274,7 +288,7 @@ class _File(io.RawIOBase):
             if self._read_conn_is_invalid:
                 self._restart_read_conn()
                 self._read_conn_is_invalid = False
-            toret = self._read_conn.raw.readinto(buf)
+            toret = self._read_conn.readinto(buf)
             self._offset += toret
             return toret
 
@@ -296,7 +310,7 @@ class _File(io.RawIOBase):
             if self._read_conn is not None:
                 md = self._fs._get_md_inner(self._id)
                 # Restart read conn if this stat is newer
-                self._read_conn_is_invalid = md.rev != self._rev
+                self._read_conn_is_invalid = md['rev'] != self._rev
                 return md_to_stat(md)
             else:
                 # NB: This is optimized for the case when an fstat()

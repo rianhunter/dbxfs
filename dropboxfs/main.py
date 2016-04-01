@@ -166,8 +166,8 @@ def main(argv=None):
         try:
             server.run()
         except:
+            log.exception("Exception in SMBServer")
             _thread.interrupt_main()
-            raise
 
     threading.Thread(target=run_server, daemon=True).start()
 

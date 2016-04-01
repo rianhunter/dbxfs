@@ -196,16 +196,15 @@ def main(argv=None):
 
     threading.Thread(target=run_server, daemon=True).start()
 
-    if not can_mount_smb_automatically:
-        signal.pause()
-    else:
+    if can_mount_smb_automatically:
         subprocess.check_call(["mount", "-t", "smbfs",
                                "cifs://guest:@127.0.0.1:%d/dropboxfs" % (port,),
                                mount_point])
 
-        try:
-            signal.pause()
-        finally:
+    try:
+        signal.pause()
+    finally:
+        if can_mount_smb_automatically:
             subprocess.call(["umount", "-f", mount_point])
 
 if __name__ == "__main__":

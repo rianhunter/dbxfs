@@ -317,6 +317,7 @@ class SharedLock(object):
     def __exit__(self, *n):
         self.release()
 
+# File downloads start on first call to pread()
 class CachedFile(object):
     def __init__(self, fs, stat):
         self._real_fs = fs
@@ -324,10 +325,17 @@ class CachedFile(object):
         self.fs = fs._fs
         self.id = stat.id
         self.stat = stat
-        self.cond = threading.Condition()
         self.reset_lock = SharedLock()
+        self.is_closed = False
 
-        self._reset()
+        self.cond = None
+        self.thread = None
+        self.stop_signal = None
+        self.cached_file = None
+
+    def _thread_has_started(self):
+        assert (self.stop_signal is None) == (self.thread is None) == (self.cond is None)
+        return self.thread is not None
 
     def _reset(self):
         # start thread to stream file in
@@ -400,15 +408,20 @@ class CachedFile(object):
 
     def reset(self, stat=None):
         with self.reset_lock:
-            if self.cached_file is None:
+            if self.is_closed:
                 raise Exception("file is closed")
 
-            self.stop_signal.set()
-            self.thread.join()
-            self.cached_file.close()
+            if self._thread_has_started():
+                self.stop_signal.set()
+                self.thread.join()
+                self.cached_file.close()
+                self.cached_file = None
+
             assert stat is None or stat.id == self.id
             self.stat = stat
-            self._reset()
+
+            if self._thread_has_started():
+                self._reset()
 
     def _wait_for_range(self, offset, size):
         with self.cond:
@@ -425,25 +438,46 @@ class CachedFile(object):
             return not (self.stored < offset + size and self.eof is None)
 
     def pread(self, offset, size):
-        with self.reset_lock.shared_context():
-            if not self._should_wait(offset, size):
-                log.debug("Bypassing file cache %r", (offset, size))
-                try:
-                    with contextlib.closing(self.fs.open_by_id(self.id)) as fsource:
-                        return fsource.pread(offset, size)
-                finally:
-                    log.debug("Done bypassing file cache %r", (offset, size))
+        ctx = self.reset_lock.shared_context()
 
-            self._wait_for_range(offset, size)
-            # TODO: port to windows, can use ReadFile
-            return os.pread(self.cached_file.fileno(), size, offset)
+        while True:
+            with ctx:
+                if self.is_closed:
+                    raise Exception("file is closed")
+
+                if not self._thread_has_started():
+                    # if thread hasn't started, then upgrade to exclusive lock
+                    # and start it
+                    if ctx is not self.reset_lock:
+                        ctx = self.reset_lock
+                        continue
+
+                    self.cond = threading.Condition()
+                    self._reset()
+
+                if not self._should_wait(offset, size):
+                    log.debug("Bypassing file cache %r", (offset, size))
+                    try:
+                        with contextlib.closing(self.fs.open_by_id(self.id)) as fsource:
+                            return fsource.pread(offset, size)
+                    finally:
+                        log.debug("Done bypassing file cache %r", (offset, size))
+
+                self._wait_for_range(offset, size)
+
+                # TODO: port to windows, can use ReadFile
+                return os.pread(self.cached_file.fileno(), size, offset)
 
     def close(self):
         with self.reset_lock:
-            self.stop_signal.set()
-            self.thread.join()
-            self.cached_file.close()
-            self.cached_file  = None
+            if self.is_closed:
+                return
+            self.is_closed = True
+            if self._thread_has_started():
+                self.stop_signal.set()
+                self.thread.join()
+                self.cached_file.close()
+                self.cached_file = None
 
 LiveFileMetadata = collections.namedtuple('LiveFileMetadata',
                                           ["stat", "cached_file", "open_files"])

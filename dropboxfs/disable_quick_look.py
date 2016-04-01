@@ -45,6 +45,7 @@ class QLFile(object):
 class FileSystem(object):
     def __init__(self, backing_fs):
         self._overlay  = MemoryFileSystem([(".ql_disablethumbnails", {"type": "file", "data": b""}),
+                                           (".metadata_never_index", {"type": "file", "data": b""}),
                                            (".ql_disablecache", {"type": "file", "data": b""})])
 
         self._fs = backing_fs
@@ -56,6 +57,7 @@ class FileSystem(object):
             path == self.create_path(".Trashes")):
             raise OSError(errno.ENOENT, os.strerror(errno.ENOENT))
         return path in [self.create_path(".ql_disablethumbnails"),
+                        self.create_path(".metadata_never_index"),
                         self.create_path(".ql_disablecache")]
 
     def open(self, path):

@@ -2010,7 +2010,7 @@ class SMBServer(object):
     def __init__(self, address, fs):
         self._loop = asyncio.get_event_loop()
 
-        self._worker_pool = AsyncWorkerPool(self._loop, 4)
+        self._worker_pool = AsyncWorkerPool(self._loop, 8)
 
         async_fs = AsyncFS(fs, self._worker_pool)
 

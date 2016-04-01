@@ -141,16 +141,18 @@ def main(argv=None):
         os.makedirs(cache_folder)
 
     address = ('127.0.0.1', port)
-    fs = CachingFileSystem(DropboxFileSystem(access_token), cache_folder=cache_folder)
-    if sys.platform == 'darwin':
-        fs = DisableQuickLookFileSystem(fs)
+    def create_fs():
+        fs = CachingFileSystem(DropboxFileSystem(access_token), cache_folder=cache_folder)
+        if sys.platform == 'darwin':
+            fs = DisableQuickLookFileSystem(fs)
+        return fs
 
     if not args.smb_only and run_fuse_mount is not None:
         log.debug("Attempting fuse mount")
-        run_fuse_mount(fs, mount_point, foreground=args.foreground)
+        run_fuse_mount(create_fs, mount_point, foreground=args.foreground)
         return 0
 
-    server = SMBServer(address, fs)
+    server = SMBServer(address, create_fs())
 
     do_unmount = False
 

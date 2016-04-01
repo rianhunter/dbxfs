@@ -15,8 +15,8 @@ log = logging.getLogger(__name__)
 class FUSEAdapter(Operations):
     flag_nopath = 1
 
-    def __init__(self, fs):
-        self._fs = fs
+    def __init__(self, create_fs):
+        self._create_fs = create_fs
         self._fh_to_file = {}
         self._lock = threading.Lock()
 
@@ -63,6 +63,9 @@ class FUSEAdapter(Operations):
 
         return toret
 
+    def init(self, _):
+        self._fs = self._create_fs()
+
     def getattr(self, path, fh=None):
         if fh is not None:
             if fh in self._fh_to_file:
@@ -97,7 +100,7 @@ class FUSEAdapter(Operations):
     def releasedir(self, path, fh):
         self._delete_file(fh).close()
 
-def run_fuse_mount(fs, mount_point, foreground=False):
-    FUSE(FUSEAdapter(fs), mount_point, foreground=foreground, hard_remove=True)
+def run_fuse_mount(create_fs, mount_point, foreground=False):
+    FUSE(FUSEAdapter(create_fs), mount_point, foreground=foreground, hard_remove=True)
 
 

@@ -26,7 +26,6 @@ import signal
 import subprocess
 import sys
 import syslog
-import _thread
 import threading
 
 import appdirs
@@ -187,12 +186,21 @@ def main(argv=None):
     address = ('127.0.0.1', port)
     server = SMBServer(address, create_fs())
 
+
+    should_die = False
+
+    def set_should_die(*n):
+        nonlocal should_die
+        should_die = True
+
+    signal.signal(signal.SIGTERM, set_should_die)
+
     def run_server():
         try:
             server.run()
         except:
             log.exception("Exception in SMBServer")
-            _thread.interrupt_main()
+            os.kill(os.getpid(), signal.SIGTERM)
 
     threading.Thread(target=run_server, daemon=True).start()
 
@@ -202,8 +210,13 @@ def main(argv=None):
                                mount_point])
 
     try:
-        signal.pause()
+        while not should_die:
+            signal.pause()
     finally:
+        # NB: we may die by other means than SIGINT, SIGTERM, or a crash
+        #     in the server. This is just best effort cleanup. Hopefully
+        #     the file system will be automatically unmounted if the server
+        #     dies.
         if can_mount_smb_automatically:
             subprocess.call(["umount", "-f", mount_point])
 

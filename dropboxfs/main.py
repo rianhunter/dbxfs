@@ -25,6 +25,7 @@ import random
 import signal
 import subprocess
 import sys
+import syslog
 import _thread
 import threading
 
@@ -62,6 +63,25 @@ def daemonize():
     finally:
         os.close(nullfd)
 
+class RealSysLogHandler(logging.Handler):
+    def __init__(self, *n, **kw):
+        super().__init__()
+        syslog.openlog(*n, **kw)
+
+    def _map_priority(self, levelname):
+        return {
+            logging.DEBUG:    syslog.LOG_DEBUG,
+            logging.INFO:     syslog.LOG_INFO,
+            logging.ERROR:    syslog.LOG_ERR,
+            logging.WARNING:  syslog.LOG_WARNING,
+            logging.CRITICAL: syslog.LOG_CRIT,
+            }[levelname]
+
+    def emit(self, record):
+        msg = self.format(record)
+        priority = self._map_priority(record.levelno)
+        syslog.syslog(priority, msg)
+
 def main(argv=None):
     if argv is None:
         argv = sys.argv
@@ -84,8 +104,13 @@ def main(argv=None):
     (mount_point,) = args.mount_point
     mount_point = os.path.abspath(mount_point)
 
+    if args.foreground:
+        logging_stream = logging.StreamHandler()
+    else:
+        logging_stream = RealSysLogHandler("dropboxfs", syslog.LOG_PID)
+
     level = [logging.WARNING, logging.INFO, logging.DEBUG][min(2, args.verbose)]
-    logging.basicConfig(level=level)
+    logging.basicConfig(level=level, handlers=[logging_stream])
 
     if args.config_file is not None:
         config_file = args.config_file

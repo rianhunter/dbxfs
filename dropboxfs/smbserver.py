@@ -166,13 +166,16 @@ class ComSessionSetupAndxRequest(smb_structs.ComSessionSetupAndxRequest__NoSecur
 
         if is_unicode:
             if oem_password_len:
-                raise Exception("OEM Password len must be 0 when SMB_FLAGS2_UNICODE is set")
+                # NB: Mac OS X sends oem_password_len == 1 even when SMB_FLAGS2_UNICODE is
+                #     set, even though this is against spec
+                log.warning("OEM Password len must be 0 when SMB_FLAGS2_UNICODE is set: %r, %r" %
+                            (oem_password_len, message.data[:oem_password_len]))
             # Linux CIFS_VFS client sends NTLMv2 even when we ask it not to
             password = None
-            #password = message.data[0:unicode_password_len].decode("utf-16-le")
+            #password = message.data[oem_password_len:oem_password_len + unicode_password_len].decode("utf-16-le")
         else:
             if unicode_password_len:
-                raise Exception("Unicode Password len must be 0 when SMB_FLAGS2_UNICODE is clear")
+                log.warning("Unicode Password len must be 0 when SMB_FLAGS2_UNICODE is clear")
             # TODO: 'ascii' is probably not the right encoding here
             password = message.data[:oem_password_len].rstrip(b'\0').decode("ascii")
 

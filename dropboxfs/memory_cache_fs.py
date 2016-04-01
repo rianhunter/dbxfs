@@ -101,8 +101,15 @@ def register_deterministic_function(conn, name, num_params, func):
 
     # This is a hack, oh well this is how I roll
     # TODO: submit patch to pysqlite to do this natively
-    sqlite3_dll = ctypes.CDLL(ctypes.util.find_library("sqlite3"))
-    pysqlite_dll = ctypes.PyDLL(_sqlite3.__file__)
+
+    if sys.platform == "darwin":
+        RTLD_NOLOAD = 0x10
+    elif sys.platform.startswith("linux"):
+        RTLD_NOLOAD = 0x04
+    else:
+        raise Exception("Platform not supported!")
+
+    pysqlite_dll = ctypes.PyDLL(_sqlite3.__file__, ctypes.RTLD_GLOBAL | RTLD_NOLOAD)
 
     sqlite3_create_function_proto = ctypes.CFUNCTYPE(ctypes.c_int,
                                                      ctypes.c_void_p, # db
@@ -115,7 +122,7 @@ def register_deterministic_function(conn, name, num_params, func):
                                                      ctypes.c_void_p)
 
     sqlite3_create_function = sqlite3_create_function_proto(("sqlite3_create_function",
-                                                             sqlite3_dll))
+                                                             pysqlite_dll))
 
     # get dp pointer from connection object
     dbp = ctypes.cast(id(conn) +

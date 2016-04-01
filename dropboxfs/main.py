@@ -81,6 +81,7 @@ def main(argv=None):
     args = parser.parse_args(argv[1:])
 
     (mount_point,) = args.mount_point
+    mount_point = os.path.abspath(mount_point)
 
     level = [logging.WARNING, logging.INFO, logging.DEBUG][min(2, args.verbose)]
     logging.basicConfig(level=level)

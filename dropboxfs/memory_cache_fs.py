@@ -557,7 +557,9 @@ class FileSystem(object):
 
         self._local = threading.local()
 
-        self._init_db()
+        # NB: at least one conn must be held open if this is an
+        #     in-memory DB
+        self._conn = self._init_db()
 
         self._file_cache_lock = threading.Lock()
         self._open_files_by_id = {}
@@ -581,6 +583,7 @@ class FileSystem(object):
     def close(self):
         self._close_prune_thread = True
         self._prune_event.set()
+        self._conn.close()
 
     def _prune_thread(self):
         if not self._cache_folder:
@@ -624,7 +627,7 @@ class FileSystem(object):
             self._prune_event.clear()
 
     def _init_db(self):
-        conn = self._get_db_conn()
+        conn = self._create_db_conn()
 
         conn.executescript("""
         CREATE TABLE IF NOT EXISTS md_cache
@@ -642,16 +645,22 @@ class FileSystem(object):
         """)
         conn.commit()
 
+        return conn
+
     def _norm_join_sql(self, path_key, name):
         return str((self._fs.parse_path(path_key) / name).normed())
+
+    def _create_db_conn(self):
+        conn = sqlite3.connect(self._db_file, factory=WeakrefableConnection, uri=True)
+        conn.create_function("attr_merge", 2, wrap_show_exc(attr_merge_sql))
+        conn.create_function("norm_join", 2, wrap_show_exc(self._norm_join_sql))
+        register_deterministic_function(conn, "file_name_norm", 1, wrap_show_exc(file_name_norm_2))
+        return conn
 
     def _get_db_conn(self):
         conn = getattr(self._local, 'conn', None)
         if conn is None:
-            conn = self._local.conn = sqlite3.connect(self._db_file, factory=WeakrefableConnection, uri=True)
-            conn.create_function("attr_merge", 2, wrap_show_exc(attr_merge_sql))
-            conn.create_function("norm_join", 2, wrap_show_exc(self._norm_join_sql))
-            register_deterministic_function(conn, "file_name_norm", 1, wrap_show_exc(file_name_norm_2))
+            conn = self._local.conn = self._create_db_conn()
         return conn
 
     def close(self):

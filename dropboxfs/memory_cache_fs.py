@@ -459,7 +459,7 @@ class _File(io.RawIOBase):
                 if stat.type == "file":
                     cached_file = CachedFile(fs, stat)
                 else:
-                    cached_file = None
+                    cached_file = self._fs._fs.open_by_id(stat.id)
 
                 live_md = self._fs._open_files_by_id[stat.id] = \
                           LiveFileMetadata(stat=stat,
@@ -477,8 +477,6 @@ class _File(io.RawIOBase):
         return self._live_md.stat
 
     def pread(self, offset, size):
-        if self._live_md.cached_file is None:
-            raise OSError(errno.EISDIR, os.strerror(errno.EISDIR))
         return self._live_md.cached_file.pread(offset, size)
 
     def readinto(self, ibuf):
@@ -761,7 +759,7 @@ class FileSystem(object):
         return fobj.stat()
 
     def create_watch(self, cb, handle, *n, **kw):
-        return self._fs.create_watch(cb, handle._f, *n, **kw)
+        return self._fs.create_watch(cb, handle._live_md.cached_file, *n, **kw)
 
 def main(argv):
     logging.basicConfig(level=logging.DEBUG)

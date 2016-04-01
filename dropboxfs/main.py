@@ -25,6 +25,7 @@ import random
 import signal
 import subprocess
 import sys
+import _thread
 import threading
 
 import appdirs

@@ -129,18 +129,10 @@ def main(argv=None):
             with open(config_file, "w") as f:
                 json.dump(dict(access_token=access_token), f)
 
-    if args.port is None:
-        # NB: Binding to this port could fail
-        # TODO: keep randomly binding until we find a port
-        port = random.randint(60000, 2 ** 16)
-    else:
-        port = args.port
-
     cache_folder = os.path.join(appdirs.user_cache_dir(), "dropboxfs", "file_cache")
     with contextlib.suppress(FileExistsError):
         os.makedirs(cache_folder)
 
-    address = ('127.0.0.1', port)
     def create_fs():
         fs = CachingFileSystem(DropboxFileSystem(access_token), cache_folder=cache_folder)
         if sys.platform == 'darwin':
@@ -152,16 +144,12 @@ def main(argv=None):
         run_fuse_mount(create_fs, mount_point, foreground=args.foreground)
         return 0
 
-    server = SMBServer(address, create_fs())
-
-    do_unmount = False
-
-    def run_server():
-        try:
-            server.run()
-        except:
-            _thread.interrupt_main()
-            raise
+    if args.port is None:
+        # NB: Binding to this port could fail
+        # TODO: keep randomly binding until we find a port
+        port = random.randint(60000, 2 ** 16)
+    else:
+        port = args.port
 
     can_mount_smb_automatically = sys.platform == "darwin"
     if not can_mount_smb_automatically:
@@ -169,6 +157,16 @@ def main(argv=None):
 
     if not args.foreground:
         daemonize()
+
+    address = ('127.0.0.1', port)
+    server = SMBServer(address, create_fs())
+
+    def run_server():
+        try:
+            server.run()
+        except:
+            _thread.interrupt_main()
+            raise
 
     threading.Thread(target=run_server, daemon=True).start()
 

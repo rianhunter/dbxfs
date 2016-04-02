@@ -1995,7 +1995,7 @@ class AsyncWorkerPool(object):
     def __init__(self, loop, size=1):
         self.loop = loop
 
-        (self.rsock, self.wsock) = socketpair()
+        (rsock, wsock) = socketpair()
         to_worker_queue = queue.Queue()
         from_worker_queue = queue.Queue()
 
@@ -2012,7 +2012,8 @@ class AsyncWorkerPool(object):
                     ret = sys.exc_info()[1]
                     is_exc = True
                 from_worker_queue.put((ret, is_exc, tag))
-                self.wsock.send(b"_")
+                wsock.send(b"_")
+            wsock.close()
 
         for _ in range(size):
             threading.Thread(target=worker_thread, daemon=True).start()
@@ -2021,10 +2022,10 @@ class AsyncWorkerPool(object):
 
         @asyncio.coroutine
         def worker_conduit():
-            set_fd_non_blocking(self.rsock, True)
+            set_fd_non_blocking(rsock, True)
 
             conduit_get = asyncio.async(self.conduit_queue.get(), loop=loop)
-            sock_recv = asyncio.async(loop.sock_recv(self.rsock, 1), loop=loop)
+            sock_recv = asyncio.async(loop.sock_recv(rsock, 1), loop=loop)
 
             while True:
                 (done, _) = yield from asyncio.wait([conduit_get, sock_recv],
@@ -2041,7 +2042,9 @@ class AsyncWorkerPool(object):
                     (res, is_exc, future) = from_worker_queue.get(block=False)
                     if is_exc: future.set_exception(res)
                     else: future.set_result(res)
-                    sock_recv = asyncio.async(loop.sock_recv(self.rsock, 1), loop=loop)
+                    sock_recv = asyncio.async(loop.sock_recv(rsock, 1), loop=loop)
+
+            rsock.close()
 
         self.conduit_coro = asyncio.async(worker_conduit(),
                                           loop=loop)
@@ -2054,12 +2057,10 @@ class AsyncWorkerPool(object):
         return (yield from fut)
 
     def close(self):
-        self.rsock.close()
-        self.wsock.close()
+        asyncio.async(self.conduit_queue.put(None))
 
     @asyncio.coroutine
     def wait_closed(self):
-        yield from self.conduit_queue.put(None)
         yield from self.conduit_coro
 
 class AsyncWrapped(object):

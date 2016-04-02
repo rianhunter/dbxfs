@@ -983,6 +983,7 @@ class SMBClientHandler(object):
             toret = self._open_tids[req.tid]
             if toret['closing']: raise KeyError()
             toret['ref'] += 1
+            return toret['fs']
         except KeyError:
             raise ProtocolError(STATUS_SMB_BAD_TID)
 
@@ -1021,10 +1022,11 @@ class SMBClientHandler(object):
         del self._open_uids[uid]
 
     @asyncio.coroutine
-    def create_tree(self):
+    def create_tree(self, fs):
         tid = self._create_id(self._open_tids, INVALID_TIDS)
         self._open_tids[tid] = dict(closing=None,
-                                    ref=0)
+                                    ref=0,
+                                    fs=fs)
         return tid
 
     @asyncio.coroutine
@@ -1059,6 +1061,7 @@ class SMBClientHandler(object):
 
         popped = self._open_tids.pop(tid)
         assert popped is ret
+        return ret['fs']
 
     @asyncio.coroutine
     def create_search(self, **kw):
@@ -1202,7 +1205,7 @@ class SMBClientHandler(object):
                            msg.raw_data])
 
     @asyncio.coroutine
-    def run(self, fs, loop, reader, writer):
+    def run(self, backend, loop, reader, writer):
         self._loop = loop
 
         # first negotiate SMB protocol
@@ -1272,7 +1275,7 @@ class SMBClientHandler(object):
                     def real_handle_request(msg):
                         try:
                             ret = yield from handle_request(server_capabilities,
-                                                            self, fs, msg)
+                                                            self, backend, msg)
                         except ProtocolError as e:
                             if e.error not in (STATUS_NO_SUCH_FILE,):
                                 log.debug("Protocol Error!!! %r %r",
@@ -1318,7 +1321,7 @@ class SMBClientHandler(object):
             assert len(done) == 1
 
 @asyncio.coroutine
-def handle_request(server_capabilities, cs, fs, req):
+def handle_request(server_capabilities, cs, backend, req):
     @asyncio.coroutine
     def smb_path_to_fs_path(path):
         comps = path[1:].split("\\")
@@ -1383,18 +1386,25 @@ def handle_request(server_capabilities, cs, fs, req):
 
         if req.payload.flags & TREE_CONNECT_ANDX_DISCONNECT_TID:
             try:
-                yield from cs.destroy_tree(req.tid)
+                fs = yield from cs.destroy_tree(req.tid)
             except KeyError:
                 # NB: this is allowed to fail silently
                 pass
+            else:
+                yield from backend.tree_disconnect(fs)
 
         if req.payload.service not in ("?????", "A:"):
+            log.debug("Client attempted to connect to %r service",
+                      req.payload.service)
             raise ProtocolError(STATUS_OBJECT_PATH_NOT_FOUND)
 
-        if req.payload.path.endswith("$"):
+        try:
+            fs = yield from backend.tree_connect(req.payload.path)
+        except KeyError:
+            log.debug("Error tree connect: %r", req.payload.path)
             raise ProtocolError(STATUS_OBJECT_PATH_NOT_FOUND)
 
-        tid = yield from cs.create_tree()
+        tid = yield from cs.create_tree(fs)
 
         args = response_args_from_req(req,
                                       optional_support=smb_structs.SMB_TREE_CONNECTX_SUPPORT_SEARCH,
@@ -1406,17 +1416,18 @@ def handle_request(server_capabilities, cs, fs, req):
         yield from cs.verify_uid(req)
 
         try:
-            yield from cs.destroy_tree(req.tid)
+            fs = yield from cs.destroy_tree(req.tid)
         except KeyError:
             raise ProtocolError(STATUS_SMB_BAD_TID)
 
+        yield from backend.tree_disconnect(fs)
 
         args = response_args_from_req(req)
 
         return SMBMessage(ComTreeDisconnectResponse(**args))
     elif req.command == SMB_COM_CHECK_DIRECTORY:
         yield from cs.verify_uid(req)
-        yield from cs.verify_tid(req)
+        fs = yield from cs.verify_tid(req)
         try:
             fspath = yield from smb_path_to_fs_path(req.payload.filename)
 
@@ -1448,7 +1459,7 @@ def handle_request(server_capabilities, cs, fs, req):
         return SMBMessage(ComEchoResponse(**args))
     elif req.command == smb_structs.SMB_COM_TRANSACTION2:
         yield from cs.verify_uid(req)
-        yield from cs.verify_tid(req)
+        fs = yield from cs.verify_tid(req)
         try:
             if len(req.payload.setup_bytes) % 2:
                 raise Exception("bad setup bytes length!")
@@ -1741,7 +1752,7 @@ def handle_request(server_capabilities, cs, fs, req):
             yield from cs.deref_tid(req.tid)
     elif req.command == SMB_COM_QUERY_INFORMATION_DISK:
         yield from cs.verify_uid(req)
-        yield from cs.verify_tid(req)
+        fs = yield from cs.verify_tid(req)
         try:
             args = response_args_from_req(req,
                                           total_units=2 ** 16 - 1,
@@ -1756,7 +1767,7 @@ def handle_request(server_capabilities, cs, fs, req):
         request = req.payload
 
         yield from cs.verify_uid(req)
-        yield from cs.verify_tid(req)
+        fs = yield from cs.verify_tid(req)
         try:
             if (request.flags &
                 (
@@ -1855,7 +1866,7 @@ def handle_request(server_capabilities, cs, fs, req):
     elif req.command == smb_structs.SMB_COM_READ_ANDX:
         request = req.payload
         yield from cs.verify_uid(req)
-        yield from cs.verify_tid(req)
+        fs = yield from cs.verify_tid(req)
         try:
             log.debug("About to read file... %r", request.fid)
 
@@ -1880,7 +1891,7 @@ def handle_request(server_capabilities, cs, fs, req):
     elif req.command == smb_structs.SMB_COM_CLOSE:
         request = req.payload
         yield from cs.verify_uid(req)
-        yield from cs.verify_tid(req)
+        fs = yield from cs.verify_tid(req)
         try:
             log.debug("CLOSE FILE... %r", request.fid)
 
@@ -1904,7 +1915,7 @@ def handle_request(server_capabilities, cs, fs, req):
             yield from cs.deref_tid(req.tid)
     elif req.command == smb_structs.SMB_COM_NT_TRANSACT:
         yield from cs.verify_uid(req)
-        yield from cs.verify_tid(req)
+        fs = yield from cs.verify_tid(req)
         try:
             nt_transact = req.payload
 
@@ -2102,17 +2113,28 @@ class AsyncFS(AsyncWrapped):
             return ret
         return fn
 
+class AsyncBackend(AsyncWrapped):
+    @asyncio.coroutine
+    def tree_connect(self, *n, **kw):
+        fs = yield from (self._run_method('tree_connect', *n, **kw))
+        return AsyncFS(fs, self._worker_pool)
+
+    @asyncio.coroutine
+    def tree_disconnect(self, fs):
+        # unwraps the real fs out of fs
+        return (yield from(self._run_method('tree_disconnect', fs._obj)))
+
 class SMBServer(object):
-    def __init__(self, address, fs):
+    def __init__(self, address, backend):
         self._loop = asyncio.get_event_loop()
 
         self._worker_pool = AsyncWorkerPool(self._loop, 8)
 
-        async_fs = AsyncFS(fs, self._worker_pool)
+        async_backend = AsyncBackend(backend, self._worker_pool)
 
         @asyncio.coroutine
         def handle_client(reader, writer):
-            yield from SMBClientHandler().run(async_fs, self._loop,
+            yield from SMBClientHandler().run(async_backend, self._loop,
                                               reader, writer)
             log.debug("client done!")
 

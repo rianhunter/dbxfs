@@ -81,6 +81,19 @@ class RealSysLogHandler(logging.Handler):
         priority = self._map_priority(record.levelno)
         syslog.syslog(priority, msg)
 
+class SimpleSMBBackend(object):
+    def __init__(self, path, fs):
+        self._path = path
+        self._fs = fs
+
+    def tree_connect(self, path):
+        if self._path.upper() == path.upper():
+            return self._fs
+        raise KeyError()
+
+    def tree_disconnect(self, fs):
+        pass
+
 def main(argv=None):
     if argv is None:
         argv = sys.argv
@@ -189,8 +202,7 @@ def main(argv=None):
         daemonize()
 
     address = ('127.0.0.1', port)
-    server = SMBServer(address, create_fs())
-
+    server = SMBServer(address, SimpleSMBBackend("\\\\127.0.0.1\\dropboxfs", create_fs()))
 
     should_die = False
 

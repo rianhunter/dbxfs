@@ -97,6 +97,7 @@ def main(argv=None):
     parser.add_argument("-p", "--port", type=ensure_port)
     parser.add_argument("-v", "--verbose", action="count", default=0)
     parser.add_argument("-s", "--smb-only", action="store_true")
+    parser.add_argument("-n", "--smb-no-mount", action="store_true")
     parser.add_argument("mount_point", nargs=1)
     args = parser.parse_args(argv[1:])
 
@@ -176,9 +177,13 @@ def main(argv=None):
     else:
         port = args.port
 
-    can_mount_smb_automatically = sys.platform == "darwin"
+    can_mount_smb_automatically = sys.platform == "darwin" and not args.smb_no_mount
     if not can_mount_smb_automatically:
-        print("Can't mount file system automatically, you can access the SMB server at cifs://guest:@127.0.0.01:%d/dropboxfs" % (port,))
+        print("%s, you can access the SMB server at cifs://guest:@127.0.0.01:%d/dropboxfs" %
+              ("Not mounting file system automatically"
+               if args.smb_no_mount else
+               "Can't mount file system automatically",
+               port,))
 
     if not args.foreground:
         daemonize()

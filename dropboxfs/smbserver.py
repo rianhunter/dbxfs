@@ -2056,12 +2056,15 @@ class AsyncWrapped(object):
         self._obj = obj
         self._worker_pool = worker_pool
 
+    @asyncio.coroutine
+    def _run_method(self, name, *n, **kw):
+        return (yield from self._worker_pool.run_async(getattr(self._obj, name),
+                                                       *n, **kw))
+
     def __getattr__(self, name):
         @asyncio.coroutine
         def fn(*n, **kw):
-            ret = yield from self._worker_pool.run_async(getattr(self._obj, name),
-                                                         *n, **kw)
-            return ret
+            return (yield from self._run_method(name, *n, **kw))
         return fn
 
 class AsyncFS(AsyncWrapped):

@@ -2125,6 +2125,8 @@ class AsyncBackend(AsyncWrapped):
         # unwraps the real fs out of fs
         return (yield from(self._run_method('tree_disconnect', fs._obj)))
 
+# SMBServer abstracts away the fact that it is implemented using
+# asyncio. It expects to be used in normal python code.
 class SMBServer(object):
     def __init__(self, address, backend):
         self._loop = asyncio.get_event_loop()
@@ -2145,10 +2147,17 @@ class SMBServer(object):
         self._server = self._loop.run_until_complete(start_server_coro)
 
     def close(self):
-        self._server.close()
-        self._loop.run_until_complete(self._server.wait_closed())
-        self._worker_pool.close()
-        self._loop.run_until_complete(self._worker_pool.wait_closed())
+        @asyncio.coroutine
+        def _close():
+            self._server.close()
+            @asyncio.coroutine
+            def _on_close():
+                yield from self._server.wait_closed()
+                self._worker_pool.close()
+                yield from self._worker_pool.wait_closed()
+            asyncio.async(_on_close(), loop=self._loop)
+        fut = asyncio.run_coroutine_threadsafe(_close(), self._loop)
+        return fut.result()
 
     def run(self):
         self._loop.run_forever()

@@ -31,6 +31,7 @@ import time
 import threading
 
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from io import StringIO
 
@@ -1994,74 +1995,20 @@ def set_fd_non_blocking(fd, val):
 class AsyncWorkerPool(object):
     def __init__(self, loop, size=1):
         self.loop = loop
-
-        (rsock, wsock) = socketpair()
-        to_worker_queue = queue.Queue()
-        from_worker_queue = queue.Queue()
-
-        def worker_thread():
-            while True:
-                obj = to_worker_queue.get()
-
-                if obj is None: break
-                (fn, tag) = obj
-                try:
-                    ret = fn()
-                    is_exc = False
-                except:
-                    ret = sys.exc_info()[1]
-                    is_exc = True
-                from_worker_queue.put((ret, is_exc, tag))
-                wsock.send(b"_")
-            wsock.close()
-
-        for _ in range(size):
-            threading.Thread(target=worker_thread, daemon=True).start()
-
-        self.conduit_queue = asyncio.Queue(loop=loop)
-
-        @asyncio.coroutine
-        def worker_conduit():
-            set_fd_non_blocking(rsock, True)
-
-            conduit_get = asyncio.async(self.conduit_queue.get(), loop=loop)
-            sock_recv = asyncio.async(loop.sock_recv(rsock, 1), loop=loop)
-
-            while True:
-                (done, _) = yield from asyncio.wait([conduit_get, sock_recv],
-                                                    return_when=asyncio.FIRST_COMPLETED,
-                                                    loop=loop)
-
-                if conduit_get in done:
-                    q = conduit_get.result()
-                    to_worker_queue.put(q)
-                    if q is None: break
-                    conduit_get = asyncio.async(self.conduit_queue.get(), loop=loop)
-
-                if sock_recv in done:
-                    (res, is_exc, future) = from_worker_queue.get(block=False)
-                    if is_exc: future.set_exception(res)
-                    else: future.set_result(res)
-                    sock_recv = asyncio.async(loop.sock_recv(rsock, 1), loop=loop)
-
-            rsock.close()
-
-        self.conduit_coro = asyncio.async(worker_conduit(),
-                                          loop=loop)
+        self.executor = ThreadPoolExecutor(None if size < 0 else size)
 
     @asyncio.coroutine
     def run_async(self, f, *n, **kw):
         f = functools.partial(f, *n, **kw)
-        fut = asyncio.Future(loop=self.loop)
-        yield from self.conduit_queue.put((f, fut))
+        fut = self.loop.run_in_executor(self.executor, f)
         return (yield from fut)
 
     def close(self):
-        asyncio.async(self.conduit_queue.put(None))
+        pass
 
     @asyncio.coroutine
     def wait_closed(self):
-        yield from self.conduit_coro
+        pass
 
 class AsyncWrapped(object):
     def __init__(self, obj, worker_pool):

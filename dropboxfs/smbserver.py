@@ -962,7 +962,7 @@ class ProtocolError(Exception):
 def cant_fail(on_fail, future):
     try:
         ret = yield from future
-    except:
+    except Exception:
         log.exception("Process-stopping exception!")
         on_fail()
 
@@ -1277,7 +1277,7 @@ class SMBClientHandler(object):
                 if read_future in done:
                     try:
                         msg = read_future.result()
-                    except:
+                    except Exception:
                         # not sure what happened but we received invalid data
                         log.exception("Exception during reading socket")
                         break

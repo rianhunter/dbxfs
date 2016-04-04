@@ -2079,7 +2079,7 @@ class SMBServer(object):
         if address is None:
             address = (None, None)
 
-        self._loop = asyncio.get_event_loop()
+        self._loop = asyncio.new_event_loop()
 
         self._worker_pool = AsyncWorkerPool(self._loop, 8)
 

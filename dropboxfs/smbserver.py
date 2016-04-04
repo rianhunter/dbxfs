@@ -2097,21 +2097,29 @@ class SMBServer(object):
                                                  loop=self._loop)
         self._server = self._loop.run_until_complete(start_server_coro)
 
+        self._server_done = asyncio.Future(loop=self._loop)
+
+        # NB: due to a quirk in asyncio, we need to call wait_closed()
+        #     before any connections are made so that it waits for all
+        #     open client connections to close before returning after close()
+        #     is called
+        @asyncio.coroutine
+        def _on_close():
+            yield from self._server.wait_closed()
+            self._worker_pool.close()
+            yield from self._worker_pool.wait_closed()
+            self._server_done.set_result(None)
+
+        asyncio.async(_on_close(), loop=self._loop)
+
     def close(self):
         @asyncio.coroutine
-        def _close():
+        def _on_main_thread():
             self._server.close()
-            @asyncio.coroutine
-            def _on_close():
-                yield from self._server.wait_closed()
-                self._worker_pool.close()
-                yield from self._worker_pool.wait_closed()
-            asyncio.async(_on_close(), loop=self._loop)
-        fut = asyncio.run_coroutine_threadsafe(_close(), self._loop)
-        return fut.result()
+        asyncio.run_coroutine_threadsafe(_on_main_thread(), self._loop)
 
     def run(self):
-        self._loop.run_forever()
+        self._loop.run_until_complete(self._server_done)
 
 def main(argv):
     logging.basicConfig(level=logging.DEBUG)

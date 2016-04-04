@@ -1206,7 +1206,7 @@ class SMBClientHandler(object):
                            msg.raw_data])
 
     @asyncio.coroutine
-    def run(self, backend, loop, reader, writer):
+    def run(self, server, backend, loop, reader, writer):
         self._loop = loop
 
         # first negotiate SMB protocol
@@ -1275,7 +1275,7 @@ class SMBClientHandler(object):
                     @asyncio.coroutine
                     def real_handle_request(msg):
                         try:
-                            ret = yield from handle_request(server_capabilities,
+                            ret = yield from handle_request(server, server_capabilities,
                                                             self, backend, msg)
                         except ProtocolError as e:
                             if e.error not in (STATUS_NO_SUCH_FILE,):
@@ -1322,7 +1322,7 @@ class SMBClientHandler(object):
             assert len(done) == 1
 
 @asyncio.coroutine
-def handle_request(server_capabilities, cs, backend, req):
+def handle_request(server, server_capabilities, cs, backend, req):
     @asyncio.coroutine
     def smb_path_to_fs_path(path):
         comps = path[1:].split("\\")
@@ -1392,7 +1392,7 @@ def handle_request(server_capabilities, cs, backend, req):
                 # NB: this is allowed to fail silently
                 pass
             else:
-                yield from backend.tree_disconnect(fs)
+                yield from backend.tree_disconnect(server, fs)
 
         if req.payload.service not in ("?????", "A:"):
             log.debug("Client attempted to connect to %r service",
@@ -1400,7 +1400,7 @@ def handle_request(server_capabilities, cs, backend, req):
             raise ProtocolError(STATUS_OBJECT_PATH_NOT_FOUND)
 
         try:
-            fs = yield from backend.tree_connect(req.payload.path)
+            fs = yield from backend.tree_connect(server, req.payload.path)
         except KeyError:
             log.debug("Error tree connect: %r", req.payload.path)
             raise ProtocolError(STATUS_OBJECT_PATH_NOT_FOUND)
@@ -1421,7 +1421,7 @@ def handle_request(server_capabilities, cs, backend, req):
         except KeyError:
             raise ProtocolError(STATUS_SMB_BAD_TID)
 
-        yield from backend.tree_disconnect(fs)
+        yield from backend.tree_disconnect(server, fs)
 
         args = response_args_from_req(req)
 
@@ -2068,9 +2068,9 @@ class AsyncBackend(AsyncWrapped):
         return AsyncFS(fs, self._worker_pool)
 
     @asyncio.coroutine
-    def tree_disconnect(self, fs):
+    def tree_disconnect(self, server, fs):
         # unwraps the real fs out of fs
-        return (yield from(self._run_method('tree_disconnect', fs._obj)))
+        return (yield from(self._run_method('tree_disconnect', server, fs._obj)))
 
 # SMBServer abstracts away the fact that it is implemented using
 # asyncio. It expects to be used in normal python code.
@@ -2087,7 +2087,7 @@ class SMBServer(object):
 
         @asyncio.coroutine
         def handle_client(reader, writer):
-            yield from SMBClientHandler().run(async_backend, self._loop,
+            yield from SMBClientHandler().run(self, async_backend, self._loop,
                                               reader, writer)
             log.debug("client done!")
 

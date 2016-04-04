@@ -87,12 +87,12 @@ class SimpleSMBBackend(object):
         self._path = path
         self._fs = fs
 
-    def tree_connect(self, path):
+    def tree_connect(self, server, path):
         if self._path.upper() == path.upper():
             return self._fs
         raise KeyError()
 
-    def tree_disconnect(self, fs):
+    def tree_disconnect(self, server, fs):
         # kill ourselves if we were unmounted
         os.kill(os.getpid(), signal.SIGTERM)
 

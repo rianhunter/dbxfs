@@ -1065,6 +1065,20 @@ class SMBClientHandler(object):
         return ret['fs']
 
     @asyncio.coroutine
+    def hard_destroy_all_trees(self, server, backend):
+        @asyncio.coroutine
+        def destroy_tid(tid):
+            fs = yield from self.destroy_tree(tid)
+            yield from backend.tree_disconnect_hard(server, fs)
+
+        waiting = []
+        for tid in self._open_tids:
+            waiting.append(asyncio.async(destroy_tid(tid), loop=self._loop))
+
+        if waiting:
+            yield from asyncio.wait(waiting, loop=self._loop)
+
+    @asyncio.coroutine
     def create_search(self, **kw):
         sid = self._create_id(self._open_find_trans, INVALID_SIDS)
         kw['lock'] = asyncio.Lock(loop=self._loop)
@@ -1291,6 +1305,9 @@ class SMBClientHandler(object):
                     asyncio.async(cant_fail(on_fail, reqfut), loop=loop)
                     read_future = asyncio.async(self.read_message(reader),
                                                 loop=loop)
+
+            # release resources associated with connection
+            yield from self.hard_destroy_all_trees(server, backend)
 
             # we have died, signal to writer coroutine to die as well
             yield from writer_queue.put(None)

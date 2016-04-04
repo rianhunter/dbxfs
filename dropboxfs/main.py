@@ -96,6 +96,9 @@ class SimpleSMBBackend(object):
     def tree_disconnect(self, server, fs):
         pass
 
+    def tree_disconnect_hard(self, server, fs):
+        pass
+
 def main(argv=None):
     if argv is None:
         argv = sys.argv

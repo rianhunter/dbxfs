@@ -2031,11 +2031,7 @@ class AsyncWorkerPool(object):
         return (yield from fut)
 
     def close(self):
-        pass
-
-    @asyncio.coroutine
-    def wait_closed(self):
-        pass
+        self.executor.shutdown(wait=False)
 
 class AsyncWrapped(object):
     def __init__(self, obj, worker_pool):
@@ -2134,7 +2130,6 @@ class SMBServer(object):
         def _on_close():
             yield from self._server.wait_closed()
             self._worker_pool.close()
-            yield from self._worker_pool.wait_closed()
             self._server_done.set_result(None)
 
         asyncio.async(_on_close(), loop=self._loop)

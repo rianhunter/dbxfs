@@ -22,6 +22,7 @@ import json
 import logging
 import os
 import random
+import socket
 import signal
 import subprocess
 import sys
@@ -183,12 +184,26 @@ def main(argv=None):
         run_fuse_mount(create_fs, mount_point, foreground=args.foreground)
         return 0
 
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
+    host = '127.0.0.1'
+
     if args.port is None:
-        # NB: Binding to this port could fail
-        # TODO: keep randomly binding until we find a port
-        port = random.randint(60000, 2 ** 16)
+        while True:
+            port = random.randint(60000, 2 ** 16)
+            try:
+                sock.bind((host, port))
+            except OSError as err:
+                if err.errno != errno.EADDRINUSE: raise
+            else:
+                break
     else:
+        for prop in ('SO_REUSEADDR', 'SO_REUSEPORT'):
+            if hasattr(socket, prop):
+                sock.setsockopt(socket.SOL_SOCKET, getattr(socket, prop), True)
+
         port = args.port
+        sock.bind((host, port))
 
     can_mount_smb_automatically = sys.platform == "darwin" and not args.smb_no_mount
     if not can_mount_smb_automatically:
@@ -201,8 +216,7 @@ def main(argv=None):
     if not args.foreground:
         daemonize()
 
-    address = ('127.0.0.1', port)
-    server = SMBServer(address, SimpleSMBBackend("\\\\127.0.0.1\\dropboxfs", create_fs()))
+    server = SMBServer(SimpleSMBBackend("\\\\127.0.0.1\\dropboxfs", create_fs()), sock=sock)
 
     should_die = False
 

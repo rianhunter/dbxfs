@@ -2075,7 +2075,10 @@ class AsyncBackend(AsyncWrapped):
 # SMBServer abstracts away the fact that it is implemented using
 # asyncio. It expects to be used in normal python code.
 class SMBServer(object):
-    def __init__(self, address, backend):
+    def __init__(self, backend, address=None,sock=None):
+        if address is None:
+            address = (None, None)
+
         self._loop = asyncio.get_event_loop()
 
         self._worker_pool = AsyncWorkerPool(self._loop, 8)
@@ -2090,6 +2093,7 @@ class SMBServer(object):
 
         start_server_coro = asyncio.start_server(handle_client,
                                                  host=address[0], port=address[1],
+                                                 sock=sock,
                                                  loop=self._loop)
         self._server = self._loop.run_until_complete(start_server_coro)
 

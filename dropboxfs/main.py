@@ -21,6 +21,7 @@ import errno
 import json
 import logging
 import os
+import queue
 import random
 import socket
 import signal
@@ -28,6 +29,7 @@ import subprocess
 import sys
 import syslog
 import threading
+import time
 
 import appdirs
 
@@ -48,8 +50,7 @@ log = logging.getLogger(__name__)
 def daemonize():
     res = os.fork()
     if res:
-        sys.exit(0)
-        raise Exception("should never get here")
+        return res
 
     os.setsid()
 
@@ -93,8 +94,7 @@ class SimpleSMBBackend(object):
         raise KeyError()
 
     def tree_disconnect(self, server, fs):
-        # kill ourselves if we were unmounted
-        os.kill(os.getpid(), signal.SIGTERM)
+        pass
 
 def main(argv=None):
     if argv is None:
@@ -214,43 +214,65 @@ def main(argv=None):
                "Can't mount file system automatically",
                port,))
 
-    if not args.foreground:
-        daemonize()
-
-    server = SMBServer(SimpleSMBBackend("\\\\127.0.0.1\\dropboxfs", create_fs()), sock=sock)
-
-    should_die = False
-
-    def set_should_die(*n):
-        nonlocal should_die
-        should_die = True
-
-    signal.signal(signal.SIGTERM, set_should_die)
-
-    def run_server():
-        try:
-            server.run()
-        except:
-            log.exception("Exception in SMBServer")
-            os.kill(os.getpid(), signal.SIGTERM)
-
-    threading.Thread(target=run_server, daemon=True).start()
-
-    if can_mount_smb_automatically:
-        subprocess.check_call(["mount", "-t", "smbfs",
-                               "cifs://guest:@127.0.0.1:%d/dropboxfs" % (port,),
-                               mount_point])
-
-    try:
-        while not should_die:
-            signal.pause()
-    finally:
-        # NB: we may die by other means than SIGINT, SIGTERM, or a crash
-        #     in the server. This is just best effort cleanup. Hopefully
-        #     the file system will be automatically unmounted if the server
-        #     dies.
+    def mount_notify(child_pid):
         if can_mount_smb_automatically:
+            ret = subprocess.call(["mount", "-t", "smbfs",
+                                   "cifs://guest:@127.0.0.1:%d/dropboxfs" % (port,),
+                                   mount_point])
+            if ret:
+                os.kill(child_pid, signal.SIGTERM)
+            else:
+                os.kill(child_pid, signal.SIGUSR1)
+        else:
+            ret = 0
+        return ret
+
+    if not args.foreground:
+        child_pid = daemonize()
+
+        if child_pid:
+            return mount_notify(child_pid)
+    else:
+        threading.Thread(target=mount_notify, args=(os.getpid(),), daemon=True).start()
+
+    server = SMBServer(SimpleSMBBackend("\\\\127.0.0.1\\dropboxfs", create_fs()),
+                       sock=sock)
+
+    mm_q = queue.Queue()
+    def check_mount():
+        is_mounted = False
+        while True:
+            try:
+                r = mm_q.get(timeout=1 if args.foreground else 30)
+            except queue.Empty:
+                pass
+            else:
+                if r:
+                    is_mounted = True
+                else:
+                    break
+
+            if is_mounted and not os.path.ismount(mount_point):
+                is_mounted = False
+                break
+
+        if is_mounted:
             subprocess.call(["umount", "-f", mount_point])
+
+        server.close()
+    threading.Thread(target=check_mount, daemon=True).start()
+
+    def handle_mounted(self, *_):
+        mm_q.put(True)
+
+    def kill_signal(self, *_):
+        mm_q.put(False)
+
+    signal.signal(signal.SIGTERM, kill_signal)
+    signal.signal(signal.SIGINT, kill_signal)
+    signal.signal(signal.SIGUSR1, handle_mounted)
+
+    server.run()
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv))

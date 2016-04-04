@@ -93,7 +93,8 @@ class SimpleSMBBackend(object):
         raise KeyError()
 
     def tree_disconnect(self, fs):
-        pass
+        # kill ourselves if we were unmounted
+        os.kill(os.getpid(), signal.SIGTERM)
 
 def main(argv=None):
     if argv is None:

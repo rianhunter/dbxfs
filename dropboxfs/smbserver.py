@@ -1043,13 +1043,23 @@ class SMBClientHandler(object):
         # close all resources associated with tid (in parallel)
         waiting = []
 
+        @asyncio.coroutine
+        def destroy_close_file(fid):
+            fidmd = yield from self.destroy_file(fid)
+            yield from fidmd['handle'].close()
+
         for fid, value in self._open_files.items():
             if value['tid'] != tid: continue
-            waiting.append(asyncio.async(self.destroy_file(fid), loop=self._loop))
+            waiting.append(asyncio.async(destroy_close_file(fid), loop=self._loop))
+
+        @asyncio.coroutine
+        def destroy_close_search(sid):
+            searchmd = yield from self.destroy_search(sid)
+            yield from searchmd['handle'].close()
 
         for sid, value in self._open_find_trans.items():
             if value['tid'] != tid: continue
-            waiting.append(asyncio.async(self.destroy_search(sid), loop=self._loop))
+            waiting.append(asyncio.async(destroy_close_search(sid), loop=self._loop))
 
         if ret['ref']:
             # wait for all tids to be dereffed

@@ -1543,13 +1543,13 @@ class SMBClientHandler(object):
         # okay now kick off SMB connection machinery
 
         @asyncio.coroutine
-        def read_client(reader, dead_future, writer_queue):
+        def read_client(reader, writer_queue):
             try:
                 read_future = asyncio.async(self.read_message(reader),
                                             loop=loop)
                 in_flight_requests = set()
                 while True:
-                    (done, pending) = yield from asyncio.wait(itertools.chain([dead_future, read_future],
+                    (done, pending) = yield from asyncio.wait(itertools.chain([read_future],
                                                                               in_flight_requests),
                                                               return_when=asyncio.FIRST_COMPLETED,
                                                               loop=loop)
@@ -1558,8 +1558,6 @@ class SMBClientHandler(object):
                             in_flight_requests.remove(fut)
                         except KeyError:
                             pass
-
-                    if dead_future in done: break
 
                     if read_future in done:
                         raw_msg = read_future.result()
@@ -1610,20 +1608,15 @@ class SMBClientHandler(object):
 
         @asyncio.coroutine
         def write_client(writer, queue):
-            # TODO: set dead_future on exception
             while True:
                 msg = yield from queue.get()
                 if msg is None: break
                 yield from self.send_message(writer, msg)
 
-        # NB: dead future is our out-of-band way to signal to the read client
-        #     to stop
-        dead_future = asyncio.Future(loop=loop)
         writer_queue = asyncio.Queue(loop=loop)
 
         # start up reader/writer coroutines
-        read_client_future = asyncio.async(read_client(reader, dead_future,
-                                                       writer_queue),
+        read_client_future = asyncio.async(read_client(reader, writer_queue),
                                            loop=loop)
         try:
             yield from write_client(writer, writer_queue)

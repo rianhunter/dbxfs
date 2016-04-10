@@ -1497,7 +1497,7 @@ class SMBClientHandler(object):
                            raw_data])
 
     @asyncio.coroutine
-    def run(self, server, backend, loop, reader, writer):
+    def run(self, server, backend, loop, master_kill, reader, writer):
         self._loop = loop
 
         # first negotiate SMB protocol
@@ -1549,7 +1549,7 @@ class SMBClientHandler(object):
                                             loop=loop)
                 in_flight_requests = set()
                 while True:
-                    (done, pending) = yield from asyncio.wait(itertools.chain([read_future],
+                    (done, pending) = yield from asyncio.wait(itertools.chain([read_future, master_kill],
                                                                               in_flight_requests),
                                                               return_when=asyncio.FIRST_COMPLETED,
                                                               loop=loop)
@@ -1558,6 +1558,9 @@ class SMBClientHandler(object):
                             in_flight_requests.remove(fut)
                         except KeyError:
                             pass
+
+                    if master_kill in done:
+                        break
 
                     if read_future in done:
                         raw_msg = read_future.result()
@@ -2394,11 +2397,13 @@ class SMBServer(object):
         self._worker_pool = AsyncWorkerPool(self._loop, 8)
 
         async_backend = AsyncBackend(backend, self._worker_pool)
+        self._master_kill = asyncio.Future(loop=self._loop)
 
         @asyncio.coroutine
         def handle_client(reader, writer):
             try:
                 yield from SMBClientHandler().run(self, async_backend, self._loop,
+                                                  self._master_kill,
                                                   reader, writer)
             except Exception:
                 log.exception("Client handler failed!")
@@ -2430,6 +2435,7 @@ class SMBServer(object):
     def close(self):
         @asyncio.coroutine
         def _on_main_thread():
+            self._master_kill.set_result(None)
             self._server.close()
         asyncio.run_coroutine_threadsafe(_on_main_thread(), self._loop)
 

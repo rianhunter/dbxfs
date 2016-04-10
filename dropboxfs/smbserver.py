@@ -107,7 +107,7 @@ def parse_zero_terminated_utf16(buf, offset):
     s = offset
     while True:
         next_offset = buf.index(b'\0\0', s)
-        if next_offset % 2: s = next_offset + 1
+        if (next_offset - offset) % 2: s = next_offset + 1
         else: break
     return (buf[offset:next_offset].decode("utf-16-le"), next_offset + 2)
 

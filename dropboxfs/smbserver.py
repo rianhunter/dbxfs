@@ -22,23 +22,13 @@ import functools
 import itertools
 import os
 import logging
-import queue
 import random
-import socketserver
 import struct
 import sys
-import time
-import threading
 
 from collections import defaultdict, namedtuple
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-from io import StringIO
-
-try:
-    from socket import socketpair
-except ImportError:
-    from asyncio.windows_utils import socketpair
 
 log = logging.getLogger(__name__)
 
@@ -88,6 +78,7 @@ CAP_EXTENDED_SECURITY = 0x80000000
 
 SMB_TREE_CONNECTX_SUPPORT_SEARCH = 0x0001
 
+SMB_FILE_ATTRIBUTE_DIRECTORY = 0x10
 
 DATA_BYTE_COUNT_LENGTH = 2
 
@@ -1042,7 +1033,7 @@ def generate_info_standard(idx, offset, flags, name, md, _):
     bufs.append(struct.pack(fmt, *args))
     offset += len(bufs[-1])
     if offset % 2:
-        data.append(b' ')
+        bufs.append(b' ')
         offset += 1
     bufs.append(file_name_encoded)
     offset += len(bufs[-1])
@@ -1054,7 +1045,6 @@ def generate_find_file_directory_info(idx, offset, flags, name, md, is_last):
 
     encoded_file_name = (name + "\0").encode("utf-16-le")
     fmt_size = struct.calcsize(fmt)
-    SHORT_NAME_SIZE = 24
 
     next_entry_offset = (0
                          if is_last else
@@ -1234,7 +1224,7 @@ class ProtocolError(Exception):
 @asyncio.coroutine
 def cant_fail(on_fail, future):
     try:
-        ret = yield from future
+        return (yield from future)
     except Exception:
         log.exception("Process-stopping exception!")
         on_fail()
@@ -1854,12 +1844,15 @@ def handle_request(server, server_capabilities, cs, backend, req):
             if trans2_type == SMB_TRANS2_FIND_FIRST2:
                 (search_attributes, search_count,
                  flags, information_level,
-                 search_storage_type) = (trans2_params.search_attributes,
-                                         trans2_params.search_count,
-                                         trans2_params.flags,
-                                         trans2_params.information_level,
-                                         trans2_params.search_storage_type)
+                 ) = (trans2_params.search_attributes,
+                       trans2_params.search_count,
+                       trans2_params.flags,
+                       trans2_params.information_level,
+                       )
                 filename = trans2_params.filename
+
+                if not (search_attributes & SMB_FILE_ATTRIBUTE_DIRECTORY):
+                    raise NotImplementedError("Search attributes not implemented: 0x%x" % (search_attributes,))
 
                 try:
                     info_generator = INFO_GENERATORS[information_level]
@@ -1951,9 +1944,12 @@ def handle_request(server, server_capabilities, cs, backend, req):
                                            last_name_offset)
             elif trans2_type == SMB_TRANS2_FIND_NEXT2:
                 (sid, search_count, information_level,
-                 resume_key, flags) = stuff = (trans2_params.sid, trans2_params.search_count,
-                                               trans2_params.information_level,
-                                               trans2_params.resume_key, trans2_params.flags)
+                 resume_key, flags) = (trans2_params.sid, trans2_params.search_count,
+                                       trans2_params.information_level,
+                                       trans2_params.resume_key, trans2_params.flags)
+                if resume_key:
+                    raise NotImplementedError("resume key is not yet handled")
+
                 filename = trans2_params.filename
 
                 try:
@@ -2176,7 +2172,6 @@ def handle_request(server, server_capabilities, cs, backend, req):
                                             is_sharing, handle,
                                             req.header.tid)
 
-            now = datetime.now()
             directory = int(is_directory)
             ext_attr = (ATTR_DIRECTORY
                         if directory else

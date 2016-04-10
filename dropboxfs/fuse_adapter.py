@@ -1,4 +1,5 @@
 import datetime
+import errno
 import itertools
 import logging
 import os
@@ -6,7 +7,7 @@ import random
 import threading
 import stat
 
-from fuse import FUSE, FuseOSError, Operations
+from fuse import FUSE, Operations
 
 from dropboxfs.util_dumpster import utctimestamp
 

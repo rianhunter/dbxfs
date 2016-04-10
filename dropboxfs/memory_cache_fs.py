@@ -58,7 +58,6 @@ def stat_to_json(obj):
 
 def json_to_stat(str_):
     info = json.loads(str_)
-    toret = {}
     for name in REQUIRED_ATTRS:
         val = info.get(name)
         if val is None:
@@ -567,7 +566,6 @@ class FileSystem(object):
         # watch file system and clear cache on any changes
         # NB: we need to use a 'db style' watch because we need the
         #     ids, and create_watch() doesn't promise ids
-        root_path = self._fs.create_path()
         try:
             create_db_watch = self._fs.create_db_style_watch
         except AttributeError:
@@ -584,6 +582,8 @@ class FileSystem(object):
         self._close_prune_thread = True
         self._prune_event.set()
         self._conn.close()
+        if self._watch_stop is not None:
+            self._watch_stop()
 
     def _prune_thread(self):
         if not self._cache_folder:
@@ -662,10 +662,6 @@ class FileSystem(object):
         if conn is None:
             conn = self._local.conn = self._create_db_conn()
         return conn
-
-    def close(self):
-        if self._watch_stop is not None:
-            self._watch_stop()
 
     def _handle_changes(self, changes):
         conn = self._get_db_conn()

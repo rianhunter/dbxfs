@@ -29,7 +29,6 @@ import subprocess
 import sys
 import syslog
 import threading
-import time
 
 import appdirs
 

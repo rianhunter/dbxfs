@@ -265,7 +265,9 @@ def main(argv=None):
         is_mounted = False
         while True:
             try:
-                r = mm_q.get(timeout=1 if args.foreground else 30)
+                r = mm_q.get(timeout=(None
+                                      if not is_mounted else
+                                      1 if args.foreground else 30))
             except queue.Empty:
                 pass
             else:

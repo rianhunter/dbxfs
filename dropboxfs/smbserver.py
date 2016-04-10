@@ -901,6 +901,7 @@ STATUS_SMB_BAD_UID = 0x5b0002
 STATUS_NOTIFY_ENUM_DIR = 0x10c
 STATUS_OS2_INVALID_LEVEL = 0x7c0001
 STATUS_NOT_A_DIRECTORY = 0xC0000000 | 0x0103
+STATUS_UNSUCCESSFUL = 0xc0000001
 
 TREE_CONNECT_ANDX_DISCONNECT_TID = 0x1
 SMB_INFO_STANDARD = 0x1
@@ -967,7 +968,7 @@ def encode_smb_datetime(dt):
     assert time < 2 ** 16
     return (date, time)
 
-def error_response(header, status):
+def error_response(header, status=STATUS_UNSUCCESSFUL):
     assert status, "Status must be an error!"
     return SMBMessage(
         reply_header_from_request_header(
@@ -1562,12 +1563,16 @@ class SMBClientHandler(object):
                             msg = SMBMessage(header, parameters, data)
                             ret = yield from handle_request(server, server_capabilities,
                                                             self, backend, msg)
+                            ret = encode_smb_message(ret)
                         except ProtocolError as e:
                             if e.error not in (STATUS_NO_SUCH_FILE,):
-                                log.debug("Protocol Error!!! %r %r",
-                                          hex(msg.command), e)
-                            ret = error_response(msg, e.error)
-                        ret = encode_smb_message(ret)
+                                log.debug("Protocol Error!!! Command:%x %r",
+                                          header.command, e)
+                            ret = encode_smb_message(error_response(header, e.error))
+                        except Exception:
+                            log.exception("Unexpected exception!")
+                            ret = encode_smb_message(error_response(header))
+
                         yield from writer_queue.put(ret)
 
                     reqfut = asyncio.async(real_handle_request(raw_msg), loop=loop)

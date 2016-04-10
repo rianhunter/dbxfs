@@ -1535,58 +1535,57 @@ class SMBClientHandler(object):
 
         @asyncio.coroutine
         def read_client(reader, dead_future, writer_queue):
-            read_future = asyncio.async(self.read_message(reader),
-                                        loop=loop)
-            while True:
-                (done, pending) = yield from asyncio.wait([dead_future, read_future],
-                                                          return_when=asyncio.FIRST_COMPLETED,
-                                                          loop=loop)
-                if dead_future in done: break
+            try:
+                read_future = asyncio.async(self.read_message(reader),
+                                            loop=loop)
+                while True:
+                    (done, pending) = yield from asyncio.wait([dead_future, read_future],
+                                                              return_when=asyncio.FIRST_COMPLETED,
+                                                              loop=loop)
 
-                if read_future in done:
-                    try:
+                    if dead_future in done: break
+
+                    if read_future in done:
                         raw_msg = read_future.result()
-                    except Exception:
-                        # not sure what happened but we received invalid data
-                        log.exception("Exception during reading socket")
-                        break
-                    if not raw_msg:
-                        log.debug("EOF from client, closing connection")
-                        break
 
-                    # kick off concurrent request handler
-                    @asyncio.coroutine
-                    def real_handle_request(raw_msg):
+                        if not raw_msg:
+                            log.debug("EOF from client, closing connection")
+                            break
+
                         header = decode_smb_header(raw_msg[:SMB_HEADER_STRUCT_SIZE])
-                        try:
-                            (parameters, data) = decode_smb_payload(header, raw_msg[SMB_HEADER_STRUCT_SIZE:])
-                            msg = SMBMessage(header, parameters, data)
-                            ret = yield from handle_request(server, server_capabilities,
-                                                            self, backend, msg)
-                            ret = encode_smb_message(ret)
-                        except ProtocolError as e:
-                            if e.error not in (STATUS_NO_SUCH_FILE,):
-                                log.debug("Protocol Error!!! Command:%x %r",
-                                          header.command, e)
-                            ret = encode_smb_message(error_response(header, e.error))
-                        except Exception:
-                            log.exception("Unexpected exception!")
-                            ret = encode_smb_message(error_response(header))
 
-                        yield from writer_queue.put(ret)
+                        # kick off concurrent request handler
+                        @asyncio.coroutine
+                        def real_handle_request(header, payload):
+                            try:
+                                (parameters, data) = decode_smb_payload(header, payload)
+                                msg = SMBMessage(header, parameters, data)
+                                ret = yield from handle_request(server, server_capabilities,
+                                                                self, backend, msg)
+                                ret = encode_smb_message(ret)
+                            except ProtocolError as e:
+                                if e.error not in (STATUS_NO_SUCH_FILE,):
+                                    log.debug("Protocol Error!!! Command:%x %r",
+                                              header.command, e)
+                                ret = encode_smb_message(error_response(header, e.error))
+                            except Exception:
+                                log.exception("Unexpected exception!")
+                                ret = encode_smb_message(error_response(header))
 
-                    reqfut = asyncio.async(real_handle_request(raw_msg), loop=loop)
-                    def on_fail():
-                        dead_future.set_result(None)
-                    asyncio.async(cant_fail(on_fail, reqfut), loop=loop)
-                    read_future = asyncio.async(self.read_message(reader),
-                                                loop=loop)
+                            yield from writer_queue.put(ret)
 
-            # release resources associated with connection
-            yield from self.hard_destroy_all_trees(server, backend)
+                        reqfut = asyncio.async(
+                            real_handle_request(header,
+                                                raw_msg[SMB_HEADER_STRUCT_SIZE:]),
+                            loop=loop)
+                        read_future = asyncio.async(self.read_message(reader),
+                                                    loop=loop)
+            finally:
+                # release resources associated with connection
+                yield from self.hard_destroy_all_trees(server, backend)
 
-            # we have died, signal to writer coroutine to die as well
-            yield from writer_queue.put(None)
+                # we have died, signal to writer coroutine to die as well
+                yield from writer_queue.put(None)
 
         @asyncio.coroutine
         def write_client(writer, queue):

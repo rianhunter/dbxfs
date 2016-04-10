@@ -1596,8 +1596,8 @@ def handle_request(server, server_capabilities, cs, backend, req):
     @asyncio.coroutine
     def smb_path_to_fs_path(path):
         comps = path[1:].split("\\")
-        if comps == ['']:
-            comps = []
+        if comps and not comps[-1]:
+            comps.pop()
         return (yield from fs.create_path(*comps))
 
     def normalize_stat(stat):

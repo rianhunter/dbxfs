@@ -1979,43 +1979,43 @@ def handle_request(server, server_capabilities, cs, backend, req):
 
 
                 search_md = yield from cs.ref_search(sid)
+                try:
+                    PARAMS_FMT = "<HHHH"
+                    PARAMS_SIZE = struct.calcsize(PARAMS_FMT)
 
-                PARAMS_FMT = "<HHHH"
-                PARAMS_SIZE = struct.calcsize(PARAMS_FMT)
+                    max_data_count = min(req.parameters.max_data_count,
+                                         SMB_MAX_DATA_PAYLOAD - MAX_ALIGNMENT_PADDING
+                                         - PARAMS_SIZE)
 
-                max_data_count = min(req.parameters.max_data_count,
-                                     SMB_MAX_DATA_PAYLOAD - MAX_ALIGNMENT_PADDING
-                                     - PARAMS_SIZE)
+                    (data, num_entries_to_ret,
+                     entry, next_entry,
+                     search_md['buffered_entries'], search_md['buffered_entries_idx']) = \
+                        yield from generate_find_data(max_data_count,
+                                                      search_count,
+                                                      search_md['handle'],
+                                                      info_generator,
+                                                      search_md['idx'],
+                                                      search_md['entry'],
+                                                      search_md['next_entry'],
+                                                      search_md['buffered_entries'],
+                                                      search_md['buffered_entries_idx'])
 
-                (data, num_entries_to_ret,
-                 entry, next_entry,
-                 search_md['buffered_entries'], search_md['buffered_entries_idx']) = \
-                    yield from generate_find_data(max_data_count,
-                                                  search_count,
-                                                  search_md['handle'],
-                                                  info_generator,
-                                                  search_md['idx'],
-                                                  search_md['entry'],
-                                                  search_md['next_entry'],
-                                                  search_md['buffered_entries'],
-                                                  search_md['buffered_entries_idx'])
+                    search_md['idx'] += num_entries_to_ret
+                    search_md['entry'] = entry
+                    search_md['next_entry'] = next_entry
 
-                search_md['idx'] += num_entries_to_ret
-                search_md['entry'] = entry
-                search_md['next_entry'] = next_entry
-
-                is_search_over = next_entry is None
-
-                if (is_search_over and flags & SMB_FIND_CLOSE_AFTER_REQUEST or
-                    flags & SMB_FIND_CLOSE_AFTER_REQUEST):
-                    if search_md['handle'] is not None:
-                        yield from search_md['handle'].close()
-                        search_md['handle'] = None
-                    yield from cs.deref_search(sid)
-                    yield from cs.destroy_search(sid)
-                    is_search_over = True
-                else:
-                    yield from cs.deref_search(sid)
+                    is_search_over = next_entry is None
+                finally:
+                    if (is_search_over and flags & SMB_FIND_CLOSE_AFTER_REQUEST or
+                        flags & SMB_FIND_CLOSE_AFTER_REQUEST):
+                        if search_md['handle'] is not None:
+                            yield from search_md['handle'].close()
+                            search_md['handle'] = None
+                        yield from cs.deref_search(sid)
+                        yield from cs.destroy_search(sid)
+                        is_search_over = True
+                    else:
+                        yield from cs.deref_search(sid)
 
                 data_bytes = b''.join(data)
                 last_name_offset = (0
@@ -2163,8 +2163,10 @@ def handle_request(server, server_capabilities, cs, backend, req):
                     root_md = yield from cs.ref_file(header.root_directory_fid)
                 except KeyError:
                     raise ProtocolError(STATUS_INVALID_HANDLE)
-                root_path = root_md['path']
-                yield from cs.deref_file(header.root_directory_fid)
+                try:
+                    root_path = root_md['path']
+                finally:
+                    yield from cs.deref_file(header.root_directory_fid)
             else:
                 root_path = ""
 
@@ -2239,16 +2241,16 @@ def handle_request(server, server_capabilities, cs, backend, req):
                 fid_md = yield from cs.ref_file(request.fid)
             except KeyError:
                 raise ProtocolError(STATUS_INVALID_HANDLE)
+            try:
+                log.debug("About to do pread... %r, offset: %r, amt: %r",
+                          fid_md['path'], request.offset,
+                          request.max_count_of_bytes_to_return)
 
-            log.debug("About to do pread... %r, offset: %r, amt: %r",
-                      fid_md['path'], request.offset,
-                      request.max_count_of_bytes_to_return)
+                buf = yield from fid_md['handle'].pread(request.offset, request.max_count_of_bytes_to_return)
 
-            buf = yield from fid_md['handle'].pread(request.offset, request.max_count_of_bytes_to_return)
-
-            log.debug("PREAD DONE... %r buf len: %r", fid_md['path'], len(buf))
-
-            yield from cs.deref_file(request.fid)
+                log.debug("PREAD DONE... %r buf len: %r", fid_md['path'], len(buf))
+            finally:
+                yield from cs.deref_file(request.fid)
 
             parameters = quick_container(available=0,
                                       data_length=len(buf),

@@ -1889,8 +1889,16 @@ def handle_request(server, server_capabilities, cs, backend, req):
                                 self.type = "directory"
                                 self.size = 0
 
-                        entry = (".", normalize_stat(Dir()))
-                        next_entry = ("..", normalize_stat(Dir()))
+                        entry = None
+                        next_entry = None
+
+                        for idx, ent in enumerate((yield from handle.readmany(2))):
+                            if idx == 0:
+                                entry = (ent.name, (yield from normalize_dir_entry(ent)))
+                            else:
+                                assert idx == 1
+                                next_entry = (ent.name, (yield from normalize_dir_entry(ent)))
+
                         buffered_entries = []
                         buffered_entries_idx = 0
                     else:

@@ -1612,6 +1612,8 @@ class SMBClientHandler(object):
             (done, pending) = yield from asyncio.wait([read_client_future],
                                                       loop=loop)
             assert len(done) == 1
+            # propagate client reader exception (if any)
+            done.pop().result()
 
 @asyncio.coroutine
 def handle_request(server, server_capabilities, cs, backend, req):
@@ -2382,9 +2384,13 @@ class SMBServer(object):
 
         @asyncio.coroutine
         def handle_client(reader, writer):
-            yield from SMBClientHandler().run(self, async_backend, self._loop,
-                                              reader, writer)
-            log.debug("client done!")
+            try:
+                yield from SMBClientHandler().run(self, async_backend, self._loop,
+                                                  reader, writer)
+            except Exception:
+                log.exception("Client handler failed!")
+            else:
+                log.debug("client done!")
 
         start_server_coro = asyncio.start_server(handle_client,
                                                  host=address[0], port=address[1],

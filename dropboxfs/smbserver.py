@@ -80,6 +80,7 @@ SMB_TREE_CONNECTX_SUPPORT_SEARCH = 0x0001
 
 SMB_FILE_ATTRIBUTE_DIRECTORY = 0x10
 
+SMB_MAX_DATA_PAYLOAD = 2 ** 16 - 1
 DATA_BYTE_COUNT_LENGTH = 2
 
 def parse_zero_terminated_utf16(buf, offset):
@@ -1840,6 +1841,8 @@ def handle_request(server, server_capabilities, cs, backend, req):
                         entry, next_entry,
                         buffered_entries, buffered_entries_idx)
 
+            MAX_ALIGNMENT_PADDING = 6
+
             # go through another layer of parsing
             if trans2_type == SMB_TRANS2_FIND_FIRST2:
                 (search_attributes, search_count,
@@ -1900,9 +1903,16 @@ def handle_request(server, server_capabilities, cs, backend, req):
                 except FileNotFoundError:
                     raise ProtocolError(STATUS_NO_SUCH_FILE)
 
+                PARAMS_FMT = "<HHHHH"
+                PARAMS_SIZE = struct.calcsize(PARAMS_FMT)
+
+                max_data_count = min(req.parameters.max_data_count,
+                                     SMB_MAX_DATA_PAYLOAD - MAX_ALIGNMENT_PADDING -
+                                     PARAMS_SIZE)
+
                 (data, num_entries_to_ret, entry, next_entry,
                  buffered_entries, buffered_entries_idx) = \
-                    yield from generate_find_data(req.parameters.max_data_count,
+                    yield from generate_find_data(max_data_count,
                                                   search_count,
                                                   handle,
                                                   info_generator, 0,
@@ -1936,7 +1946,7 @@ def handle_request(server, server_capabilities, cs, backend, req):
                 ea_error_offset = 0
 
                 setup = []
-                params_bytes = struct.pack("<HHHHH",
+                params_bytes = struct.pack(PARAMS_FMT,
                                            sid, num_entries_to_ret,
                                            int(is_search_over),
                                            ea_error_offset,
@@ -1962,10 +1972,17 @@ def handle_request(server, server_capabilities, cs, backend, req):
 
                 search_md = yield from cs.ref_search(sid)
 
+                PARAMS_FMT = "<HHHH"
+                PARAMS_SIZE = struct.calcsize(PARAMS_FMT)
+
+                max_data_count = min(req.parameters.max_data_count,
+                                     SMB_MAX_DATA_PAYLOAD - MAX_ALIGNMENT_PADDING
+                                     - PARAMS_SIZE)
+
                 (data, num_entries_to_ret,
                  entry, next_entry,
                  search_md['buffered_entries'], search_md['buffered_entries_idx']) = \
-                    yield from generate_find_data(req.parameters.max_data_count,
+                    yield from generate_find_data(max_data_count,
                                                   search_count,
                                                   search_md['handle'],
                                                   info_generator,
@@ -2001,7 +2018,7 @@ def handle_request(server, server_capabilities, cs, backend, req):
                 ea_error_offset = 0
 
                 setup = []
-                params_bytes = struct.pack("<HHHH",
+                params_bytes = struct.pack(PARAMS_FMT,
                                            num_entries_to_ret,
                                            int(is_search_over),
                                            ea_error_offset,

@@ -915,6 +915,7 @@ ATTR_NORMAL = 0x80
 SMB_QUERY_FS_SIZE_INFO = 0x103
 SMB_QUERY_FS_DEVICE_INFO = 0x104
 SMB_QUERY_FS_ATTRIBUTE_INFO = 0x105
+SMB_QUERY_FILE_BASIC_INFO = 0x101
 SMB_QUERY_FILE_ALL_INFO = 0x107
 NT_TRANSACT_NOTIFY_CHANGE = 0x4
 
@@ -1149,6 +1150,22 @@ FS_INFO_GENERATORS = {
     SMB_QUERY_FS_ATTRIBUTE_INFO: generate_fs_attribute_info,
 }
 
+def generate_query_file_basic_info(path, md):
+    creation_time = datetime_to_win32(md.birthtime)
+    last_access_time = datetime_to_win32(md.atime)
+    last_write_time = datetime_to_win32(md.mtime)
+    last_change_time = datetime_to_win32(md.ctime)
+    ext_file_attributes = (ATTR_DIRECTORY
+                           if md.type == "directory" else
+                           ATTR_NORMAL)
+    buf = struct.pack("<QQQQLL",
+                      creation_time, last_access_time,
+                      last_write_time, last_change_time,
+                      ext_file_attributes,
+                      0)
+
+    return (0, buf)
+
 def generate_query_file_all_info(path, md):
     creation_time = datetime_to_win32(md.birthtime)
     last_access_time = datetime_to_win32(md.atime)
@@ -1187,6 +1204,7 @@ def generate_query_file_all_info(path, md):
     return (0, buf)
 
 QUERY_FILE_INFO_GENERATORS = {
+    SMB_QUERY_FILE_BASIC_INFO: generate_query_file_basic_info,
     SMB_QUERY_FILE_ALL_INFO: generate_query_file_all_info,
 }
 

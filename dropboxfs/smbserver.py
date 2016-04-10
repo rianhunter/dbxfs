@@ -2039,7 +2039,7 @@ def handle_request(server, server_capabilities, cs, backend, req):
 
                 try:
                     md = yield from fs.stat(fspath)
-                except OSError as e:
+                except FileNotFoundError:
                     raise ProtocolError(STATUS_NO_SUCH_FILE)
 
                 setup = []

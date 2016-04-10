@@ -89,7 +89,7 @@ class SimpleSMBBackend(object):
         self._fs = fs
 
     def tree_connect(self, server, path):
-        if self._path.upper() == path.upper():
+        if path.rsplit("\\", 1)[-1].upper() == self._path.rsplit("\\", 1)[-1].upper():
             return self._fs
         raise KeyError()
 
@@ -103,19 +103,39 @@ def main(argv=None):
     if argv is None:
         argv = sys.argv
 
-    def ensure_port(string):
-        port = int(string)
-        if not (0 < port < 65536):
-            raise argparse.ArgumentTypeError("%r is not a valid TCP port" % (string,))
-        return port
+    def ensure_listen_address(string):
+        try:
+            (host, port) = string.split(":", 1)
+        except ValueError:
+            try:
+                port = int(string)
+                if not (0 < port < 65536):
+                    raise ValueError()
+            except ValueError:
+                host = string
+                port = None
+            else:
+                host = ''
+        else:
+            if port:
+                port = int(port)
+                if not (0 < port < 65536):
+                    raise argparse.ArgumentTypeError("%r is not a valid TCP port" % (port,))
+            else:
+                port = None
+
+        if not host:
+            host = "127.0.0.1"
+
+        return (host, port)
 
     parser = argparse.ArgumentParser()
     parser.add_argument("-f", "--foreground", action="store_true")
     parser.add_argument("-c", "--config-file")
-    parser.add_argument("-p", "--port", type=ensure_port)
     parser.add_argument("-v", "--verbose", action="count", default=0)
     parser.add_argument("-s", "--smb-only", action="store_true")
     parser.add_argument("-n", "--smb-no-mount", action="store_true")
+    parser.add_argument("-l", "--smb-listen-address", default="127.0.0.1", type=ensure_listen_address)
     parser.add_argument("mount_point", nargs=1)
     args = parser.parse_args(argv[1:])
 
@@ -190,9 +210,9 @@ def main(argv=None):
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
-    host = '127.0.0.1'
+    (host, port) = args.smb_listen_address
 
-    if args.port is None:
+    if port is None:
         while True:
             port = random.randint(60000, 2 ** 16)
             try:
@@ -206,15 +226,15 @@ def main(argv=None):
             if hasattr(socket, prop):
                 sock.setsockopt(socket.SOL_SOCKET, getattr(socket, prop), True)
 
-        port = args.port
         sock.bind((host, port))
 
     can_mount_smb_automatically = sys.platform == "darwin" and not args.smb_no_mount
     if not can_mount_smb_automatically:
-        print("%s, you can access the SMB server at cifs://guest:@127.0.0.01:%d/dropboxfs" %
+        print("%s, you can access the SMB server at cifs://guest:@%s:%d/dropboxfs" %
               ("Not mounting file system automatically"
                if args.smb_no_mount else
                "Can't mount file system automatically",
+               host,
                port,))
 
     def mount_notify(child_pid):

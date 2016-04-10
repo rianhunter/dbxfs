@@ -1547,10 +1547,17 @@ class SMBClientHandler(object):
             try:
                 read_future = asyncio.async(self.read_message(reader),
                                             loop=loop)
+                in_flight_requests = set()
                 while True:
-                    (done, pending) = yield from asyncio.wait([dead_future, read_future],
+                    (done, pending) = yield from asyncio.wait(itertools.chain([dead_future, read_future],
+                                                                              in_flight_requests),
                                                               return_when=asyncio.FIRST_COMPLETED,
                                                               loop=loop)
+                    for fut in done:
+                        try:
+                            in_flight_requests.remove(fut)
+                        except KeyError:
+                            pass
 
                     if dead_future in done: break
 
@@ -1587,11 +1594,16 @@ class SMBClientHandler(object):
                             real_handle_request(header,
                                                 raw_msg[SMB_HEADER_STRUCT_SIZE:]),
                             loop=loop)
+                        in_flight_requests.add(reqfut)
                         read_future = asyncio.async(self.read_message(reader),
                                                     loop=loop)
             finally:
                 # release resources associated with connection
                 yield from self.hard_destroy_all_trees(server, backend)
+
+                # wait for all in flight requests to be done
+                if in_flight_requests:
+                    yield from asyncio.wait(in_flight_requests, loop=loop)
 
                 # we have died, signal to writer coroutine to die as well
                 yield from writer_queue.put(None)

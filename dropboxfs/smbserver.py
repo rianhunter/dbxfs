@@ -1305,7 +1305,10 @@ class SMBClientHandler(object):
 
         @asyncio.coroutine
         def destroy_close_file(fid):
-            fidmd = yield from self.destroy_file(fid)
+            try:
+                fidmd = yield from self.destroy_file(fid)
+            except KeyError:
+                return
             yield from fidmd['handle'].close()
 
         for fid, value in self._open_files.items():
@@ -1314,7 +1317,10 @@ class SMBClientHandler(object):
 
         @asyncio.coroutine
         def destroy_close_search(sid):
-            searchmd = yield from self.destroy_search(sid)
+            try:
+                searchmd = yield from self.destroy_search(sid)
+            except KeyError:
+                return
             yield from searchmd['handle'].close()
 
         for sid, value in self._open_find_trans.items():
@@ -1338,7 +1344,10 @@ class SMBClientHandler(object):
     def hard_destroy_all_trees(self, server, backend):
         @asyncio.coroutine
         def destroy_tid(tid):
-            fs = yield from self.destroy_tree(tid)
+            try:
+                fs = yield from self.destroy_tree(tid)
+            except KeyError:
+                return
             yield from backend.tree_disconnect_hard(server, fs)
 
         waiting = []

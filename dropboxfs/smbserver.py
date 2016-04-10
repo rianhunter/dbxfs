@@ -30,7 +30,7 @@ import sys
 import time
 import threading
 
-from collections import defaultdict
+from collections import defaultdict, namedtuple
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from io import StringIO
@@ -40,68 +40,56 @@ try:
 except ImportError:
     from asyncio.windows_utils import socketpair
 
-# hack smb struct defs from PySMB
-import smb.smb_structs as smb_structs
-
 log = logging.getLogger(__name__)
 
+SMB_COM_CLOSE = 0x04
+SMB_COM_DELETE = 0x06
+SMB_COM_RENAME = 0x07
+SMB_COM_TRANSACTION = 0x25
+SMB_COM_ECHO = 0x2B
+SMB_COM_OPEN_ANDX = 0x2D
+SMB_COM_READ_ANDX = 0x2E
+SMB_COM_WRITE_ANDX = 0x2F
+SMB_COM_TRANSACTION2 = 0x32
+SMB_COM_NEGOTIATE = 0x72
+SMB_COM_SESSION_SETUP_ANDX = 0x73
+SMB_COM_TREE_CONNECT_ANDX = 0x75
+SMB_COM_NT_TRANSACT = 0xA0
+SMB_COM_NT_CREATE_ANDX = 0xA2
 SMB_COM_QUERY_INFORMATION_DISK = 0x80
 SMB_COM_CHECK_DIRECTORY = 0x10
 SMB_COM_TREE_DISCONNECT = 0x71
 
-class SMBMessage(smb_structs.SMBMessage):
-    # NB: default _decodePayload() assumes responses from servers
-    # since we are the server, we assume requests
-    def _decodePayload(self):
-        if self.isReply: return super()._decodePayload();
+SMB_FLAGS_REPLY = 0x80
+SMB_FLAGS2_NT_STATUS = 0x4000
+SMB_FLAGS2_UNICODE = 0x8000
+SMB_FLAGS2_EXTENDED_SECURITY = 0x0800
 
-        if self.command == smb_structs.SMB_COM_READ_ANDX:
-            self.payload = ComReadAndxRequest()
-        elif self.command == smb_structs.SMB_COM_WRITE_ANDX:
-            self.payload = smb_structs.ComWriteAndxRequest()
-        elif self.command == smb_structs.SMB_COM_TRANSACTION:
-            self.payload = smb_structs.ComTransactionRequest()
-        elif self.command == smb_structs.SMB_COM_TRANSACTION2:
-            self.payload = ComTransaction2Request()
-        elif self.command == smb_structs.SMB_COM_OPEN_ANDX:
-            self.payload = smb_structs.ComOpenAndxRequest()
-        elif self.command == smb_structs.SMB_COM_NT_CREATE_ANDX:
-            self.payload = ComNTCreateAndxRequest()
-        elif self.command == smb_structs.SMB_COM_TREE_CONNECT_ANDX:
-            self.payload = ComTreeConnectAndxRequest()
-        elif self.command == smb_structs.SMB_COM_ECHO:
-            self.payload = ComEchoRequest()
-        elif self.command == smb_structs.SMB_COM_SESSION_SETUP_ANDX:
-            self.payload = ComSessionSetupAndxRequest()
-        elif self.command == smb_structs.SMB_COM_NEGOTIATE:
-            self.payload = ComNegotiateRequest()
-        elif self.command == SMB_COM_QUERY_INFORMATION_DISK:
-            self.payload = ComQueryInformationDiskRequest()
-        elif self.command == smb_structs.SMB_COM_CLOSE:
-            self.payload = ComCloseRequest()
-        elif self.command == smb_structs.SMB_COM_NT_TRANSACT:
-            self.payload = ComNTTransactRequest()
-        elif self.command == SMB_COM_CHECK_DIRECTORY:
-            self.payload = ComCheckDirectoryRequest()
-        elif self.command == SMB_COM_TREE_DISCONNECT:
-            self.payload = ComTreeDisconnectRequest()
+CAP_RAW_MODE = 0x01
+CAP_MPX_MODE = 0x02
+CAP_UNICODE = 0x04
+CAP_LARGE_FILES = 0x08
+CAP_NT_SMBS = 0x10
+CAP_RPC_REMOTE_APIS = 0x20
+CAP_STATUS32 = 0x40
+CAP_LEVEL_II_OPLOCKS = 0x80
+CAP_LOCK_AND_READ = 0x0100
+CAP_NT_FIND = 0x0200
+CAP_DFS = 0x1000
+CAP_INFOLEVEL_PASSTHRU = 0x2000
+CAP_LARGE_READX = 0x4000
+CAP_LARGE_WRITEX = 0x8000
+CAP_LWIO = 0x010000
+CAP_UNIX = 0x800000
+CAP_COMPRESSED = 0x02000000
+CAP_DYNAMIC_REAUTH = 0x20000000
+CAP_PERSISTENT_HANDLES = 0x40000000
+CAP_EXTENDED_SECURITY = 0x80000000
+
+SMB_TREE_CONNECTX_SUPPORT_SEARCH = 0x0001
 
 
-        if self.payload:
-            self.payload.decode(self)
-
-def init_reply(payload, message, command):
-    smb_structs.Payload.initMessage(payload, message)
-    message.command = command
-    message.flags = message.flags | smb_structs.SMB_FLAGS_REPLY
-    message.flags2 = message.flags2 & ~smb_structs.SMB_FLAGS2_EXTENDED_SECURITY
-    message.tid = getattr(payload, 'tid', 0)
-    message.uid = getattr(payload, 'uid', 0)
-    message.mid = getattr(payload, 'mid', 0)
-
-def prepare(payload, message):
-    assert message.payload is payload
-    message.pid = getattr(payload, 'pid', 0)
+DATA_BYTE_COUNT_LENGTH = 2
 
 def parse_zero_terminated_utf16(buf, offset):
     s = offset
@@ -111,525 +99,792 @@ def parse_zero_terminated_utf16(buf, offset):
         else: break
     return (buf[offset:next_offset].decode("utf-16-le"), next_offset + 2)
 
-class ComNegotiateRequest(smb_structs.ComNegotiateRequest):
-    def __str__(self):
-        lines = []
+def generate_simple_params_decoder(fmt, type_):
+    def decode_params(_, __, buf):
+        try:
+            return type_(*struct.unpack(fmt, buf))
+        except Exception as e:
+            raise Exception("Error while unpacking %s:%s" %
+                            (type_.__name__, fmt)) from e
+    return decode_params
 
-        lines.append("SMB_COM_NEGOTIATE (request)")
-        lines.append("Dialect Supported:")
-        for d in self.dialects:
-            lines.append("  %s" % (d,))
+SMBHeader = namedtuple('SMBHeader',
+                       ['protocol', 'command',
+                        'status', 'flags', 'flags2', 'pid',
+                        'security_features', 'tid', 'uid', 'mid'])
 
-        return os.linesep.join(lines)
+SMBMessage = namedtuple('SMBMessage',
+                        ['header', 'parameters', 'data'])
 
-    def decode(self, message):
-        self.dialects = message.data.split(b'\0')
-        a = self.dialects.pop()
-        if a: raise smb_structs.ProtocolError("Non-trailing null byte!")
-        self.dialects = [d.lstrip(b"\x02").decode("ascii") for d in self.dialects]
+SMB_HEADER_STRUCT_FORMAT = "<4sBIBHHQxxHHHH"
+SMB_HEADER_STRUCT_SIZE = struct.calcsize(SMB_HEADER_STRUCT_FORMAT)
 
-class ComNegotiateResponse(smb_structs.ComNegotiateResponse):
+def decode_smb_header(buf):
+    kw = {}
+    (kw['protocol'], kw['command'], kw['status'],
+     kw['flags'], kw['flags2'], pid_high, kw['security_features'], kw['tid'],
+     pid_low, kw['uid'], kw['mid']) = struct.unpack(SMB_HEADER_STRUCT_FORMAT, buf)
+
+    if kw['protocol'] != b'\xFFSMB':
+        raise Exception('Invalid 4-byte protocol field: %r' % (kw['protocol'],))
+
+    kw['pid'] = (pid_high << 16) | pid_low
+
+    return SMBHeader(**kw)
+
+def decode_null_params(_, __, buf):
+    if buf:
+        raise Exception("Exception 0-length parameters")
+    return None
+
+def decode_null_data(_, __, ___, buf):
+    if buf:
+        raise Exception("Exception 0-length parameters")
+    return None
+
+def decode_byte_data(_, __, ___, buf):
+    return buf
+
+SMBNegotiateRequestData = namedtuple('SMBNegotiateRequestData', ['dialects'])
+def decode_negotiate_request_data(_, __, ___, buf):
+    dialects = buf.split(b'\0')
+    a = dialects.pop()
+    if a: raise Exception("Non-trailing null byte!")
+    dialects = [d.lstrip(b"\x02").decode("ascii") for d in dialects]
+    return SMBNegotiateRequestData(dialects=dialects)
+
+decode_session_setup_andx_request_params = generate_simple_params_decoder(
+    '<BBHHHHIHHII',
+    namedtuple('SMBSessionSetupAndxRequestParameters',
+               ['andx_command', 'andx_reserved', 'andx_offset',
+                'max_buffer_size', 'max_mpx_count',
+                'vc_number', 'session_key',
+                'oem_password_len', 'unicode_password_len',
+                'reserved', 'capabilities']))
+
+SMBSessionSetupAndxRequestData = namedtuple(
+    'SMBSessionSetupAndxRequestData',
+    ['password', 'account_name', 'primary_domain',
+     'native_os', 'native_lan_man'])
+def decode_session_setup_andx_request_data(smb_header, smb_parameters,
+                                           buf_offset, buf):
+    if not (smb_header.flags2 & SMB_FLAGS2_UNICODE):
+        raise Exception("Only supports unicode!")
+
+    if smb_parameters.oem_password_len:
+        # NB: Mac OS X sends oem_password_len == 1 even when SMB_FLAGS2_UNICODE is
+        #     set, even though this is against spec
+        log.warning("OEM Password len must be 0 when SMB_FLAGS2_UNICODE is set: %r, %r" %
+                    (smb_parameters.oem_password_len,
+                     buf[:smb_parameters.oem_password_len]))
+
+    # Linux CIFS_VFS client sends NTLMv2 even when we ask it not to
+    password = None
+    #password = message.data[oem_password_len:oem_password_len + unicode_password_len].decode("utf-16-le")
+
+    # read padding
+    raw_offset = (buf_offset + smb_parameters.oem_password_len +
+                  smb_parameters.unicode_password_len)
+    if raw_offset % 2:
+        if buf[raw_offset - buf_offset] != 0:
+            raise Exception("Was expecting null byte!: %r" %
+                            (buf[raw_offset - buf_offset],))
+        raw_offset += 1
+
+    kw = {'password' : password}
+
+    rel_offset = raw_offset - buf_offset
+    for n in ["account_name", "primary_domain", "native_os", "native_lan_man"]:
+        (kw[n], rel_offset) = parse_zero_terminated_utf16(buf, rel_offset)
+
+    return SMBSessionSetupAndxRequestData(**kw)
+
+decode_tree_connect_andx_request_params = generate_simple_params_decoder(
+    "<BBHHH",
+    namedtuple('SMBTreeConnectAndxRequestParameters',
+               ['andx_command', 'andx_reserved', 'andx_offset',
+                'flags', 'password_len']))
+
+SMBTreeConnectAndxRequestData = namedtuple('SMBTreeConnectAndxRequestData',
+                                           ['password', 'path', 'service'])
+def decode_tree_connect_andx_request_data(smb_header, smb_parameters, buf_offset, buf):
+    if not (smb_header.flags2 & SMB_FLAGS2_UNICODE):
+        raise Exception("Only supports unicode!")
+
+    # Linux CIFS_VFS client sends NTLMv2 even when we ask it not to
+    password = None
+    #password = message.data[oem_password_len:oem_password_len + unicode_password_len].decode("utf-16-le")
+
+    # read padding
+    raw_offset = (buf_offset + smb_parameters.password_len)
+    if raw_offset % 2:
+        if buf[raw_offset - buf_offset] != 0:
+            raise Exception("Was expecting null byte!: %r" %
+                            (buf[raw_offset - buf_offset],))
+        raw_offset += 1
+
+    kw = {'password' : password}
+
+    rel_offset = raw_offset - buf_offset
+    (kw['path'], rel_offset) = parse_zero_terminated_utf16(buf, rel_offset)
+
+    kw['service'] = buf[rel_offset:-1].decode("ascii")
+
+    return SMBTreeConnectAndxRequestData(**kw)
+
+decode_echo_request_params = generate_simple_params_decoder(
+    '<H', namedtuple('SMBEchoRequestParameters', ['echo_count']))
+
+SMBTransaction2RequestParameters = namedtuple(
+    'SMBTransaction2RequestParameters',
+    ['total_parameter_count', 'total_data_count',
+     'max_parameter_count', 'max_data_count',
+     'max_setup_count', 'flags', 'timeout',
+     'parameter_count', 'parameter_offset',
+     'data_count', 'data_offset', 'setup'])
+def decode_transaction_2_request_params(_, __, buf):
+    fmt = 'HHHHBBHIHHHHHH'
+    fmt_size = struct.calcsize(fmt)
+
+    kw = {}
+    (kw['total_parameter_count'], kw['total_data_count'],
+     kw['max_parameter_count'], kw['max_data_count'],
+     kw['max_setup_count'], _, kw['flags'], kw['timeout'],
+     _, kw['parameter_count'], kw['parameter_offset'], kw['data_count'],
+     kw['data_offset'], setup_words_len) = struct.unpack(fmt, buf[:fmt_size])
+
+
+    kw['setup'] = struct.unpack("<%dH" % (setup_words_len,),
+                                buf[fmt_size : fmt_size + setup_words_len * 2])
+
+    return SMBTransaction2RequestParameters(**kw)
+
+
+SMBTransaction2RequestData = \
+    namedtuple('SMBTransaction2RequestData',
+               ['parameters', 'data'])
+def decode_transaction_2_request_data(smb_header, smb_parameters, buf_offset, buf):
+    params = buf[smb_parameters.parameter_offset - buf_offset :
+                 smb_parameters.parameter_offset - buf_offset + smb_parameters.parameter_count]
+
+    data = buf[smb_parameters.data_offset - buf_offset :
+               smb_parameters.data_offset - buf_offset + smb_parameters.data_count]
+
+    return SMBTransaction2RequestData(params, data)
+
+decode_nt_create_andx_request_params = generate_simple_params_decoder(
+    "<BBHBHIIIQIIIIIB",
+    namedtuple('SMBNTCreateAndxRequestParameters',
+               ['andx_command', 'andx_reserved', 'andx_offset',
+                'reserved1', 'name_length', 'flags',
+                'root_directory_fid', 'desired_access',
+                'allocation_size', 'ext_file_attributes',
+                'share_access', 'create_disposition',
+                'create_options', 'impersonation_level',
+                'security_flags']))
+
+SMBNTCreateAndxRequestData = \
+    namedtuple('SMBNTCreateAndxRequestData', ['filename'])
+def decode_nt_create_andx_request_data(smb_header, smb_parameters, buf_offset, buf):
+    if not (smb_header.flags2 & SMB_FLAGS2_UNICODE):
+        raise Exception("Only support unicode!")
+
+    raw_offset = buf_offset
+    if raw_offset % 2:
+        raw_offset += 1
+
+    filename = buf[raw_offset - buf_offset :
+                   raw_offset - buf_offset + smb_parameters.name_length].decode("utf-16-le").rstrip("\0")
+    return SMBNTCreateAndxRequestData(filename)
+
+SMBReadAndxRequestParameters = \
+    namedtuple('SMBReadAndxRequestParameters',
+               ['andx_command', 'andx_reserved', 'andx_offset',
+                'fid', 'offset',
+                'max_count_of_bytes_to_return',
+                'min_count_of_bytes_to_return',
+                'timeout', 'remaining'])
+def decode_read_andx_request_params(_, __, buf):
+    kw = {}
+
+    fmt = "<BBHHLHHLH"
+    fmt_size = struct.calcsize(fmt)
+    (kw['andx_command'], kw['andx_reserved'], kw['andx_offset'],
+     kw['fid'], kw['offset'],
+     kw['max_count_of_bytes_to_return'],
+     kw['min_count_of_bytes_to_return'],
+     kw['timeout'], kw['remaining']) = struct.unpack(fmt, buf[:fmt_size])
+
+    if len(buf) > fmt_size:
+        (offset_high,) = struct.unpack("<I", buf[fmt_size:])
+        kw['offset'] = (offset_high << 32) | kw['offset']
+
+    return SMBReadAndxRequestParameters(**kw)
+
+decode_close_request_params = generate_simple_params_decoder(
+    "<HL",
+    namedtuple('SMBComCloseRequestParameters',
+               ['fid', 'last_modified_time']))
+SMBNTTransactRequestParameters = \
+    namedtuple('SMBNTTransactRequestParameters',
+               ['max_setup_count',
+                'total_parameter_count', 'total_data_count',
+                'max_parameter_count', 'max_data_count',
+                'parameter_count', 'parameter_offset',
+                'data_count', 'data_offset',
+                'function',
+                'setup'])
+def decode_nt_transact_request_params(smb_header, _, buf):
+    fmt = "<BHLLLLLLLLBH"
+    fmt_size = struct.calcsize(fmt)
+
+    kw = {}
+    (kw['max_setup_count'], _,
+     kw['total_parameter_count'], kw['total_data_count'],
+     kw['max_parameter_count'], kw['max_data_count'],
+     kw['parameter_count'], kw['parameter_offset'],
+     kw['data_count'], kw['data_offset'],
+     setup_count,
+     kw['function']) = struct.unpack(fmt, buf[:fmt_size])
+
+    kw['setup'] = buf[fmt_size : fmt_size + setup_count * 2]
+
+    return SMBNTTransactRequestParameters(**kw)
+
+SMBNTTransactRequestData = namedtuple(
+    'SMBNTTransactRequestData', ['parameters', 'data'])
+def decode_nt_transact_request_data(smb_header, smb_parameters, buf_offset, buf):
+    params = buf[smb_parameters.parameter_offset - buf_offset :
+                 smb_parameters.parameter_offset - buf_offset + smb_parameters.parameter_count]
+
+    data = buf[smb_parameters.data_offset - buf_offset :
+               smb_parameters.data_offset - buf_offset + smb_parameters.data_count]
+
+    return SMBNTTransactRequestData(params, data)
+
+SMBCheckDirectoryRequestData = namedtuple('SMBCheckDirectoryRequestData', ['filename'])
+def decode_check_directory_request_data(_, __, ___, buf):
+    filename = buf.decode('utf-16-le').rstrip('\0')
+    return SMBCheckDirectoryRequestData(filename=filename)
+
+REQUEST = False
+REPLY = True
+_decoder_dispatch = {
+    (SMB_COM_NEGOTIATE, REQUEST): (decode_null_params,
+                                   decode_negotiate_request_data),
+    (SMB_COM_SESSION_SETUP_ANDX, REQUEST): (decode_session_setup_andx_request_params,
+                                            decode_session_setup_andx_request_data),
+    (SMB_COM_TREE_CONNECT_ANDX, REQUEST): (decode_tree_connect_andx_request_params,
+                                           decode_tree_connect_andx_request_data),
+    (SMB_COM_TREE_DISCONNECT, REQUEST): (decode_null_params,
+                                         decode_null_data),
+    (SMB_COM_ECHO, REQUEST): (decode_echo_request_params,
+                              decode_byte_data),
+    (SMB_COM_TRANSACTION2, REQUEST): (decode_transaction_2_request_params,
+                                      decode_transaction_2_request_data),
+    (SMB_COM_QUERY_INFORMATION_DISK, REQUEST): (decode_null_params,
+                                                decode_null_data),
+    (SMB_COM_NT_CREATE_ANDX, REQUEST): (decode_nt_create_andx_request_params,
+                                        decode_nt_create_andx_request_data),
+    (SMB_COM_READ_ANDX, REQUEST): (decode_read_andx_request_params,
+                                   decode_null_data),
+    (SMB_COM_CLOSE, REQUEST): (decode_close_request_params,
+                               decode_null_data),
+    (SMB_COM_NT_TRANSACT, REQUEST): (decode_nt_transact_request_params,
+                                     decode_nt_transact_request_data),
+    (SMB_COM_CHECK_DIRECTORY, REQUEST): (decode_null_params,
+                                         decode_check_directory_request_data),
+}
+
+def get_decoder(header):
+    try:
+        return _decoder_dispatch[(header.command, bool(header.flags & SMB_FLAGS_REPLY))]
+    except KeyError:
+        raise ProtocolError(STATUS_NOT_SUPPORTED)
+
+def decode_smb_payload(smb_header, buf):
+    (params_decoder, data_decoder) = get_decoder(smb_header)
+
+    cur_offset = 0
+
+    params_size = buf[cur_offset] * 2
+    cur_offset += 1
+
+    smb_parameters = params_decoder(smb_header, SMB_HEADER_STRUCT_SIZE + cur_offset,
+                                    buf[cur_offset : cur_offset + params_size])
+    cur_offset += params_size
+
+    (data_size,) = struct.unpack("<H", buf[cur_offset : cur_offset + 2])
+    cur_offset += 2
+
+    smb_data = data_decoder(smb_header, smb_parameters, SMB_HEADER_STRUCT_SIZE + cur_offset,
+                            buf[cur_offset : cur_offset + data_size])
+    cur_offset += data_size
+
+    if cur_offset != len(buf):
+        raise Exception("Bad SMB packet length!")
+
+    return (smb_parameters, smb_data)
+
+def decode_smb_message(buf):
+    smb_header = decode_smb_header(buf[:SMB_HEADER_STRUCT_SIZE])
+    (smb_parameters, smb_data) = decode_smb_payload(smb_header, buf[SMB_HEADER_STRUCT_SIZE:])
+
+    return SMBMessage(header=smb_header,
+                      parameters=smb_parameters,
+                      data=smb_data)
+
+def encode_null_params(header, buf_offset, parameters):
+    return b''
+
+def encode_null_data(header, parameters, buf_offset, data):
+    return b''
+
+def encode_byte_data(header, parameters, buf_offset, data):
+    return data
+
+def generate_simple_parameter_encoder(fmt, attrs):
+    def encoder(_, buf_offset, parameters):
+        return struct.pack(fmt, *(getattr(parameters, a) for a in attrs))
+    return encoder
+
+encode_negotiate_reply_parameters = generate_simple_parameter_encoder(
+    '<HBHHIIIIQhB',
+    ['dialect_index', 'security_mode', 'max_mpx_count',
+     'max_number_vcs', 'max_buffer_size', 'max_raw_size',
+     'session_key', 'capabilities', 'system_time',
+     'server_time_zone', 'challenge_length'])
+
+def encode_negotiate_reply_data(header, parameters, buf_offset, data):
+    if not (header.flags2 & SMB_FLAGS2_UNICODE):
+        raise NotImplementedError("non-unicode not implemented!")
+
+    assert parameters.challenge_length == len(data.challenge)
+    return b''.join([data.challenge,
+                     (data.domain_name + "\0").encode('utf-16-le')])
+
+encode_session_setup_andx_reply_params = generate_simple_parameter_encoder(
+    '<BBHH',
+    ['andx_command', 'andx_reserved', 'andx_offset', 'action'])
+
+def encode_session_setup_andx_reply_data(header, parameters, buf_offset, data):
+    if not (header.flags2 & SMB_FLAGS2_UNICODE):
+        raise NotImplementedError("non-unicode not implemented!")
+
+    prefix = b''
+    if buf_offset % 2:
+        prefix += b'\0'
+
+    return b''.join(itertools.chain([prefix],
+                                    (x.encode('utf-16-le')
+                                     for x in [data.native_os, "\0",
+                                               data.native_lan_man, "\0",
+                                               data.primary_domain, "\0"])))
+
+encode_tree_connect_reply_params = generate_simple_parameter_encoder(
+    '<BBHH',
+    ['andx_command', 'andx_reserved', 'andx_offset', 'optional_support'])
+
+
+def encode_tree_connect_reply_data(header, parameters, buf_offset, data):
+    if not (header.flags2 & SMB_FLAGS2_UNICODE):
+        raise NotImplementedError("non-unicode not implemented!")
+
+    return b''.join([data.service.encode("ascii"),
+                     data.native_file_system.encode("utf-16-le"),
+                     b'\0\0'])
+
+encode_echo_reply_params = generate_simple_parameter_encoder(
+    "<H",
+    ["sequence_number"])
+
+def encode_transaction_2_reply_params(header, buf_offset, parameters):
+    fmt = "<HHHHHHHHHBB"
+
+    data_offset = (buf_offset +
+                   struct.calcsize(fmt) +
+                   len(parameters.setup) * 2 +
+                   DATA_BYTE_COUNT_LENGTH)
+
+    trans2_params_offset = data_offset
+    if trans2_params_offset % 4:
+        trans2_params_offset += 4 - trans2_params_offset % 4
+
+    trans2_data_offset = trans2_params_offset + parameters.parameter_count
+    if trans2_data_offset % 4:
+        trans2_data_offset += 4 - trans2_data_offset % 4
+
+    return b''.join([struct.pack(fmt,
+                                 parameters.total_parameter_count,
+                                 parameters.total_data_count,
+                                 0,
+                                 parameters.parameter_count,
+                                 trans2_params_offset,
+                                 parameters.parameter_displacement,
+                                 parameters.data_count,
+                                 trans2_data_offset,
+                                 parameters.data_displacement,
+                                 len(parameters.setup), 0),
+                     struct.pack('<%dH' % (len(parameters.setup),),
+                                 *parameters.setup)])
+
+def encode_transaction_2_reply_data(header, parameters, buf_offset, data):
+    trans2_params_offset = buf_offset
+    if trans2_params_offset % 4:
+        trans2_params_offset += 4 - trans2_params_offset % 4
+
+    trans2_data_offset = trans2_params_offset + len(data.parameters)
+    if trans2_data_offset % 4:
+        trans2_data_offset += 4 - trans2_data_offset % 4
+
+    return b''.join([(trans2_params_offset - buf_offset) * b'\0',
+                     data.parameters,
+                     (trans2_data_offset - (trans2_params_offset + len(data.parameters))) * b'\0',
+                     data.data])
+
+encode_query_information_disk_reply_params = generate_simple_parameter_encoder(
+    "<HHHHH",
+    ["total_units", "blocks_per_unit", "block_size", "free_units"])
+
+encode_nt_create_andx_reply_params = generate_simple_parameter_encoder(
+    "<BBHBHLQQQQLQQHHB",
+    ["andx_command", "andx_reserved", "andx_offset",
+     'op_lock_level', 'fid', 'create_disposition', 'create_time',
+     'last_access_time', 'last_write_time', 'last_change_time',
+     'ext_file_attributes', 'allocation_size', 'end_of_file',
+     'resource_type', 'nm_pipe_status', 'directory'])
+
+encode_read_andx_reply_params = generate_simple_parameter_encoder(
+    "<BBHHHHHHHHHHH",
+    ["andx_command", "andx_reserved", "andx_offset",
+     "available", None, None, "data_length", "data_offset",
+     None, None, None, None, None])
+
+def encode_read_andx_reply_params(header, buf_offset, parameters):
+    fmt = "<BBHHHHHHHHHHH"
+
+    offset = buf_offset + struct.calcsize(fmt) + DATA_BYTE_COUNT_LENGTH
+    if offset % 2:
+        offset += 1
+
+    p = parameters
+    return struct.pack(fmt,
+                       p.andx_command, p.andx_reserved, p.andx_offset,
+                       p.available, 0, 0, p.data_length, offset,
+                       0, 0, 0, 0, 0)
+
+def encode_read_andx_reply_data(header, parameters, buf_offset, data):
+    assert parameters.data_length == len(data)
+
+    pad = b''
+    if buf_offset % 2:
+        pad += b'\0'
+
+    return b''.join([pad, data])
+
+def encode_nt_transact_reply_params(header, buf_offset, parameters):
+    fmt = "<BBBLLLLLLLLB"
+
+    data_offset = (buf_offset +
+                   struct.calcsize(fmt) +
+                   len(parameters.setup) * 2 +
+                   DATA_BYTE_COUNT_LENGTH)
+
+    nt_transact_params_offset = data_offset
+    if nt_transact_params_offset % 4:
+        nt_transact_params_offset += 4 - nt_transact_params_offset % 4
+
+    nt_transact_data_offset = nt_transact_params_offset + parameters.parameter_count
+    if nt_transact_data_offset % 4:
+        nt_transact_data_offset += 4 - nt_transact_data_offset % 4
+
+    assert not (len(parameters.setup) % 2)
+
+    return b''.join([struct.pack(fmt,
+                                 0, 0, 0,
+                                 parameters.total_parameter_count,
+                                 parameters.total_data_count,
+                                 parameters.parameter_count,
+                                 nt_transact_params_offset,
+                                 parameters.parameter_displacement,
+                                 parameters.data_count,
+                                 nt_transact_data_offset,
+                                 parameters.data_displacement,
+                                 len(parameters.setup) // 2),
+                     parameters.setup])
+
+def encode_nt_transact_reply_data(header, parameters, data_offset, data):
+    nt_transact_params_offset = data_offset
+    if nt_transact_params_offset % 4:
+        nt_transact_params_offset += 4 - nt_transact_params_offset % 4
+
+    nt_transact_data_offset = nt_transact_params_offset + len(data.parameters)
+    if nt_transact_data_offset % 4:
+        nt_transact_data_offset += 4 - nt_transact_data_offset % 4
+
+    return b''.join([(nt_transact_params_offset - data_offset) * b'\0',
+                     data.parameters,
+                     (nt_transact_data_offset - (nt_transact_params_offset +
+                                                 len(data.parameters))) * b'\0',
+                     data.data])
+
+_encoder_dispatch = {
+    (SMB_COM_NEGOTIATE, REPLY): (encode_negotiate_reply_parameters,
+                                 encode_negotiate_reply_data),
+    (SMB_COM_SESSION_SETUP_ANDX, REPLY): (encode_session_setup_andx_reply_params,
+                                          encode_session_setup_andx_reply_data),
+    (SMB_COM_TREE_CONNECT_ANDX, REPLY): (encode_tree_connect_reply_params,
+                                         encode_tree_connect_reply_data),
+    (SMB_COM_TREE_DISCONNECT, REPLY): (encode_null_params,
+                                       encode_null_data),
+    (SMB_COM_ECHO, REPLY): (encode_echo_reply_params,
+                            encode_byte_data),
+    (SMB_COM_TRANSACTION2, REPLY): (encode_transaction_2_reply_params,
+                                    encode_transaction_2_reply_data),
+    (SMB_COM_QUERY_INFORMATION_DISK, REPLY): (encode_query_information_disk_reply_params,
+                                              encode_null_data),
+    (SMB_COM_NT_CREATE_ANDX, REPLY): (encode_nt_create_andx_reply_params,
+                                      encode_null_data),
+    (SMB_COM_READ_ANDX, REPLY): (encode_read_andx_reply_params,
+                                 encode_read_andx_reply_data),
+    (SMB_COM_CLOSE, REPLY): (encode_null_params,
+                             encode_null_data),
+    (SMB_COM_NT_TRANSACT, REPLY): (encode_nt_transact_reply_params,
+                                   encode_nt_transact_reply_data),
+    (SMB_COM_CHECK_DIRECTORY, REPLY): (encode_null_params,
+                                       encode_null_data),
+}
+
+def get_encoder(header):
+    return _encoder_dispatch[(header.command, bool(header.flags & SMB_FLAGS_REPLY))]
+
+def encode_smb_header(header):
+    return struct.pack(SMB_HEADER_STRUCT_FORMAT,
+                       b'\xFFSMB', header.command, header.status, header.flags,
+                       header.flags2, (header.pid >> 16) & 0xFFFF,
+                       header.security_features, header.tid,
+                       header.pid & 0xFFFF, header.uid, header.mid)
+
+def encode_smb_message(msg):
+    cur_offset = 0
+
+    header = encode_smb_header(msg.header)
+    cur_offset += len(header)
+
+    if not msg.header.status:
+        (params_encoder, data_encoder) = get_encoder(msg.header)
+
+        # account for word-length prefix
+        cur_offset += 1
+
+        params = params_encoder(msg.header, cur_offset, msg.parameters)
+        assert not (len(params) % 2)
+        cur_offset += len(params)
+
+        # account for byte-length prefix
+        cur_offset += DATA_BYTE_COUNT_LENGTH
+        assert DATA_BYTE_COUNT_LENGTH == 2
+
+        data = data_encoder(msg.header, msg.parameters, cur_offset, msg.data)
+        cur_offset += len(data)
+    else:
+        # This is an "error response" message
+        cur_offset += 1
+        params = b''
+        cur_offset += DATA_BYTE_COUNT_LENGTH
+        data = b''
+
+    toret = b''.join([header,
+                      struct.pack("<B", len(params) // 2), params,
+                      struct.pack("<H", len(data)), data])
+
+    assert len(toret) == cur_offset
+
+    return toret
+
+SMBTransaction2FindFirstRequestParameters = namedtuple(
+    'SMBTransaction2FindFirstRequestParameters',
+    ['search_attributes', 'search_count',
+     'flags', 'information_level',
+     'search_storage_type', 'filename'])
+def decode_transaction_2_find_first_request_params(smb_header, _, buf):
+    if not (smb_header.flags2 & SMB_FLAGS2_UNICODE):
+        raise Exception("Only supports unicode!")
+
+    kw = {}
+
+    fmt = "<HHHHI"
+    fmt_size = struct.calcsize(fmt)
+    (kw['search_attributes'], kw['search_count'],
+     kw['flags'], kw['information_level'],
+     kw['search_storage_type']) = struct.unpack(fmt, buf[:fmt_size])
+
+    kw['filename'] = buf[fmt_size:].decode("utf-16-le")[:-1]
+    return SMBTransaction2FindFirstRequestParameters(**kw)
+
+def decode_transaction_2_find_first_request_data(_, __, trans2_params, buf):
+    if trans2_params.information_level == SMB_INFO_QUERY_EAS_FROM_LIST:
+        raise Exception("Not supported")
+
+    if buf:
+        raise Exception("buf should be empty")
+
+    return None
+
+SMBTransaction2FindNextRequestParameters = namedtuple(
+    'SMBTransaction2FindNextRequestParameters',
+    ['sid', 'search_count', 'information_level', 'resume_key',
+     'flags', 'filename'])
+def decode_transaction_2_find_next_request_params(smb_header, _, buf):
+    if not (smb_header.flags2 & SMB_FLAGS2_UNICODE):
+        raise Exception("Only supports unicode!")
+
+    kw = {}
+
+    fmt = "<HHHIH"
+    fmt_size = struct.calcsize(fmt)
+    (kw['sid'], kw['search_count'],
+     kw['information_level'], kw['resume_key'],
+     kw['flags']) = struct.unpack(fmt, buf[:fmt_size])
+
+    kw['filename'] = buf[fmt_size:].decode("utf-16-le")[:-1]
+    return SMBTransaction2FindNextRequestParameters(**kw)
+
+decode_transaction_2_find_next_request_data = \
+    decode_transaction_2_find_first_request_data
+
+def decode_transaction_2_null_request_data(_, __, ___, buf):
+    if buf:
+        raise Exception("buf should be empty")
+    return None
+
+SMBTransaction2QueryFSInformationRequestParameters = \
+    namedtuple('SMBTransaction2QueryFSInformationRequestParameters',
+               ['information_level'])
+def decode_transaction_2_query_fs_information_request_params(_, __, buf):
+    return SMBTransaction2QueryFSInformationRequestParameters(*struct.unpack("<H", buf))
+
+SMBTransaction2QueryPathInformationRequestParams = \
+    namedtuple('SMBTransaction2QueryPathInformationRequestParams',
+               ['information_level', 'filename'])
+def decode_transaction_2_query_path_information_request_params(smb_header, _, buf):
+    if not (smb_header.flags2 & SMB_FLAGS2_UNICODE):
+        raise Exception("Only supports unicode!")
+
+    kw = {}
+
+    fmt = "<HI"
+    fmt_size = struct.calcsize(fmt)
+
+    (kw['information_level'], _reserved) = struct.unpack(fmt, buf[:fmt_size])
+
+    kw['filename'] = buf[fmt_size:].decode("utf-16-le")[:-1]
+
+    return SMBTransaction2QueryPathInformationRequestParams(**kw)
+
+decode_transaction_2_query_path_information_request_data = \
+    decode_transaction_2_find_first_request_data
+
+SMB_TRANS2_FIND_FIRST2 = 0x1
+SMB_TRANS2_FIND_NEXT2 = 0x2
+SMB_TRANS2_QUERY_FS_INFORMATION = 0x3
+SMB_TRANS2_QUERY_PATH_INFORMATION = 0x5
+
+_TRANS_2_DECODERS = {
+    SMB_TRANS2_FIND_FIRST2: (decode_transaction_2_find_first_request_params,
+                             decode_transaction_2_find_first_request_data),
+    SMB_TRANS2_FIND_NEXT2: (decode_transaction_2_find_next_request_params,
+                            decode_transaction_2_find_next_request_data),
+    SMB_TRANS2_QUERY_FS_INFORMATION: (decode_transaction_2_query_fs_information_request_params,
+                                      decode_transaction_2_null_request_data),
+    SMB_TRANS2_QUERY_PATH_INFORMATION: (decode_transaction_2_query_path_information_request_params,
+                                        decode_transaction_2_query_path_information_request_data),
+}
+def get_transaction2_request_decoder(smb_parameters):
+    try:
+        return _TRANS_2_DECODERS[smb_parameters.setup[0]]
+    except KeyError:
+        raise ProtocolError(STATUS_NOT_SUPPORTED)
+
+def decode_transaction_2_request_message(msg):
+    assert (msg.parameters.total_parameter_count == msg.parameters.parameter_count and
+            msg.parameters.total_data_count == msg.parameters.data_count), \
+            "only supports single smb-message transaction 2 requests"
+
+    (params_decoder, data_decoder) = get_transaction2_request_decoder(msg.parameters)
+
+    params = params_decoder(msg.header, msg.parameters, msg.data.parameters)
+    data = data_decoder(msg.header, msg.parameters, params, msg.data.data)
+
+    return (msg.parameters.setup[0], params, data)
+
+SMBNTTransactNotifyChangeRequestSetup = namedtuple(
+    'SMBNTTransactNotifyChangeRequestSetup',
+    ['completion_filter', 'fid', 'watch_tree'])
+def decode_nt_transact_notify_change_request_setup(_, parameters):
+    return SMBNTTransactNotifyChangeRequestSetup(
+        *struct.unpack("<LH?", parameters.setup[:7]))
+
+def decode_nt_transact_null_request_params(_, __, ___, buf):
+    if buf:
+        raise Exception("there should be no buf!")
+    return None
+
+def decode_nt_transact_null_request_data(_, __, ___, ____, buf):
+    if buf:
+        raise Exception("there should be no buf!")
+    return None
+
+def get_nt_transact_request_decoder(smb_parameters):
+    return {
+        NT_TRANSACT_NOTIFY_CHANGE: (decode_nt_transact_notify_change_request_setup,
+                                    decode_nt_transact_null_request_params,
+                                    decode_nt_transact_null_request_data),
+    }[smb_parameters.function]
+
+
+def decode_nt_transact_request_message(msg):
+    assert (msg.parameters.total_parameter_count == msg.parameters.parameter_count and
+            msg.parameters.total_data_count == msg.parameters.data_count), \
+            "only supports single smb-message nt transact requests"
+
+    (setup_decoder, params_decoder, data_decoder) = \
+        get_nt_transact_request_decoder(msg.parameters)
+
+    setup = setup_decoder(msg.header, msg.parameters)
+    params = params_decoder(msg.header, msg.parameters, setup, msg.data.parameters)
+    data = data_decoder(msg.header, msg.parameters, setup, params, msg.data.data)
+
+    return (msg.parameters.function, setup, params, data)
+
+def reply_header_from_request_header(header, **kw):
+    for x in SMBHeader._fields:
+        if x not in kw:
+            if x == 'flags':
+                kw[x] = header.flags | SMB_FLAGS_REPLY
+            elif x == "flags2":
+                kw[x] = header.flags2 & ~SMB_FLAGS2_EXTENDED_SECURITY
+            elif x == 'status':
+                kw[x] = STATUS_SUCCESS
+            else:
+                kw[x] = getattr(header, x)
+    return SMBHeader(**kw)
+
+def reply_header_from_request(msg, **kw):
+    return reply_header_from_request_header(msg.header, **kw)
+
+class quick_container(object):
     def __init__(self, **kw):
+        self._fields = []
         for (k, v) in kw.items():
             setattr(self, k, v)
+            self._fields.append(k)
+        self._fields = tuple(self._fields)
 
-    def initMessage(self, message):
-        init_reply(self, message, smb_structs.SMB_COM_NEGOTIATE)
+    def __repr__(self):
+        return 'quick_container(' + ','.join("%s=%r" % (k, getattr(self, k)) for k in self._fields) + ')'
 
-    def prepare(self, message):
-        prepare(self, message)
-
-        PAYLOAD_STRUCT_FORMAT = '<HBHHIIIIQhB'
-
-        message.parameters_data = struct.pack(PAYLOAD_STRUCT_FORMAT,
-                                              self.dialect_index, self.security_mode, self.max_mpx_count,
-                                              self.max_number_vcs, self.max_buffer_size, self.max_raw_size,
-                                              self.session_key, self.capabilities, self.system_time,
-                                              self.server_time_zone, self.challenge_length)
-        message.data = "\0".encode("utf-16-le")
-
-class ComSessionSetupAndxRequest(smb_structs.ComSessionSetupAndxRequest__NoSecurityExtension):
-    def __init__(self):
-        pass
-
-    def decode(self, message):
-        andx_header = message.parameters_data[:self.DEFAULT_ANDX_PARAM_SIZE]
-        (andx_command, andx_reserved, andx_offset) = andx_header_o = struct.unpack(">BBH", andx_header)
-
-        # TODO: better andx parsing
-        if not (andx_command == 0xff and not andx_offset):
-            raise Exception("We don't support non-terminal ANDX parameter blocks yet...")
-
-        params = message.parameters_data[self.DEFAULT_ANDX_PARAM_SIZE:]
-        (max_buffer_size, max_mpx_count, vc_number,
-         session_key, oem_password_len, unicode_password_len, reserved, capabilities) = params_o =struct.unpack(self.PAYLOAD_STRUCT_FORMAT, params)
-
-        # TODO: check session_key from SMB_COM_NEGOTIATE
-
-        is_unicode = message.flags2 & smb_structs.SMB_FLAGS2_UNICODE
-        if not is_unicode: raise Exception("Only support unicode!")
-
-        if is_unicode:
-            if oem_password_len:
-                # NB: Mac OS X sends oem_password_len == 1 even when SMB_FLAGS2_UNICODE is
-                #     set, even though this is against spec
-                log.warning("OEM Password len must be 0 when SMB_FLAGS2_UNICODE is set: %r, %r" %
-                            (oem_password_len, message.data[:oem_password_len]))
-            # Linux CIFS_VFS client sends NTLMv2 even when we ask it not to
-            password = None
-            #password = message.data[oem_password_len:oem_password_len + unicode_password_len].decode("utf-16-le")
-        else:
-            if unicode_password_len:
-                log.warning("Unicode Password len must be 0 when SMB_FLAGS2_UNICODE is clear")
-            # TODO: 'ascii' is probably not the right encoding here
-            password = message.data[:oem_password_len].rstrip(b'\0').decode("ascii")
-
-
-        # read padding
-        raw_offset = (SMBMessage.HEADER_STRUCT_SIZE + len(message.parameters_data) + 2 +
-                      oem_password_len + unicode_password_len)
-        if raw_offset % 2 and is_unicode:
-            if message.raw_data[raw_offset] != 0:
-                raise Exception("Was expecting null byte!: %r" % (message.raw_data[raw_offset],))
-            raw_offset += 1
-
-        term = b"\0\0" if is_unicode else b"\0"
-        encoding = "utf-16-le" if is_unicode else "ascii"
-
-        elts = {}
-        for n in ["username", "domain", "nativeos", "nativelanman"]:
-            (elts[n], raw_offset) = parse_zero_terminated_utf16(message.raw_data,
-                                                                 raw_offset)
-
-        self.max_buffer_size = max_buffer_size
-        self.max_mpx_count = max_mpx_count
-        self.vc_number = vc_number
-        self.session_key = session_key
-        self.capabilities = capabilities
-
-        self.password = password
-        self.username = elts['username']
-        self.domain = elts['domain']
-        self.native_os = elts['nativeos']
-        self.native_lan_man = elts['nativelanman']
-
-class ComSessionSetupAndxResponse(smb_structs.ComSessionSetupAndxResponse):
-    def __init__(self, **kw):
-        for (k, v) in kw.items():
-            setattr(self, k, v)
-
-    def initMessage(self, message):
-        init_reply(self, message, smb_structs.SMB_COM_SESSION_SETUP_ANDX)
-
-    def prepare(self, message):
-        prepare(self, message)
-
-        # this gets reset in SMBMessage.encode()
-        message.pid = self.pid
-
-        message.parameters_data = (self.DEFAULT_ANDX_PARAM_HEADER +
-                                   struct.pack('<H',self.action))
-
-        prefix = b''
-        if (SMBMessage.HEADER_STRUCT_SIZE + len(message.parameters_data) + 2):
-            prefix = b'\0'
-
-        message.data = prefix + b''.join([x.encode("utf-16-le") + b'\0\0'  for x in ["Unix", "DropboxFS", self.domain]])
-
-class ComTreeConnectAndxRequest(smb_structs.ComTreeConnectAndxRequest):
-    def __init__(self): pass
-
-    def decode(self, message):
-        is_unicode = message.flags2 & smb_structs.SMB_FLAGS2_UNICODE
-        if not is_unicode: raise Exception("Only support unicode!")
-
-        andx_header = message.parameters_data[:self.DEFAULT_ANDX_PARAM_SIZE]
-        (andx_command, andx_reserved, andx_offset) = andx_header_o = struct.unpack(">BBH", andx_header)
-
-        # TODO: better andx parsing
-        if not (andx_command == 0xff and not andx_offset):
-            raise Exception("We don't support non-terminal ANDX parameter blocks yet...")
-
-        (self.flags, password_len) = struct.unpack(self.PAYLOAD_STRUCT_FORMAT,
-                                                   message.parameters_data[self.DEFAULT_ANDX_PARAM_SIZE:self.PAYLOAD_STRUCT_SIZE + self.DEFAULT_ANDX_PARAM_SIZE])
-
-        # Linux CIFS_VFS client sends NTLMv2 even when we ask it not to
-        self.password = None
-        #self.password = message.data[:password_len].rstrip(b'\0').decode("utf-8")
-
-        raw_offset = (SMBMessage.HEADER_STRUCT_SIZE + len(message.parameters_data) +
-                      2 + password_len)
-        if raw_offset % 2:
-            if message.raw_data[raw_offset] != 0:
-                raise Exception("Was expecting null byte padding!")
-            raw_offset += 1
-
-        (self.path, raw_offset) = parse_zero_terminated_utf16(message.raw_data, raw_offset)
-
-        service_off = message.raw_data.index(b'\0', raw_offset)
-        self.service = message.raw_data[raw_offset:service_off].decode("ascii")
-
-class ComTreeConnectAndxResponse(smb_structs.ComTreeConnectAndxResponse):
-    def __init__(self, **kw):
-        for (k, v) in kw.items():
-            setattr(self, k, v)
-
-    def initMessage(self, message):
-        init_reply(self, message, smb_structs.SMB_COM_TREE_CONNECT_ANDX)
-
-    def prepare(self, message):
-        prepare(self, message)
-
-        message.parameters_data = struct.pack(self.PAYLOAD_STRUCT_FORMAT,
-                                              0xff, 0, 0,
-                                              self.optional_support)
-
-        # NB A: means disk share
-        message.data = b'A:\0'
-
-class ComTreeDisconnectRequest(smb_structs.Payload):
-    def decode(self, message):
-        pass
-
-class ComTreeDisconnectResponse(smb_structs.Payload):
-    def __init__(self, **kw):
-        for (k, v) in kw.items():
-            setattr(self, k, v)
-
-    def initMessage(self, message):
-        init_reply(self, message, SMB_COM_TREE_DISCONNECT)
-
-    def prepare(self, message):
-        prepare(self, message)
-        message.parameters_data = b''
-        message.data = b''
-
-class ComEchoRequest(smb_structs.ComEchoRequest):
-    def decode(self, message):
-        fmt = '<H'
-        fmt_size = struct.calcsize(fmt)
-        (self.echo_count,) = struct.unpack(fmt, message.parameters_data[:fmt_size])
-        self.echo_data = message.data
-
-class ComEchoResponse(smb_structs.ComEchoResponse):
-    def __init__(self, **kw):
-        for (k, v) in kw.items():
-            setattr(self, k, v)
-
-    def initMessage(self, message):
-        init_reply(self, message, smb_structs.SMB_COM_ECHO)
-
-    def prepare(self, message):
-        prepare(self, message)
-
-        message.parameters_data = struct.pack("<H", self.sequence_number)
-        message.data = self.data
-
-class ComTransaction2Request(smb_structs.ComTransaction2Request):
-    def __init__(self): pass
-
-    def decode(self, message):
-        (self.total_params_count, self.total_data_count,
-         self.max_params_count, self.max_data_count,
-         self.max_setup_count, _, self.flags, self.timeout,
-         _, params_bytes_len, params_bytes_offset, data_bytes_len,
-         data_bytes_offset, setup_words_len) = \
-            struct.unpack(self.PAYLOAD_STRUCT_FORMAT,
-                          message.parameters_data[:self.PAYLOAD_STRUCT_SIZE])
-
-        self.setup_bytes = message.parameters_data[self.PAYLOAD_STRUCT_SIZE:self.PAYLOAD_STRUCT_SIZE + setup_words_len * 2]
-
-        self.params_bytes = message.raw_data[params_bytes_offset:params_bytes_offset + params_bytes_len]
-        self.data_bytes = message.raw_data[data_bytes_offset:data_bytes_offset + data_bytes_len]
-
-class ComTransaction2Response(smb_structs.ComTransaction2Response):
-    def __init__(self, **kw):
-        for (k, v) in kw.items():
-            setattr(self, k, v)
-
-    def initMessage(self, message):
-        init_reply(self, message, smb_structs.SMB_COM_TRANSACTION2)
-
-    def prepare(self, message):
-        prepare(self, message)
-
-        assert not (len(self.setup_bytes) % 2)
-
-        data_offset = (message.HEADER_STRUCT_SIZE +
-                       struct.calcsize("<HHHHHHHHHBB") +
-                       len(self.setup_bytes) + 2)
-        params_bytes_offset = data_offset
-        if params_bytes_offset % 4:
-            params_bytes_offset += 4 - params_bytes_offset % 4
-
-        data_bytes_offset = params_bytes_offset + len(self.params_bytes)
-        if data_bytes_offset % 4:
-            data_bytes_offset += 4 - data_bytes_offset % 4
-
-        message.parameters_data = struct.pack("<HHHHHHHHHBB",
-                                              len(self.params_bytes),
-                                              len(self.data_bytes),
-                                              0,
-                                              len(self.params_bytes),
-                                              params_bytes_offset,
-                                              0,
-                                              len(self.data_bytes),
-                                              data_bytes_offset,
-                                              0, len(self.setup_bytes) // 2, 0)
-        message.parameters_data += self.setup_bytes
-
-        message.data = ((params_bytes_offset - data_offset) * b'\0' +
-                        self.params_bytes +
-                        (data_bytes_offset - (params_bytes_offset + len(self.params_bytes))) * b'\0' +
-                        self.data_bytes)
-
-class ComQueryInformationDiskRequest(smb_structs.Payload):
-    def decode(self, message):
-        pass
-
-class ComQueryInformationDiskResponse(smb_structs.Payload):
-    def __init__(self, **kw):
-        for (k, v) in kw.items():
-            setattr(self, k, v)
-
-    def initMessage(self, message):
-        init_reply(self, message, SMB_COM_QUERY_INFORMATION_DISK)
-
-    def prepare(self, message):
-        prepare(self, message)
-
-        message.parameters_data = struct.pack("<HHHHH",
-                                              self.total_units,
-                                              self.blocks_per_unit,
-                                              self.block_size,
-                                              self.free_units,
-                                              0)
-
-class ComNTCreateAndxRequest(smb_structs.ComNTCreateAndxRequest):
-    def __init__(self): pass
-
-    def decode(self, message):
-        is_unicode = message.flags2 & smb_structs.SMB_FLAGS2_UNICODE
-        if not is_unicode: raise Exception("Only support unicode!")
-
-        (andx_command, andx_reserved, andx_offset,
-         reserved, filename_len, self.flags,
-         self.root_fid, self.access_mask,
-         self.allocation_size, self.ext_attr,
-         self.share_access, self.create_disp,
-         self.create_options, self.impersonation,
-         self.security_flags) = struct.unpack("<BBH" + self.PAYLOAD_STRUCT_FORMAT[1:],
-                                              message.parameters_data)
-
-        # TODO: better andx parsing
-        if not (andx_command == 0xff and not andx_offset):
-            raise Exception("We don't support non-terminal ANDX parameter blocks yet...")
-
-        raw_offset = message.HEADER_STRUCT_SIZE + len(message.parameters_data) + 2
-        if raw_offset % 2:
-            raw_offset += 1
-
-        self.filename = message.raw_data[raw_offset:raw_offset + filename_len].decode("utf-16-le").rstrip("\0")
-
-class ComNTCreateAndxResponse(smb_structs.ComNTCreateAndxResponse):
-    def __init__(self, **kw):
-        for (k, v) in kw.items():
-            setattr(self, k, v)
-
-    def initMessage(self, message):
-        init_reply(self, message, smb_structs.SMB_COM_NT_CREATE_ANDX)
-
-    def prepare(self, message):
-        prepare(self, message)
-
-        message.parameters_data = struct.pack("<BBHBHLQQQQLQQHHB",
-                                              0xff, 0, 0,
-                                              self.op_lock_level,
-                                              self.fid,
-                                              self.create_disp,
-                                              self.create_time,
-                                              self.last_access_time,
-                                              self.last_write_time,
-                                              self.last_change_time,
-                                              self.ext_attr,
-                                              self.allocation_size,
-                                              self.end_of_file,
-                                              self.resource_type,
-                                              self.nm_pipe_status,
-                                              self.directory)
-        message.data = b''
-
-class ComReadAndxRequest(smb_structs.ComReadAndxRequest):
-    def __init__(self): pass
-
-    def decode(self, message):
-        fmt = "<BBHHLHHLH"
-        fmt_size = struct.calcsize(fmt)
-        (andx_command, _, andx_offset,
-         self.fid, self.offset,
-         self.max_return_bytes_count,
-         self.min_return_bytes_count,
-         self.timeout,
-         self.remaining) = struct.unpack("<BBHHLHHLH", message.parameters_data[:fmt_size])
-
-        if len(message.parameters_data) > fmt_size:
-            (offset_high,) = struct.unpack("<L", message.parameters_data[fmt_size:])
-            self.offset = (offset_high << 32) | self.offset
-
-        # TODO: better andx parsing
-        if not (andx_command == 0xff and not andx_offset):
-            raise Exception("We don't support non-terminal ANDX parameter blocks yet...")
-
-class ComReadAndxResponse(smb_structs.ComReadAndxResponse):
-    def __init__(self, **kw):
-        for (k, v) in kw.items():
-            setattr(self, k, v)
-
-    def initMessage(self, message):
-        init_reply(self, message, smb_structs.SMB_COM_READ_ANDX)
-
-    def prepare(self, message):
-        prepare(self, message)
-
-        fmt = "<BBHHHHHHHHHHH"
-        parameters_size = struct.calcsize(fmt)
-
-        offset = message.HEADER_STRUCT_SIZE + parameters_size + 2
-        pad = False
-        if offset % 2:
-            pad = True
-            offset += 1
-
-        reserved = 0
-        message.parameters_data = struct.pack(fmt,
-                                              0xff, 0, reserved,
-                                              reserved, reserved,
-                                              reserved,
-                                              len(self.data), offset,
-                                              reserved, reserved, reserved,
-                                              reserved, reserved)
-
-        message.data = (b'\0' if pad else b'') + self.data
-
-class ComCloseRequest(smb_structs.ComCloseRequest):
-    def __init__(self): pass
-
-    def decode(self, message):
-        (self.fid,
-         self.last_modified_time) = struct.unpack("<HL", message.parameters_data)
-
-class ComCloseResponse(smb_structs.Payload):
-    def __init__(self, **kw):
-        for (k, v) in kw.items():
-            setattr(self, k, v)
-
-    def initMessage(self, message):
-        init_reply(self, message, smb_structs.SMB_COM_CLOSE)
-
-    def prepare(self, message):
-        prepare(self, message)
-        message.parameters_data = b''
-        message.data = b''
-
-class ComNTTransactRequest(smb_structs.ComNTTransactRequest):
-    def __init__(self): pass
-
-    def decode(self, message):
-        fmt = "<BHLLLLLLLLBH"
-        fmt_size = struct.calcsize(fmt)
-
-        (self.max_setup_count,
-         _,
-         self.total_params_count,
-         self.total_data_count,
-         self.max_params_count,
-         self.max_data_count,
-         params_count,
-         params_offset,
-         data_count,
-         data_offset,
-         setup_count,
-         self.function,
-         ) = struct.unpack(fmt, message.parameters_data[:fmt_size])
-
-        self.setup_bytes = message.parameters_data[fmt_size:fmt_size + setup_count * 2]
-
-        if (data_count < self.total_data_count or
-            params_count < self.total_params_count):
-            raise Exception("We don't support extended SMB_COM_NT_TRANSACT yet")
-
-        self.params_bytes = message.raw_data[params_offset:params_offset + params_count]
-        self.data_bytes = message.raw_data[data_offset:data_offset + data_count]
-
-class ComNTTransactResponse(smb_structs.ComNTTransactResponse):
-    def __init__(self, **kw):
-        for (k, v) in kw.items():
-            setattr(self, k, v)
-
-    def initMessage(self, message):
-        init_reply(self, message, smb_structs.SMB_COM_NT_TRANSACT)
-
-    def prepare(self, message):
-        prepare(self, message)
-
-        if len(self.setup_bytes) % 2:
-            raise Exception("invalid setup bytes!")
-
-        fmt = "<BBBLLLLLLLLB"
-        fmt_size = struct.calcsize(fmt)
-
-        offset = message.HEADER_STRUCT_SIZE + fmt_size + len(self.setup_bytes) + 2
-
-        pad1 = b''
-        if offset % 4:
-            pad1 = b' ' * (4 - offset % 4)
-            offset += 4 - offset % 4
-        params_offset = offset
-
-        offset += len(self.params_bytes)
-
-        pad2 = b''
-        if offset % 4:
-            pad2 = b' ' * (4 - offset % 4)
-            offset += 4 - offset % 4
-        data_offset = offset
-
-        message.parameters_data = b''.join([struct.pack(fmt,
-                                                        0, 0, 0,
-                                                        self.total_params_count,
-                                                        self.total_data_count,
-                                                        len(self.params_bytes),
-                                                        params_offset,
-                                                        0,
-                                                        len(self.data_bytes),
-                                                        data_offset,
-                                                        0,
-                                                        len(self.setup_bytes) // 2),
-                                            self.setup_bytes])
-
-        message.data = b''.join([pad1, self.params_bytes, pad2, self.data_bytes])
-
-class ComCheckDirectoryRequest(smb_structs.Payload):
-    def decode(self, message):
-        self.filename = message.data[1:].decode('utf-16-le').rstrip('\0')
-
-class ComCheckDirectoryResponse(smb_structs.Payload):
-    def __init__(self, **kw):
-        for (k, v) in kw.items():
-            setattr(self, k, v)
-
-    def initMessage(self, message):
-        init_reply(self, message, SMB_COM_CHECK_DIRECTORY)
-
-    def prepare(self, message):
-        prepare(self, message)
-        message.parameters_data = b''
-        message.data = b''
-
-def response_args_from_req(req, **kw):
-    return dict(pid=req.pid, tid=req.tid,
-                uid=req.uid, mid=req.mid, **kw)
-
+STATUS_SUCCESS = 0x0
 STATUS_NOT_FOUND = 0xc0000225
 STATUS_SMB_BAD_COMMAND = 0x160002
 STATUS_NOT_SUPPORTED = 0xc00000bb
@@ -648,10 +903,6 @@ STATUS_OS2_INVALID_LEVEL = 0x7c0001
 STATUS_NOT_A_DIRECTORY = 0xC0000000 | 0x0103
 
 TREE_CONNECT_ANDX_DISCONNECT_TID = 0x1
-SMB_TRANS2_FIND_FIRST2 = 0x1
-SMB_TRANS2_FIND_NEXT2 = 0x2
-SMB_TRANS2_QUERY_FS_INFORMATION = 0x3
-SMB_TRANS2_QUERY_PATH_INFORMATION = 0x5
 SMB_INFO_STANDARD = 0x1
 SMB_INFO_QUERY_EAS_FROM_LIST = 0x3
 SMB_FIND_FILE_DIRECTORY_INFO = 0x101
@@ -697,6 +948,10 @@ FILE_ACTION_MODIFIED = 0x3
 FILE_ACTION_RENAMED_OLD_NAME = 0x4
 FILE_ACTION_RENAMED_NEW_NAME = 0x5
 
+DEFAULT_ANDX_PARAMETERS = dict(andx_command=0xff,
+                               andx_reserved=0,
+                               andx_offset=0)
+
 def encode_smb_datetime(dt):
     log.debug("date is %r", dt)
     date = 0
@@ -711,28 +966,14 @@ def encode_smb_datetime(dt):
     assert time < 2 ** 16
     return (date, time)
 
-class NullPayload(smb_structs.Payload):
-    def __init__(self, **kw):
-        for (k, v) in kw.items():
-            setattr(self, k, v)
-
-    def initMessage(self, message):
-        init_reply(self, message, self.command)
-
-    def prepare(self, message):
-        prepare(self, message)
-
-def error_response(req, status):
+def error_response(header, status):
     assert status, "Status must be an error!"
-    m = SMBMessage(NullPayload(**response_args_from_req(req, command=req.command)))
-    m.status.internal_value = status
-    m.status.is_ntstatus = True
-    return m
-
-def decode_smb_message(message):
-    i = SMBMessage()
-    i.decode(message)
-    return i
+    return SMBMessage(
+        reply_header_from_request_header(
+            header,
+            status=status,
+            flags2=header.flags2 | SMB_FLAGS2_NT_STATUS),
+        None, None)
 
 def recv_all(sock, len_):
     toret = []
@@ -981,7 +1222,7 @@ class SMBClientHandler(object):
     @asyncio.coroutine
     def verify_tid(self, req):
         try:
-            toret = self._open_tids[req.tid]
+            toret = self._open_tids[req.header.tid]
             if toret['closing']: raise KeyError()
             toret['ref'] += 1
             return toret['fs']
@@ -998,7 +1239,7 @@ class SMBClientHandler(object):
 
     @asyncio.coroutine
     def verify_uid(self, req):
-        if req.uid not in self._open_uids:
+        if req.header.uid not in self._open_uids:
             raise ProtocolError(STATUS_SMB_BAD_UID)
 
     def _create_id(self, set_, invalid, error=STATUS_INSUFF_SERVER_RESOURCES):
@@ -1219,40 +1460,40 @@ class SMBClientHandler(object):
         # Signal EOF
         if not data: return None
         (length,) = struct.unpack(">I", data)
-        return decode_smb_message((yield from reader.read(length)))
+        return (yield from reader.read(length))
 
     @classmethod
     @asyncio.coroutine
-    def send_message(cls, writer, msg):
-        if not msg.raw_data:
-            msg.raw_data = msg.encode()
-        writer.writelines([struct.pack(">I", len(msg.raw_data)),
-                           msg.raw_data])
+    def send_message(cls, writer, raw_data):
+        writer.writelines([struct.pack(">I", len(raw_data)),
+                           raw_data])
 
     @asyncio.coroutine
     def run(self, server, backend, loop, reader, writer):
         self._loop = loop
 
         # first negotiate SMB protocol
-        negotiate_req = yield from self.read_message(reader)
-        if negotiate_req is None:
+        negotiate_req_raw = yield from self.read_message(reader)
+        if negotiate_req_raw is None:
             raise Exception("Received client EOF!")
 
-        if negotiate_req.command != smb_structs.SMB_COM_NEGOTIATE:
+        negotiate_req = decode_smb_message(negotiate_req_raw)
+
+        if negotiate_req.header.command != SMB_COM_NEGOTIATE:
             raise Exception("Got unexpected request: %s" % (negotiate_req,))
 
-        server_capabilities = (smb_structs.CAP_UNICODE |
-                               smb_structs.CAP_LARGE_FILES |
-                               smb_structs.CAP_STATUS32 |
-                               smb_structs.CAP_NT_SMBS |
-                               smb_structs.CAP_NT_FIND)
+        server_capabilities = (CAP_UNICODE |
+                               CAP_LARGE_FILES |
+                               CAP_STATUS32 |
+                               CAP_NT_SMBS |
+                               CAP_NT_FIND)
 
         # win32 time
         now = datetime.utcnow()
         win32_time = datetime_to_win32(now)
-        args = dict(
+        negotiate_reply_params = quick_container(
             # TODO: catch this and throw a friendlier error
-            dialect_index=negotiate_req.payload.dialects.index('NT LM 0.12'),
+            dialect_index=negotiate_req.data.dialects.index('NT LM 0.12'),
             security_mode=0, # we support NO SECURITY FEATURES
             max_mpx_count=2 ** 16 - 1, # unlimited clients baby
             max_number_vcs=2 ** 16 - 1, # not sure what this means
@@ -1264,13 +1505,12 @@ class SMBClientHandler(object):
             server_time_zone=0,
             challenge_length=0,
         )
-        # Mac OS X client want the same tid/pid/uid back
-        args = response_args_from_req(negotiate_req, **args)
 
-        negotiate_resp = smb_structs.SMBMessage(ComNegotiateResponse(**args))
-        # TODO: set flags? status?
+        negotiate_resp = SMBMessage(reply_header_from_request(negotiate_req),
+                                    negotiate_reply_params,
+                                    quick_container(challenge=b'', domain_name=''))
 
-        yield from self.send_message(writer, negotiate_resp)
+        yield from self.send_message(writer, encode_smb_message(negotiate_resp))
 
         # okay now kick off SMB connection machinery
 
@@ -1286,19 +1526,22 @@ class SMBClientHandler(object):
 
                 if read_future in done:
                     try:
-                        msg = read_future.result()
+                        raw_msg = read_future.result()
                     except Exception:
                         # not sure what happened but we received invalid data
                         log.exception("Exception during reading socket")
                         break
-                    if not msg:
+                    if not raw_msg:
                         log.debug("EOF from client, closing connection")
                         break
 
                     # kick off concurrent request handler
                     @asyncio.coroutine
-                    def real_handle_request(msg):
+                    def real_handle_request(raw_msg):
+                        header = decode_smb_header(raw_msg[:SMB_HEADER_STRUCT_SIZE])
                         try:
+                            (parameters, data) = decode_smb_payload(header, raw_msg[SMB_HEADER_STRUCT_SIZE:])
+                            msg = SMBMessage(header, parameters, data)
                             ret = yield from handle_request(server, server_capabilities,
                                                             self, backend, msg)
                         except ProtocolError as e:
@@ -1306,10 +1549,10 @@ class SMBClientHandler(object):
                                 log.debug("Protocol Error!!! %r %r",
                                           hex(msg.command), e)
                             ret = error_response(msg, e.error)
-                        ret.raw_data = ret.encode()
+                        ret = encode_smb_message(ret)
                         yield from writer_queue.put(ret)
 
-                    reqfut = asyncio.async(real_handle_request(msg), loop=loop)
+                    reqfut = asyncio.async(real_handle_request(raw_msg), loop=loop)
                     def on_fail():
                         dead_future.set_result(None)
                     asyncio.async(cant_fail(on_fail, reqfut), loop=loop)
@@ -1397,22 +1640,23 @@ def handle_request(server, server_capabilities, cs, backend, req):
 
         return normalize_stat(to_normalize)
 
-    if req.command == smb_structs.SMB_COM_SESSION_SETUP_ANDX:
-        if req.payload.capabilities & ~server_capabilities:
+    if req.header.command == SMB_COM_SESSION_SETUP_ANDX:
+        if req.parameters.capabilities & ~server_capabilities:
             log.warning("Client's capabilities aren't a subset of Server's: 0x%x vs 0x%x",
-                        req.payload.capabilities, server_capabilities)
+                        req.parameters.capabilities, server_capabilities)
 
         uid = yield from cs.create_session()
 
-        args = response_args_from_req(req,
-                                      action=1,
-                                      domain=req.payload.domain)
-        args['uid'] = uid
-        return SMBMessage(ComSessionSetupAndxResponse(**args))
-    elif req.command == smb_structs.SMB_COM_TREE_CONNECT_ANDX:
+        header = reply_header_from_request(req, uid=uid)
+        parameters = quick_container(action=1,
+                                     **DEFAULT_ANDX_PARAMETERS)
+        data = quick_container(native_os='Unix', native_lan_man='DropboxFS',
+                               primary_domain=req.data.primary_domain)
+        return SMBMessage(header, parameters, data)
+    elif req.header.command == SMB_COM_TREE_CONNECT_ANDX:
         yield from cs.verify_uid(req)
 
-        if req.payload.flags & TREE_CONNECT_ANDX_DISCONNECT_TID:
+        if req.parameters.flags & TREE_CONNECT_ANDX_DISCONNECT_TID:
             try:
                 fs = yield from cs.destroy_tree(req.tid)
             except KeyError:
@@ -1421,43 +1665,41 @@ def handle_request(server, server_capabilities, cs, backend, req):
             else:
                 yield from backend.tree_disconnect(server, fs)
 
-        if req.payload.service not in ("?????", "A:"):
+        if req.data.service not in ("?????", "A:"):
             log.debug("Client attempted to connect to %r service",
-                      req.payload.service)
+                      req.data.service)
             raise ProtocolError(STATUS_OBJECT_PATH_NOT_FOUND)
 
         try:
-            fs = yield from backend.tree_connect(server, req.payload.path)
+            fs = yield from backend.tree_connect(server, req.data.path)
         except KeyError:
-            log.debug("Error tree connect: %r", req.payload.path)
+            log.debug("Error tree connect: %r", req.data.path)
             raise ProtocolError(STATUS_OBJECT_PATH_NOT_FOUND)
 
         tid = yield from cs.create_tree(fs)
 
-        args = response_args_from_req(req,
-                                      optional_support=smb_structs.SMB_TREE_CONNECTX_SUPPORT_SEARCH,
-                                      service="A:",
-                                      native_file_system="FAT")
-        args['tid'] = tid
-        return SMBMessage(ComTreeConnectAndxResponse(**args))
-    elif req.command == SMB_COM_TREE_DISCONNECT:
+        header = reply_header_from_request(req, tid=tid)
+        parameters = quick_container(optional_support=SMB_TREE_CONNECTX_SUPPORT_SEARCH,
+                                     **DEFAULT_ANDX_PARAMETERS)
+        data = quick_container(service="A:",
+                               native_file_system="FAT")
+        return SMBMessage(header, parameters, data)
+    elif req.header.command == SMB_COM_TREE_DISCONNECT:
         yield from cs.verify_uid(req)
 
         try:
-            fs = yield from cs.destroy_tree(req.tid)
+            fs = yield from cs.destroy_tree(req.header.tid)
         except KeyError:
             raise ProtocolError(STATUS_SMB_BAD_TID)
 
         yield from backend.tree_disconnect(server, fs)
 
-        args = response_args_from_req(req)
-
-        return SMBMessage(ComTreeDisconnectResponse(**args))
-    elif req.command == SMB_COM_CHECK_DIRECTORY:
+        return SMBMessage(reply_header_from_request(req), None, None)
+    elif req.header.command == SMB_COM_CHECK_DIRECTORY:
         yield from cs.verify_uid(req)
         fs = yield from cs.verify_tid(req)
         try:
-            fspath = yield from smb_path_to_fs_path(req.payload.filename)
+            fspath = yield from smb_path_to_fs_path(req.data.filename)
 
             try:
                 stat = yield from fs.stat(fspath)
@@ -1471,39 +1713,34 @@ def handle_request(server, server_capabilities, cs, backend, req):
             if stat.type != 'directory':
                 raise ProtocolError(STATUS_NOT_A_DIRECTORY)
 
-            args = response_args_from_req(req)
-            return SMBMessage(ComCheckDirectoryResponse(**args))
+            return SMBMessage(reply_header_from_request(req), None, None)
         finally:
             yield from cs.deref_tid(req.tid)
-    elif req.command == smb_structs.SMB_COM_ECHO:
+    elif req.header.command == SMB_COM_ECHO:
         log.debug("echo...")
-        if req.payload.echo_count > 1:
+        if req.parameters.echo_count > 1:
             raise Exception("Echo count is too high: %r" %
-                            (req.payload.echo_count,))
+                            (req.parameters.echo_count,))
 
-        args = response_args_from_req(req,
-                                      sequence_number=0,
-                                      data=req.payload.echo_data)
-        return SMBMessage(ComEchoResponse(**args))
-    elif req.command == smb_structs.SMB_COM_TRANSACTION2:
+        return SMBMessage(reply_header_from_request(req),
+                          quick_container(sequence_number=0),
+                          req.data)
+    elif req.header.command == SMB_COM_TRANSACTION2:
         yield from cs.verify_uid(req)
         fs = yield from cs.verify_tid(req)
         try:
-            if len(req.payload.setup_bytes) % 2:
-                raise Exception("bad setup bytes length!")
-            setup = struct.unpack("<%dH" % (len(req.payload.setup_bytes) / 2,),
-                                  req.payload.setup_bytes)
-
-            if req.payload.timeout:
+            if req.parameters.timeout:
                 raise Exception("Transaction2 Delayed request not supported!")
 
-            if (req.payload.total_params_count != len(req.payload.params_bytes) or
-                req.payload.total_data_count != len(req.payload.data_bytes)):
+            if (req.parameters.total_parameter_count != req.parameters.parameter_count or
+                req.parameters.total_data_count != req.parameters.data_count):
                 raise Exception("Multiple TRANSACTION2 packets not supported!")
 
-            if req.payload.flags:
+            if req.parameters.flags:
                 # NBL we don't current support DISCONNECT_TID nor NO_RESPONSE
                 raise Exception("Transaction 2 flags not supported!")
+
+            (trans2_type, trans2_params, trans2_data) = decode_transaction_2_request_message(req)
 
             @asyncio.coroutine
             def generate_find_data(max_data, search_count, handle,
@@ -1561,13 +1798,15 @@ def handle_request(server, server_capabilities, cs, backend, req):
                         buffered_entries, buffered_entries_idx)
 
             # go through another layer of parsing
-            if setup[0] == SMB_TRANS2_FIND_FIRST2:
-                fmt = "<HHHHI"
-                fmt_size = struct.calcsize(fmt)
+            if trans2_type == SMB_TRANS2_FIND_FIRST2:
                 (search_attributes, search_count,
                  flags, information_level,
-                 search_storage_type) = struct.unpack("<HHHHI", req.payload.params_bytes[:fmt_size])
-                filename = req.payload.params_bytes[fmt_size:].decode("utf-16-le")[:-1]
+                 search_storage_type) = (trans2_params.search_attributes,
+                                         trans2_params.search_count,
+                                         trans2_params.flags,
+                                         trans2_params.information_level,
+                                         trans2_params.search_storage_type)
+                filename = trans2_params.filename
 
                 try:
                     info_generator = INFO_GENERATORS[information_level]
@@ -1617,7 +1856,7 @@ def handle_request(server, server_capabilities, cs, backend, req):
 
                 (data, num_entries_to_ret, entry, next_entry,
                  buffered_entries, buffered_entries_idx) = \
-                    yield from generate_find_data(req.payload.max_data_count,
+                    yield from generate_find_data(req.parameters.max_data_count,
                                                   search_count,
                                                   handle,
                                                   info_generator, 0,
@@ -1640,7 +1879,7 @@ def handle_request(server, server_capabilities, cs, backend, req):
                                                       buffered_entries=buffered_entries,
                                                       buffered_entries_idx=buffered_entries_idx,
                                                       idx=num_entries_to_ret,
-                                                      tid=req.tid)
+                                                      tid=req.header.tid)
 
                 data_bytes = b''.join(data)
                 last_name_offset = (0
@@ -1650,19 +1889,19 @@ def handle_request(server, server_capabilities, cs, backend, req):
                 assert information_level != SMB_INFO_QUERY_EAS_FROM_LIST
                 ea_error_offset = 0
 
-                setup_bytes = b''
+                setup = []
                 params_bytes = struct.pack("<HHHHH",
                                            sid, num_entries_to_ret,
                                            int(is_search_over),
                                            ea_error_offset,
                                            0 if is_search_over else
                                            last_name_offset)
-            elif setup[0] == SMB_TRANS2_FIND_NEXT2:
-                fmt = "<HHHIH"
-                fmt_size = struct.calcsize(fmt)
+            elif trans2_type == SMB_TRANS2_FIND_NEXT2:
                 (sid, search_count, information_level,
-                 resume_key, flags) = stuff = struct.unpack(fmt, req.payload.params_bytes[:fmt_size])
-                filename = req.payload.params_bytes[fmt_size:].decode("utf-16-le")[:-1]
+                 resume_key, flags) = stuff = (trans2_params.sid, trans2_params.search_count,
+                                               trans2_params.information_level,
+                                               trans2_params.resume_key, trans2_params.flags)
+                filename = trans2_params.filename
 
                 try:
                     info_generator = INFO_GENERATORS[information_level]
@@ -1677,7 +1916,7 @@ def handle_request(server, server_capabilities, cs, backend, req):
                 (data, num_entries_to_ret,
                  entry, next_entry,
                  search_md['buffered_entries'], search_md['buffered_entries_idx']) = \
-                    yield from generate_find_data(req.payload.max_data_count,
+                    yield from generate_find_data(req.parameters.max_data_count,
                                                   search_count,
                                                   search_md['handle'],
                                                   info_generator,
@@ -1712,19 +1951,14 @@ def handle_request(server, server_capabilities, cs, backend, req):
                 assert information_level != SMB_INFO_QUERY_EAS_FROM_LIST
                 ea_error_offset = 0
 
-                setup_bytes = b''
+                setup = []
                 params_bytes = struct.pack("<HHHH",
                                            num_entries_to_ret,
                                            int(is_search_over),
                                            ea_error_offset,
                                            last_name_offset)
-            elif setup[0] == SMB_TRANS2_QUERY_FS_INFORMATION:
-                if req.payload.flags:
-                    raise Exception("Transaction 2 flags not supported!")
-
-                fmt = "<H"
-                fmt_size = struct.calcsize(fmt)
-                (information_level,) = struct.unpack(fmt, req.payload.params_bytes[:fmt_size])
+            elif trans2_type == SMB_TRANS2_QUERY_FS_INFORMATION:
+                (information_level,) = (trans2_params.information_level,)
 
                 try:
                     fs_info_generator = FS_INFO_GENERATORS[information_level]
@@ -1735,14 +1969,10 @@ def handle_request(server, server_capabilities, cs, backend, req):
 
                 data_bytes = fs_info_generator()
 
-                setup_bytes = b''
+                setup = []
                 params_bytes = b''
-            elif setup[0] == SMB_TRANS2_QUERY_PATH_INFORMATION:
-                if req.payload.flags:
-                    raise Exception("Transaction 2 flags not supported!")
-
-                (information_level,) = struct.unpack("<H",
-                                                     req.payload.params_bytes[:2])
+            elif trans2_type == SMB_TRANS2_QUERY_PATH_INFORMATION:
+                (information_level,) = (trans2_params.information_level,)
 
                 try:
                     query_path_info_generator = QUERY_FILE_INFO_GENERATORS[information_level]
@@ -1751,7 +1981,7 @@ def handle_request(server, server_capabilities, cs, backend, req):
                                         "QUERY PATH Information level not supported: %r" %
                                         (information_level,))
 
-                path = req.payload.params_bytes[6:].decode("utf-16-le").rstrip("\0")
+                path = trans2_params.filename
                 fspath = yield from smb_path_to_fs_path(path)
 
                 try:
@@ -1759,50 +1989,59 @@ def handle_request(server, server_capabilities, cs, backend, req):
                 except OSError as e:
                     raise ProtocolError(STATUS_NO_SUCH_FILE)
 
-                setup_bytes = b''
+                setup = []
                 name = fspath.name if fspath.name else '\\'
                 (ea_error_offset, data_bytes) = query_path_info_generator(name, normalize_stat(md))
                 params_bytes = struct.pack("<H", ea_error_offset)
             else:
-                log.warning("TRANS2 Sub command not supported: %02x, %s" % (setup[0], req))
+                log.warning("TRANS2 Sub command not supported: %02x, %s" % (trans2_type, req))
                 raise ProtocolError(STATUS_NOT_SUPPORTED)
 
-            assert len(setup_bytes) <= req.payload.max_setup_count, "TRANSACTION2 setup bytes count is too large %r vs required %r" % (len(setup_bytes), req.payload.max_setup_count)
-            assert len(params_bytes) <= req.payload.max_params_count, "TRANSACTION2 params bytes count is too large %r vs required %r" % (len(params_bytes), req.payload.max_params_count)
-            assert len(params_bytes) <= req.payload.max_data_count, "TRANSACTION2 data bytes count is too large %r vs required %r" % (len(params_bytes), req.payload.max_data_count)
+            assert len(setup) * 2 <= req.parameters.max_setup_count, "TRANSACTION2 setup bytes count is too large %r vs required %r" % (len(setup) * 2, req.parameters.max_setup_count)
+            assert len(params_bytes) <= req.parameters.max_parameter_count, "TRANSACTION2 params bytes count is too large %r vs required %r" % (len(params_bytes), req.parameters.max_parameter_count)
+            assert len(data_bytes) <= req.parameters.max_data_count, "TRANSACTION2 data bytes count is too large %r vs required %r" % (len(data_bytes), req.parameters.max_data_count)
 
-            args = response_args_from_req(req,
-                                          setup_bytes=setup_bytes,
-                                          params_bytes=params_bytes,
-                                          data_bytes=data_bytes)
-            return SMBMessage(ComTransaction2Response(**args))
-        finally:
-            yield from cs.deref_tid(req.tid)
-    elif req.command == SMB_COM_QUERY_INFORMATION_DISK:
-        yield from cs.verify_uid(req)
-        fs = yield from cs.verify_tid(req)
-        try:
-            args = response_args_from_req(req,
-                                          total_units=2 ** 16 - 1,
-                                          blocks_per_unit=16384,
-                                          block_size=512,
-                                          free_units=0
+            parameters = quick_container(
+                total_parameter_count=len(params_bytes),
+                total_data_count=len(data_bytes),
+                parameter_count=len(params_bytes),
+                parameter_displacement=0,
+                data_count=len(data_bytes),
+                data_displacement=0,
+                setup=setup,
             )
-            return SMBMessage(ComQueryInformationDiskResponse(**args))
+            data = quick_container(parameters=params_bytes,
+                                   data=data_bytes)
+            return SMBMessage(reply_header_from_request(req),
+                              parameters,
+                              data)
         finally:
-            yield from cs.deref_tid(req.tid)
-    elif req.command == smb_structs.SMB_COM_NT_CREATE_ANDX:
-        request = req.payload
+            yield from cs.deref_tid(req.header.tid)
+    elif req.header.command == SMB_COM_QUERY_INFORMATION_DISK:
+        yield from cs.verify_uid(req)
+        fs = yield from cs.verify_tid(req)
+        try:
+            parameters = quick_container(total_units=2 ** 16 - 1,
+                                         blocks_per_unit=16384,
+                                         block_size=512,
+                                         free_units=0
+            )
+            return SMBMessage(reply_header_from_request(req),
+                              parameters, None)
+        finally:
+            yield from cs.deref_tid(req.header.tid)
+    elif req.header.command == SMB_COM_NT_CREATE_ANDX:
+        header = req.parameters
 
         yield from cs.verify_uid(req)
         fs = yield from cs.verify_tid(req)
         try:
-            if (request.flags &
+            if (header.flags &
                 (
                  NT_CREATE_OPEN_TARGET_DIR)):
-                raise Exception("SMB_COM_NT_CREATE_ANDX doesn't support flags! 0x%x" % (request.flags,))
+                raise Exception("SMB_COM_NT_CREATE_ANDX doesn't support flags! 0x%x" % (header.flags,))
 
-            if (request.access_mask &
+            if (header.desired_access &
                 (FILE_WRITE_DATA | FILE_APPEND_DATA |
                  FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES |
                  DELETE | WRITE_DAC | WRITE_OWNER |
@@ -1812,28 +2051,28 @@ def handle_request(server, server_capabilities, cs, backend, req):
                 # TODO: allow write access when we have an actual backend
                 raise ProtocolError(STATUS_ACCESS_DENIED)
 
-            if request.create_disp != FILE_OPEN:
+            if header.create_disposition != FILE_OPEN:
                 raise ProtocolError(STATUS_ACCESS_DENIED)
 
-            if request.create_options & FILE_DELETE_ON_CLOSE:
+            if header.create_options & FILE_DELETE_ON_CLOSE:
                 raise ProtocolError(STATUS_ACCESS_DENIED)
 
-            if request.create_options & FILE_OPEN_BY_FILE_ID:
+            if header.create_options & FILE_OPEN_BY_FILE_ID:
                 raise ProtocolError(STATUS_NOT_SUPPORTED)
 
-            if request.root_fid:
+            if header.root_directory_fid:
                 try:
-                    root_md = yield from cs.ref_file(request.root_fid)
+                    root_md = yield from cs.ref_file(header.root_directory_fid)
                 except KeyError:
                     raise ProtocolError(STATUS_INVALID_HANDLE)
                 root_path = root_md['path']
-                yield from cs.deref_file(request.root_fid)
+                yield from cs.deref_file(header.root_directory_fid)
             else:
                 root_path = ""
 
-            file_path = root_path + request.filename
+            file_path = root_path + req.data.filename
 
-            is_sharing = request.share_access & FILE_SHARE_READ
+            is_sharing = header.share_access & FILE_SHARE_READ
 
             # verify share access
             # find other files
@@ -1852,13 +2091,13 @@ def handle_request(server, server_capabilities, cs, backend, req):
             is_directory = md.type == "directory"
 
             if (is_directory and
-                request.create_options & FILE_NON_DIRECTORY_FILE):
+                header.create_options & FILE_NON_DIRECTORY_FILE):
                 handle.close()
                 raise ProtocolError(STATUS_FILE_IS_A_DIRECTORY)
 
             fid = yield from cs.create_file(file_path,
                                             is_sharing, handle,
-                                            req.tid)
+                                            req.header.tid)
 
             now = datetime.now()
             directory = int(is_directory)
@@ -1874,25 +2113,26 @@ def handle_request(server, server_capabilities, cs, backend, req):
 
             log.debug("Opening file_path: %r, %r", file_path, fid)
 
-            args = response_args_from_req(req,
-                                          op_lock_level=0,
-                                          fid=fid,
-                                          create_disp=request.create_disp,
-                                          create_time=datetime_to_win32(md2.birthtime),
-                                          last_access_time=datetime_to_win32(md2.atime),
-                                          last_write_time=datetime_to_win32(md2.mtime),
-                                          last_change_time=datetime_to_win32(md2.ctime),
-                                          ext_attr=ext_attr,
-                                          allocation_size=4096,
-                                          end_of_file=file_data_size,
-                                          resource_type=FILE_TYPE_DISK,
-                                          nm_pipe_status=0,
-                                          directory=directory)
-            return SMBMessage(ComNTCreateAndxResponse(**args))
+            parameters = quick_container(op_lock_level=0,
+                                         fid=fid,
+                                         create_disposition=header.create_disposition,
+                                         create_time=datetime_to_win32(md2.birthtime),
+                                         last_access_time=datetime_to_win32(md2.atime),
+                                         last_write_time=datetime_to_win32(md2.mtime),
+                                         last_change_time=datetime_to_win32(md2.ctime),
+                                         ext_file_attributes=ext_attr,
+                                         allocation_size=4096,
+                                         end_of_file=file_data_size,
+                                         resource_type=FILE_TYPE_DISK,
+                                         nm_pipe_status=0,
+                                         directory=directory,
+                                         **DEFAULT_ANDX_PARAMETERS)
+            return SMBMessage(reply_header_from_request(req),
+                              parameters, None)
         finally:
-            yield from cs.deref_tid(req.tid)
-    elif req.command == smb_structs.SMB_COM_READ_ANDX:
-        request = req.payload
+            yield from cs.deref_tid(req.header.tid)
+    elif req.header.command == SMB_COM_READ_ANDX:
+        request = req.parameters
         yield from cs.verify_uid(req)
         fs = yield from cs.verify_tid(req)
         try:
@@ -1904,20 +2144,25 @@ def handle_request(server, server_capabilities, cs, backend, req):
                 raise ProtocolError(STATUS_INVALID_HANDLE)
 
             log.debug("About to do pread... %r, offset: %r, amt: %r",
-                      fid_md['path'], request.offset, request.max_return_bytes_count)
+                      fid_md['path'], request.offset,
+                      request.max_count_of_bytes_to_return)
 
-            buf = yield from fid_md['handle'].pread(request.offset, request.max_return_bytes_count)
+            buf = yield from fid_md['handle'].pread(request.offset, request.max_count_of_bytes_to_return)
 
             log.debug("PREAD DONE... %r buf len: %r", fid_md['path'], len(buf))
 
             yield from cs.deref_file(request.fid)
 
-            args = response_args_from_req(req, data=buf)
-            return SMBMessage(ComReadAndxResponse(**args))
+            parameters = quick_container(available=0,
+                                      data_length=len(buf),
+                                      **DEFAULT_ANDX_PARAMETERS)
+
+            return SMBMessage(reply_header_from_request(req),
+                              parameters, buf)
         finally:
-            yield from cs.deref_tid(req.tid)
-    elif req.command == smb_structs.SMB_COM_CLOSE:
-        request = req.payload
+            yield from cs.deref_tid(req.header.tid)
+    elif req.header.command == SMB_COM_CLOSE:
+        request = req.parameters
         yield from cs.verify_uid(req)
         fs = yield from cs.verify_tid(req)
         try:
@@ -1937,24 +2182,23 @@ def handle_request(server, server_capabilities, cs, backend, req):
 
             log.debug("CLose done! %r", request.fid)
 
-            args = response_args_from_req(req)
-            return SMBMessage(ComCloseResponse(**args))
+            return SMBMessage(reply_header_from_request(req), None, None)
         finally:
-            yield from cs.deref_tid(req.tid)
-    elif req.command == smb_structs.SMB_COM_NT_TRANSACT:
+            yield from cs.deref_tid(req.header.tid)
+    elif req.header.command == SMB_COM_NT_TRANSACT:
         yield from cs.verify_uid(req)
         fs = yield from cs.verify_tid(req)
         try:
-            nt_transact = req.payload
+            (function, nt_transact_setup,
+             nt_transact_parameters, nt_transact_data) = \
+                decode_nt_transact_request_message(req)
 
-            assert not (len(nt_transact.setup_bytes) % 2),\
-                "bad setup bytes length!"
-
-            if nt_transact.function == NT_TRANSACT_NOTIFY_CHANGE:
-                fmt = "<LH?"
-                fmt_size = struct.calcsize(fmt)
-                (completion_filter, fid, watch_tree) = struct.unpack(fmt,
-                                                                     nt_transact.setup_bytes[:fmt_size])
+            if function == NT_TRANSACT_NOTIFY_CHANGE:
+                (completion_filter, fid, watch_tree) = (
+                    nt_transact_setup.completion_filter,
+                    nt_transact_setup.fid,
+                    nt_transact_setup.watch_tree,
+                    )
 
                 log.debug("COMPLETION_FILTER: %x", completion_filter)
                 log.debug("FID: %r", fid)
@@ -1996,17 +2240,23 @@ def handle_request(server, server_capabilities, cs, backend, req):
                     curoffset += len(buf[-1])
 
                 param_bytes = b''.join(buf)
+                data_bytes = b''
 
-                args = response_args_from_req(req,
-                                              total_params_count=len(param_bytes),
-                                              total_data_count=0,
-                                              params_bytes=param_bytes,
-                                              data_bytes=b'',
-                                              setup_bytes=b'',
-                                              )
-                return SMBMessage(ComNTTransactResponse(**args))
+                parameters = quick_container(total_parameter_count=len(param_bytes),
+                                             total_data_count=len(data_bytes),
+                                             parameter_count=len(param_bytes),
+                                             parameter_displacement=0,
+                                             data_count=len(data_bytes),
+                                             data_displacement=0,
+                                             setup=b'')
+
+                data = quick_container(parameters=param_bytes,
+                                       data=data_bytes)
+
+                return SMBMessage(reply_header_from_request(req),
+                                  parameters, data)
         finally:
-            yield from cs.deref_tid(req.tid)
+            yield from cs.deref_tid(req.header.tid)
 
     log.debug("%s", req)
     raise ProtocolError(STATUS_NOT_SUPPORTED)

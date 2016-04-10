@@ -1594,7 +1594,6 @@ class SMBClientHandler(object):
                 msg = yield from queue.get()
                 if msg is None: break
                 yield from self.send_message(writer, msg)
-            writer.close()
 
         # NB: dead future is our out-of-band way to signal to the read client
         #     to stop
@@ -2391,6 +2390,8 @@ class SMBServer(object):
                 log.exception("Client handler failed!")
             else:
                 log.debug("client done!")
+            finally:
+                writer.close()
 
         start_server_coro = asyncio.start_server(handle_client,
                                                  host=address[0], port=address[1],

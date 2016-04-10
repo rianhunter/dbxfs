@@ -785,10 +785,21 @@ def decode_transaction_2_query_path_information_request_params(smb_header, _, bu
 decode_transaction_2_query_path_information_request_data = \
     decode_transaction_2_find_first_request_data
 
+SMBTransaction2QueryFileInformationRequestParams = \
+    namedtuple('SMBTransaction2QueryFileInformationRequestParams',
+               ['fid', 'information_level'])
+def decode_transaction_2_query_file_information_request_params(smb_header, _, buf):
+    fmt = "<HH"
+    return SMBTransaction2QueryFileInformationRequestParams(*struct.unpack(fmt, buf))
+
+decode_transaction_2_query_file_information_request_data = \
+    decode_transaction_2_find_first_request_data
+
 SMB_TRANS2_FIND_FIRST2 = 0x1
 SMB_TRANS2_FIND_NEXT2 = 0x2
 SMB_TRANS2_QUERY_FS_INFORMATION = 0x3
 SMB_TRANS2_QUERY_PATH_INFORMATION = 0x5
+SMB_TRANS2_QUERY_FILE_INFORMATION = 0x7
 
 _TRANS_2_DECODERS = {
     SMB_TRANS2_FIND_FIRST2: (decode_transaction_2_find_first_request_params,
@@ -799,6 +810,8 @@ _TRANS_2_DECODERS = {
                                       decode_transaction_2_null_request_data),
     SMB_TRANS2_QUERY_PATH_INFORMATION: (decode_transaction_2_query_path_information_request_params,
                                         decode_transaction_2_query_path_information_request_data),
+    SMB_TRANS2_QUERY_FILE_INFORMATION: (decode_transaction_2_query_file_information_request_params,
+                                        decode_transaction_2_query_file_information_request_data),
 }
 def get_transaction2_request_decoder(smb_parameters):
     try:
@@ -2032,6 +2045,30 @@ def handle_request(server, server_capabilities, cs, backend, req):
                 setup = []
                 name = fspath.name if fspath.name else '\\'
                 (ea_error_offset, data_bytes) = query_path_info_generator(name, normalize_stat(md))
+                params_bytes = struct.pack("<H", ea_error_offset)
+            elif trans2_type == SMB_TRANS2_QUERY_FILE_INFORMATION:
+                try:
+                    query_file_info_generator = QUERY_FILE_INFO_GENERATORS[trans2_params.information_level]
+                except KeyError:
+                    raise ProtocolError(STATUS_OS2_INVALID_LEVEL,
+                                        "QUERY FILE Information level not supported: %r" %
+                                        (trans2_params.information_level,))
+
+                try:
+                    fid_md = yield from cs.ref_file(trans2_params.fid)
+                except KeyError:
+                    raise ProtocolError(STATUS_INVALID_HANDLE)
+
+                try:
+                    file_path = fid_md['path']
+                    md = yield from fs.fstat(fid_md['handle'])
+                finally:
+                    yield from cs.deref_file(trans2_params.fid)
+
+                setup = []
+                fspath = yield from smb_path_to_fs_path(file_path)
+                name = fspath.name if fspath.name else '\\'
+                (ea_error_offset, data_bytes) = query_file_info_generator(name, normalize_stat(md))
                 params_bytes = struct.pack("<H", ea_error_offset)
             else:
                 log.warning("TRANS2 Sub command not supported: %02x, %s" % (trans2_type, req))

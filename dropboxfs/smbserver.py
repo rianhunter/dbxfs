@@ -2192,7 +2192,7 @@ def handle_request(server, server_capabilities, cs, backend, req):
 
             if (is_directory and
                 header.create_options & FILE_NON_DIRECTORY_FILE):
-                handle.close()
+                yield from handle.close()
                 raise ProtocolError(STATUS_FILE_IS_A_DIRECTORY)
 
             fid = yield from cs.create_file(file_path,

@@ -323,7 +323,7 @@ class CachedFile(object):
         self.cache_folder = fs._cache_folder
         self.fs = fs._fs
         self.id = stat.id
-        self.stat = stat
+        self._stat = stat
         self.reset_lock = SharedLock()
         self.is_closed = False
 
@@ -331,6 +331,9 @@ class CachedFile(object):
         self.thread = None
         self.stop_signal = None
         self.cached_file = None
+
+    def stat(self):
+        return self._stat
 
     def _thread_has_started(self):
         assert (self.stop_signal is None) == (self.thread is None) == (self.cond is None)
@@ -341,10 +344,10 @@ class CachedFile(object):
         def stream_file():
             # XXX: Handle errors
             with contextlib.closing(self.fs.open_by_id(self.id)) as fsource:
-                if self.stat is None:
+                if self._stat is None:
                     stat = self.fs.fstat(fsource)
                 else:
-                    stat = self.stat
+                    stat = self._stat
 
                 is_temp = False
                 if self.cache_folder is None:
@@ -366,9 +369,9 @@ class CachedFile(object):
                         self.cond.notify_all()
                         if self.eof is not None: return
 
-                    if self.stat is not None:
+                    if self._stat is not None:
                         stat2 = self.fs.fstat(fsource)
-                        if stat2.ctime != self.stat.ctime:
+                        if stat2.ctime != self._stat.ctime:
                             log.warning("Current file version does not match expected!")
                             return
 
@@ -404,23 +407,6 @@ class CachedFile(object):
         self.stop_signal = threading.Event()
         self.thread = threading.Thread(target=stream_file, daemon=True)
         self.thread.start()
-
-    def reset(self, stat=None):
-        with self.reset_lock:
-            if self.is_closed:
-                raise Exception("file is closed")
-
-            if self._thread_has_started():
-                self.stop_signal.set()
-                self.thread.join()
-                self.cached_file.close()
-                self.cached_file = None
-
-            assert stat is None or stat.id == self.id
-            self.stat = stat
-
-            if self._thread_has_started():
-                self._reset()
 
     def _wait_for_range(self, offset, size):
         with self.cond:
@@ -479,7 +465,7 @@ class CachedFile(object):
                 self.cached_file = None
 
 LiveFileMetadata = collections.namedtuple('LiveFileMetadata',
-                                          ["stat", "cached_file", "open_files"])
+                                          ["cached_file", "open_files"])
 
 class _File(io.RawIOBase):
     def __init__(self, fs, stat):
@@ -495,19 +481,23 @@ class _File(io.RawIOBase):
                     cached_file = self._fs._fs.open_by_id(stat.id)
 
                 live_md = self._fs._open_files_by_id[stat.id] = \
-                          LiveFileMetadata(stat=stat,
-                                           cached_file=cached_file,
+                          LiveFileMetadata(cached_file=cached_file,
                                            open_files=set())
 
             live_md.open_files.add(self)
 
         self._live_md = live_md
+        self._id = stat.id
+        self._stat = stat
 
         self._lock = threading.Lock()
         self._offset = 0
 
     def stat(self):
-        return self._live_md.stat
+        # NB: handle directory handles
+        if not isinstance(self._live_md.cached_file, CachedFile):
+            return self._stat
+        return self._live_md.cached_file.stat()
 
     def pread(self, offset, size):
         return self._live_md.cached_file.pread(offset, size)
@@ -528,7 +518,7 @@ class _File(io.RawIOBase):
             self._live_md.open_files.remove(self)
             if not self._live_md.open_files:
                 toclose = self._live_md.cached_file
-                popped = self._fs._open_files_by_id.pop(self._live_md.stat.id)
+                popped = self._fs._open_files_by_id.pop(self._id)
                 assert popped is self._live_md
         if toclose is not None:
             toclose.close()
@@ -671,11 +661,6 @@ class FileSystem(object):
             if changes == "reset":
                 cursor.execute("DELETE FROM md_cache");
                 cursor.execute("DELETE FROM md_cache_entries");
-
-                with self._file_cache_lock:
-                    for live_md in self._open_files_by_id.values():
-                        live_md.cached_file.reset()
-
                 return
 
             for change in changes:
@@ -707,17 +692,6 @@ class FileSystem(object):
                     cursor.execute("UPDATE md_cache SET md = ? WHERE path_key = ?",
                                    (json.dumps(None), path_key,))
                 else:
-                    with self._file_cache_lock:
-                        try:
-                            live_md = self._open_files_by_id[change.id]
-                        except KeyError:
-                            pass
-                        else:
-                            new_stat = dbmd_to_stat(change)
-                            live_md.stat = new_stat
-                            if live_md.cached_file is not None:
-                                live_md.cached_file.reset(new_stat)
-
                     # add to directory tree cache if parent is in cache
                     cursor.execute("""
                     INSERT OR REPLACE INTO md_cache_entries (path_key, name)
@@ -791,6 +765,17 @@ class FileSystem(object):
 
         if stat is None:
             raise OSError(errno.ENOENT, os.strerror(errno.ENOENT))
+        else:
+            # if the file is currently open, return the currently open stat instead
+            with self._file_cache_lock:
+                try:
+                    md = self._open_files_by_id[stat.id]
+                except KeyError:
+                    pass
+                else:
+                    # NB: could be a directory otherwise
+                    if isinstance(md.cached_file, CachedFile):
+                        return md.cached_file.stat()
 
         return stat
 

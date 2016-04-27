@@ -20,11 +20,16 @@ import weakref
 
 from dropboxfs.path_common import file_name_norm
 from dropboxfs.dbfs import md_to_stat as dbmd_to_stat
-from dropboxfs.util_dumpster import utctimestamp
+from dropboxfs.util_dumpster import utctimestamp, PositionIO
 
 import dropbox
 
 log = logging.getLogger(__name__)
+
+if not hasattr(os, 'O_ACCMODE'):
+    O_ACCMODE = 0x3
+    for accmode in (os.O_RDONLY, os.O_WRONLY, os.O_RDWR):
+        assert (O_ACCMODE & accmode) == accmode
 
 class attr_merge(object):
     def __init__(self, *n):
@@ -317,7 +322,7 @@ class SharedLock(object):
         self.release()
 
 # File downloads start on first call to pread()
-class CachedFile(object):
+class StreamingFile(object):
     def __init__(self, fs, stat):
         self._real_fs = fs
         self.cache_folder = fs._cache_folder
@@ -465,11 +470,311 @@ class CachedFile(object):
                         break
                 self.cached_file = None
 
+class NullFile(object):
+    def __init__(self, id_):
+        now_ = datetime.datetime.utcfromtimestamp(0)
+        self._stat = Stat(size=0, mtime=now_, ctime=now_, type='file', id=id_,
+                          rev=None)
+
+    def stat(self):
+        return self._stat
+
+    def pread(self, offset, size):
+        return b''
+
+    def close(self):
+        pass
+
+SQLITE_FILE_BLOCK_SIZE = 4096
+class SQLiteFrontFile(PositionIO):
+    # NB: SqliteFrontFile relies on backfile argument not mutating
+    # NB: backfile becomes owned by SQLiteFrontFile after construction
+    def __init__(self, backfile):
+        PositionIO.__init__(self)
+
+        self._backfile = backfile
+        self._local = threading.local()
+        (fd, self._file_path) = tempfile.mkstemp()
+        os.close(fd)
+
+        self._db_file = "file://%s" % (self._file_path,)
+
+        use_shared_cache = True
+        if use_shared_cache:
+            self._db_file += "&cache=shared"
+            # Application locking is only necessary in shared cache mode
+            # otherwise SQLite will do locking for us
+            self._db_lock = SharedLock()
+        else:
+            self._db_lock = None
+
+        stat = self._backfile.stat()
+
+        conn = self._init_db()
+
+        with trans(conn, self._db_lock, is_exclusive=True), \
+             contextlib.closing(conn.cursor()) as cursor:
+            self._update_write_md(cursor, stat.size, stat.ctime, stat.mtime)
+
+    def _update_write_md(self, cursor, size, ctime, mtime):
+        cursor.executemany("INSERT OR REPLACE INTO md (name, value) VALUES (?, ?)",
+                           [("size", json.dumps(size)),
+                            ("ctime", json.dumps(utctimestamp(ctime))),
+                            ("mtime", json.dumps(utctimestamp(mtime)))])
+
+    def stat(self):
+        conn = self._get_db_conn()
+
+        stat_dict = {}
+        with trans(conn, self._db_lock), contextlib.closing(conn.cursor()) as cursor:
+            cursor.execute("SELECT name, value FROM md WHERE name IN ('size', 'mtime', 'ctime')")
+            for (name, value) in cursor:
+                if name in ["mtime", "ctime"]:
+                    value = datetime.datetime.utcfromtimestamp(value)
+                elif name == "size":
+                    value = int(value)
+                stat_dict[name] = value
+
+        r = self._backfile.stat()
+        return Stat(type=r.type, id=r.id, rev=None,
+                    **stat_dict)
+
+    def close(self):
+        os.unlink(self._file_path)
+        self._backfile.close()
+
+    def _init_db(self):
+        conn = self._get_db_conn()
+
+        conn.executescript("""
+        CREATE TABLE IF NOT EXISTS blocks
+        ( blkidx INTEGER PRIMARY KEY
+        , data BUFFER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS md
+        ( name STRING PRIMARY KEY
+        , value STRING NOT NULL
+        )
+        """)
+        conn.commit()
+
+        return conn
+
+    def _create_db_conn(self):
+        return sqlite3.connect(self._db_file, factory=WeakrefableConnection, uri=True)
+
+    def _get_db_conn(self):
+        conn = getattr(self._local, 'conn', None)
+        if conn is None:
+            conn = self._local.conn = self._create_db_conn()
+        return conn
+
+    def is_dirty(self):
+        conn = self._get_db_conn()
+        with trans(conn, self._db_lock), contextlib.closing(conn.cursor()) as cursor:
+            cursor.execute("SELECT EXISTS(SELECT * FROM blocks)")
+            return cursor.fetchone()[0]
+
+    def readable(self):
+        return True
+
+    def _pread(self, cursor, offset, size):
+        blkidx_start = offset // SQLITE_FILE_BLOCK_SIZE
+        blkidx_start_offset = offset % SQLITE_FILE_BLOCK_SIZE
+
+        blkidx_end = (offset + size) // SQLITE_FILE_BLOCK_SIZE
+        blkidx_end_offset = (offset + size) % SQLITE_FILE_BLOCK_SIZE
+
+        if not blkidx_end_offset:
+            blkidx_end -= 1
+            blkidx_end_offset = SQLITE_FILE_BLOCK_SIZE
+
+        blks = [None] * (blkidx_end - blkidx_start + 1)
+
+        # get data from writeable sqlite overly
+        cursor.execute("SELECT blkidx, data FROM blocks WHERE blkidx >= ? AND blkidx <= ?",
+                       (blkidx_start, blkidx_end))
+        for (blkidx, data) in cursor:
+            if all(not a for a in data):
+                raise Exception("WTF A")
+            blks[blkidx - blkidx_start] = data
+
+        cursor.execute("SELECT value FROM md WHERE name = 'size'")
+        (extent_of_file,) = cursor.fetchone()
+        extent_of_file = int(extent_of_file)
+
+        # get remaining blocks from backing store
+        for (idx, _) in enumerate(blks):
+            if blks[idx] is not None:
+                continue
+            bidx = idx + blkidx_start
+            read_ = self._backfile.pread(bidx * SQLITE_FILE_BLOCK_SIZE, SQLITE_FILE_BLOCK_SIZE)
+            blks[idx] = b'%s%s' % (read_, b'\0' * (SQLITE_FILE_BLOCK_SIZE - len(read_)))
+
+        assert all(len(a) == SQLITE_FILE_BLOCK_SIZE for a in blks)
+
+        # fix up beginning and ending blocks
+        if blks:
+            if blkidx_start == blkidx_end:
+                assert len(blks) == 1
+                blks[0] = blks[0][blkidx_start_offset:blkidx_end_offset]
+            else:
+                blks[0] = blks[0][blkidx_start_offset:]
+                blks[-1] = blks[-1][:blkidx_end_offset]
+
+        # concatenate data and return
+        toret = b''.join(blks)
+
+        # cutoff trailing bytes
+        if offset + size > extent_of_file:
+            toret = toret[:-(offset + size - extent_of_file)]
+
+        return toret
+
+    def pread(self, offset, size):
+        conn = self._get_db_conn()
+        with trans(conn, self._db_lock), \
+             contextlib.closing(conn.cursor()) as cursor:
+            return self._pread(cursor, offset, size)
+
+    def writable(self):
+        return True
+
+    def pwrite(self, data, offset):
+        size = len(data)
+
+        blkidx_start = offset // SQLITE_FILE_BLOCK_SIZE
+        blkidx_start_offset = offset % SQLITE_FILE_BLOCK_SIZE
+
+        blkidx_end = (offset + size) // SQLITE_FILE_BLOCK_SIZE
+        blkidx_end_offset = (offset + size) % SQLITE_FILE_BLOCK_SIZE
+        if not blkidx_end_offset:
+            blkidx_end -= 1
+            blkidx_end_offset = SQLITE_FILE_BLOCK_SIZE
+
+        # write data to backfile
+        conn = self._get_db_conn()
+        with trans(conn, self._db_lock, is_exclusive=True), \
+             contextlib.closing(conn.cursor()) as cursor:
+            desired_header_size = blkidx_start_offset
+            header = self._pread(cursor, blkidx_start * SQLITE_FILE_BLOCK_SIZE, desired_header_size)
+            desired_footer_size = (blkidx_end + 1) * SQLITE_FILE_BLOCK_SIZE - (offset + size)
+            footer = self._pread(cursor, offset + size, desired_footer_size)
+
+            block_aligned_data = (b'%s%s%s%s%s' %
+                                  (header, b'\0' * (desired_header_size - len(header)),
+                                   data,
+                                   footer, b'\0' * (desired_footer_size - len(footer))))
+            assert not (len(block_aligned_data) % SQLITE_FILE_BLOCK_SIZE)
+
+            hai = list((idx, block_aligned_data[(idx - blkidx_start) * SQLITE_FILE_BLOCK_SIZE:
+                                                (idx - blkidx_start + 1) * SQLITE_FILE_BLOCK_SIZE])
+                       for idx in range(blkidx_start, blkidx_end + 1))
+            cursor.executemany("INSERT OR REPLACE INTO blocks (blkidx, data) VALUES (?, ?)",
+                               hai)
+
+            cursor.execute("SELECT value FROM md WHERE name = 'size'")
+            (extent_of_file,) = cursor.fetchone()
+            extent_of_file = int(extent_of_file)
+
+            new_extent_of_file = max(offset + size, extent_of_file)
+            self._update_write_md(cursor, new_extent_of_file,
+                                  datetime.datetime.utcnow(), datetime.datetime.utcnow())
+
+        return len(data)
+
+class CachedFile(object):
+    def __init__(self, fs, stat):
+        self._fs = fs
+        self._id = stat.id
+        self._stat = stat
+        self._file = SQLiteFrontFile(StreamingFile(fs, stat))
+
+        self._upload_cond = threading.Condition()
+        self._upload_now = None
+        self._upload_next = None
+
+        threading.Thread(target=self._upload_thread).start()
+
+    def _upload_thread(self):
+        while True:
+            with self._upload_cond:
+                while self._upload_next is None:
+                    self._upload_cond.wait()
+                if self._file is None:
+                    # File has been closed, abandon ship!
+                    self._upload_next.close()
+                    return
+                self._file = SQLiteFrontFile(self._file)
+                self._upload_now = self._upload_next
+                self._upload_next = None
+                self._upload_cond.notify_all()
+
+            # XXX: handle errors
+            # TODO: save file to local cache as well
+            towrite = self._fs._fs.x_write_stream(self._id, "overwrite")
+            try:
+                shutil.copyfileobj(self._upload_now, towrite)
+            finally:
+                md = towrite.close()
+
+            with self._upload_cond:
+                self._upload_now = None
+                self._upload_cond.notify_all()
+
+            self._fs._submit_write(md)
+
+    def clear(self):
+        with self._upload_cond:
+            self._file.close()
+            self._file = SQLiteFrontFile(NullFile(self._id))
+            # NB: upload the truncate even if the sqlite frontend is not dirty
+            self._upload_next = self._file
+            self._upload_cond.notify_all()
+
+    def pread(self, offset, size):
+        return self._file.pread(offset, size)
+
+    def pwrite(self, data, offset):
+        # NB: grab lock so we don't modify self._file while
+        #     it's the argument of SQLiteFrontFile (from _upload_thread)
+        with self._upload_cond:
+            return self._file.pwrite(data, offset)
+
+    def stat(self):
+        return self._file.stat()
+
+    def queue_sync(self):
+        with self._upload_cond:
+            if self._file.is_dirty():
+                assert self._upload_next is None or self._upload_next is self._file
+                self._upload_next = self._file
+                self._upload_cond.notify_all()
+
+            return (self._upload_next is not None or
+                    self._upload_now is not None)
+
+    def is_dirty(self):
+        with self._upload_cond:
+            return (self._file.is_dirty() or
+                    self._upload_next is not None or
+                    self._upload_now is not None)
+
+    def close(self):
+        with self._upload_cond:
+            assert self._upload_next is None or self._upload_next is self._file
+            self._upload_next = self._file
+            self._file = None
+            self._upload_cond.notify_all()
+
 LiveFileMetadata = collections.namedtuple('LiveFileMetadata',
                                           ["cached_file", "open_files"])
 
-class _File(io.RawIOBase):
-    def __init__(self, fs, stat):
+class _File(PositionIO):
+    def __init__(self, fs, stat, mode):
+        PositionIO.__init__(self)
+
         self._fs = fs
 
         with self._fs._file_cache_lock:
@@ -491,8 +796,10 @@ class _File(io.RawIOBase):
         self._id = stat.id
         self._stat = stat
 
-        self._lock = threading.Lock()
-        self._offset = 0
+        self._mode = mode
+
+        if self._mode & os.O_TRUNC:
+            self._live_md.cached_file.clear()
 
     def stat(self):
         # NB: handle directory handles
@@ -501,26 +808,31 @@ class _File(io.RawIOBase):
         return self._live_md.cached_file.stat()
 
     def pread(self, offset, size):
+        if not self.readable():
+            raise OSError(errno.EBADF, os.strerror(errno.EBADF))
         return self._live_md.cached_file.pread(offset, size)
 
-    def readinto(self, ibuf):
-        with self._lock:
-            obuf = self.pread(self._offset, len(ibuf))
-            ibuf[:len(obuf)] = obuf
-            self._offset += len(obuf)
-            return len(obuf)
-
     def readable(self):
-        return True
+        return (self._mode & os.O_ACCMODE) in (os.O_RDONLY, os.O_RDWR)
+
+    def pwrite(self, data, offset):
+        if not self.writeable():
+            raise OSError(errno.EBADF, os.strerror(errno.EBADF))
+        return self._live_md.cached_file.pwrite(data, offset)
+
+    def writeable(self):
+        return (self._mode & os.O_ACCMODE) in (os.O_WRONLY, os.O_RDWR)
 
     def close(self):
         toclose = None
         with self._fs._file_cache_lock:
             self._live_md.open_files.remove(self)
             if not self._live_md.open_files:
-                toclose = self._live_md.cached_file
-                popped = self._fs._open_files_by_id.pop(self._id)
-                assert popped is self._live_md
+                if (not isinstance(live_md.cached_file, CachedFile) or
+                    not live_md.cached_file.queue_sync()):
+                    toclose = self._live_md.cached_file
+                    popped = self._fs._open_files_by_id.pop(self._id)
+                    assert popped is self._live_md
         if toclose is not None:
             toclose.close()
 
@@ -654,6 +966,28 @@ class FileSystem(object):
             conn = self._local.conn = self._create_db_conn()
         return conn
 
+    def _submit_write(self, md):
+        self._handle_changes([md])
+
+        # Check if file needs to be closed
+        toclose = None
+        with self._file_cache_lock:
+            try:
+                live_md = self._open_files_by_id[md.id]
+            except KeyError:
+                # NB: file wasn't open
+                return
+
+            if (not live_md.open_files and
+                not live_md.cached_file.queue_sync()):
+                toclose = live_md.cached_file
+                popped = self._open_files_by_id.pop(md.id)
+                assert popped is live_md
+
+        if toclose is not None:
+            assert not toclose.is_dirty()
+            toclose.close()
+
     def _handle_changes(self, changes):
         conn = self._get_db_conn()
         with trans(conn, self._db_lock, is_exclusive=True):
@@ -716,8 +1050,9 @@ class FileSystem(object):
     def create_path(self, *args):
         return self._fs.create_path(*args)
 
-    def open(self, path):
-        return _File(self, self.stat(path))
+    def open(self, path, mode=os.O_RDONLY):
+        st = self.stat(path, create_mode=mode & (os.O_CREAT | os.O_EXCL))
+        return _File(self, st, mode)
 
     def open_directory(self, path):
         return _Directory(self, path)
@@ -725,7 +1060,7 @@ class FileSystem(object):
     def stat_has_attr(self, attr):
         return self._fs.stat_has_attr(attr)
 
-    def stat(self, path):
+    def stat(self, path, create_mode=0):
         conn = self._get_db_conn()
         # We use BEGIN IMMEDIATE here because SQLite's deferred transactions
         # will immediately throw a BUSY error if two threads concurrently attempt to
@@ -734,6 +1069,8 @@ class FileSystem(object):
         #       if a write is necessary
         with trans(conn, self._db_lock, is_exclusive=True), contextlib.closing(conn.cursor()) as cursor:
             path_key = str(path.normed())
+
+            store_existence = False
 
             cursor.execute("SELECT md FROM md_cache WHERE path_key = ? limit 1",
                            (path_key,))
@@ -756,13 +1093,24 @@ class FileSystem(object):
                     except FileNotFoundError:
                         stat = None
 
-                    md_str = None if stat is None else stat_to_json(stat)
-
-                    cursor.execute("INSERT INTO md_cache (path_key, md) values (?, ?)",
-                                   (path_key, md_str))
+                    store_existence = True
             else:
                 (md,) = row
                 stat =  None if md is None else json_to_stat(md)
+
+            if stat is None:
+                if create_mode & os.O_CREAT:
+                    with contextlib.closing(self._fs.open(path, create_mode)) as f:
+                        stat = self._fs.fstat(f)
+                        store_existence = True
+            else:
+                if create_mode & os.O_EXCL:
+                    raise OSError(errno.EEXIST, os.strerror(errno.EEXIST))
+
+            if store_existence:
+                md_str = None if stat is None else stat_to_json(stat)
+                cursor.execute("INSERT OR REPLACE INTO md_cache (path_key, md) values (?, ?)",
+                               (path_key, md_str))
 
         if stat is None:
             raise OSError(errno.ENOENT, os.strerror(errno.ENOENT))
@@ -837,6 +1185,14 @@ def main(argv):
 
         # Do it again to test caching
         list_fs(fs)
+
+        # now write to a file
+        with contextlib.closing(fs.open(fs.create_path("bar"), os.O_RDWR)) as f:
+            f.read()
+            f.write(b"hi")
+
+        with contextlib.closing(fs.open(fs.create_path("bar"))) as f:
+            print("Contents of bar:", b"fhi", "(should be 'fhi')")
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 

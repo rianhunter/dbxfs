@@ -77,6 +77,21 @@ class _File(io.RawIOBase):
     def seekable(self):
         return True
 
+    def write(self, buf):
+        if not self.writable():
+            raise OSError(errno.EBADF, os.strerror(errno.EBADF))
+        header = self._md['data'][:self._offset]
+        if len(header) < self._offset:
+            header = b'%s%s' % (header, b'\0' * (self._offset - len(header),))
+        self._md["data"] = b'%s%s%s' % (header, buf,
+                                        self.pread(self._offset + len(buf)))
+        self._md['mtime'] = datetime.utcnow()
+        self._md['ctime'] = datetime.utcnow()
+        return len(buf)
+
+    def writable(self):
+        return (self._mode & os.O_ACCMODE) in (os.O_WRONLY, os.O_RDWR)
+
 class _Directory(object):
     def __init__(self, fs, md):
         self._fs = fs

@@ -65,9 +65,17 @@ class _File(io.RawIOBase):
         return (self._mode & os.O_ACCMODE) in (os.O_RDONLY, os.O_RDWR)
 
     def seek(self, amt, whence=0):
-        if whence:
-            raise Exception("not supported")
-        self._offset += amt
+        if whence == io.SEEK_SET:
+            self._offset = amt
+        elif whence == io.SEEK_CUR:
+            self._offset += amt
+        elif whence == io.SEEK_END:
+            self._offset = len(self._md["data"]) + amt
+        else:
+            raise OSError(errno.EINVAL, os.strerror(errno.EINVAL))
+
+    def seekable(self):
+        return True
 
 class _Directory(object):
     def __init__(self, fs, md):

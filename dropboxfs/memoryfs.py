@@ -55,13 +55,11 @@ class _File(io.RawIOBase):
         return self._md["data"][offset:
                                 len(self._md["data"]) if size < 0 else offset + size]
 
-    def read(self, size=-1):
-        a = self.pread(self._offset, size)
+    def readinto(self, ibuf):
+        a = self.pread(self._offset, len(ibuf))
+        ibuf[:len(a)] = a
         self._offset += len(a)
-        return a
-
-    def readall(self):
-        return self.read()
+        return len(a)
 
     def readable(self):
         return (self._mode & os.O_ACCMODE) in (os.O_RDONLY, os.O_RDWR)

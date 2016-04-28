@@ -460,8 +460,12 @@ class CachedFile(object):
             self.is_closed = True
             if self._thread_has_started():
                 self.stop_signal.set()
-                self.thread.join()
-                self.cached_file.close()
+                # Wait for stream_file thread to initialize self.cached_file
+                while True:
+                    if self.cached_file is not None:
+                        # NB: this may cause the stream_file thread to throw an exc, that's okay
+                        self.cached_file.close()
+                        break
                 self.cached_file = None
 
 LiveFileMetadata = collections.namedtuple('LiveFileMetadata',

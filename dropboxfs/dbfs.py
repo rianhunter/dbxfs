@@ -295,9 +295,6 @@ class _File(io.RawIOBase):
             self._offset += toret
             return toret
 
-    def writable(self):
-        return False
-
     def readable(self):
         return True
 

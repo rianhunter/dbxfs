@@ -42,11 +42,14 @@ def get_children(md):
     return md.get("children", [])
 
 class _File(io.RawIOBase):
-    def __init__(self, md):
+    def __init__(self, md, mode):
         self._md = md
         self._offset = 0
+        self._mode = mode
 
     def pread(self, offset, size=-1):
+        if not self.readable():
+            raise OSError(errno.EBADF, os.strerror(errno.EBADF))
         if self._md["type"] == "directory":
             raise OSError(errno.EISDIR, os.strerror(errno.EISDIR))
         return self._md["data"][offset:
@@ -59,6 +62,9 @@ class _File(io.RawIOBase):
 
     def readall(self):
         return self.read()
+
+    def readable(self):
+        return (self._mode & os.O_ACCMODE) in (os.O_RDONLY, os.O_RDWR)
 
     def seek(self, amt, whence=0):
         if whence:
@@ -143,14 +149,14 @@ class FileSystem(object):
     def create_path(self, *args):
         return Path.root_path().joinpath(*args)
 
-    def open(self, path):
+    def open(self, path, mode=os.O_RDONLY):
         md = self._get_file(path)
-        return _File(md)
+        return _File(md, mode)
 
-    def open_by_id(self, id_):
+    def open_by_id(self, id_, mode=os.O_RDONLY):
         warnings.warn("Don't use this in production, could cause segfault if used with an invalid ID")
         # id is the memory address of the md object
-        return _File(ctypes.cast(id_, ctypes.py_object).value)
+        return _File(ctypes.cast(id_, ctypes.py_object).value, mode)
 
     def open_directory(self, path):
         md = self._get_file(path)

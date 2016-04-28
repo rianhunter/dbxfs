@@ -322,7 +322,6 @@ class CachedFile(object):
         self._real_fs = fs
         self.cache_folder = fs._cache_folder
         self.fs = fs._fs
-        self.id = stat.id
         self._stat = stat
         self.reset_lock = SharedLock()
         self.is_closed = False
@@ -339,22 +338,21 @@ class CachedFile(object):
         assert (self.stop_signal is None) == (self.thread is None) == (self.cond is None)
         return self.thread is not None
 
+    def _start_thread(self):
+        self.cond = threading.Condition()
+        self._reset()
+
     def _reset(self):
         # start thread to stream file in
         def stream_file():
             # XXX: Handle errors
-            with contextlib.closing(self.fs.open_by_id(self.id)) as fsource:
-                if self._stat is None:
-                    stat = self.fs.fstat(fsource)
-                else:
-                    stat = self._stat
-
+            with contextlib.closing(self.fs.x_read_stream(self._stat.rev)) as fsource:
                 is_temp = False
                 if self.cache_folder is None:
                     self.cached_file = tempfile.TemporaryFile()
                     is_temp = True
                 else:
-                    fn = '%s-%d.bin' % (self.id, utctimestamp(stat.ctime))
+                    fn = '%s.bin' % (self._stat.rev)
                     self.cached_file = open(os.path.join(self.cache_folder, fn), 'a+b')
                     # XXX: make sure no other process has `cached_file` open
 
@@ -365,17 +363,14 @@ class CachedFile(object):
                     with self.cond:
                         assert not self.stored and self.eof is None
                         self.stored = amt
-                        self.eof = amt if amt == stat.size else None
+                        self.eof = amt if amt == self._stat.size else None
                         self.cond.notify_all()
                         if self.eof is not None: return
 
-                    if self._stat is not None:
-                        stat2 = self.fs.fstat(fsource)
-                        if stat2.ctime != self._stat.ctime:
-                            log.warning("Current file version does not match expected!")
-                            return
-
-                    fsource.seek(amt, io.SEEK_CUR)
+                    # Skip bytes if we already have them
+                    toread = amt
+                    while toread:
+                        toread -= len(fsource.read(min(toread, 2 ** 16)))
                 while True:
                     if self.stop_signal.is_set():
                         log.debug("File download stopped early!")
@@ -398,7 +393,7 @@ class CachedFile(object):
                     # in case the cache has exceeded its limit
                     self._real_fs._prune_event.set()
 
-                log.debug("Done downloading %r", self.id)
+                log.debug("Done downloading %r", self._stat.rev)
 
         with self.cond:
             self.stored = 0
@@ -437,13 +432,12 @@ class CachedFile(object):
                         ctx = self.reset_lock
                         continue
 
-                    self.cond = threading.Condition()
-                    self._reset()
+                    self._start_thread()
 
                 if not self._should_wait(offset, size):
                     log.debug("Bypassing file cache %r", (offset, size))
                     try:
-                        with contextlib.closing(self.fs.open_by_id(self.id)) as fsource:
+                        with contextlib.closing(self.fs.x_open_by_rev(self._stat.rev)) as fsource:
                             return fsource.pread(offset, size)
                     finally:
                         log.debug("Done bypassing file cache %r", (offset, size))

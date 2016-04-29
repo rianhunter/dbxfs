@@ -42,7 +42,7 @@ Name = collections.namedtuple('Name', ['name'])
 def md_plus_name(name, md):
     return attr_merge(Name(name), md)
 
-REQUIRED_ATTRS = ["mtime", "type", "size", "id", "ctime"]
+REQUIRED_ATTRS = ["mtime", "type", "size", "id", "ctime", "rev"]
 Stat = collections.namedtuple("Stat", REQUIRED_ATTRS)
 
 def stat_to_json(obj):

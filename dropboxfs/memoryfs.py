@@ -20,6 +20,7 @@ import ctypes
 import errno
 import io
 import itertools
+import json
 import logging
 import os
 import threading
@@ -42,6 +43,12 @@ def get_size(md):
 def get_children(md):
     assert md["type"] == "directory"
     return md.get("children", [])
+
+def get_rev(md):
+    if md['type'] == 'directory':
+        return None
+    else:
+        return json.dumps((id(md), len(md['revs']) - 1))
 
 class _File(PositionIO):
     def __init__(self, md, mode):
@@ -76,6 +83,7 @@ class _File(PositionIO):
                                                 self._md['data'][offset + len(buf):])
             m = self._md['mtime'] = datetime.utcnow()
             self._md['ctime'] = datetime.utcnow()
+            self._md['revs'].append((m, d))
             return len(buf)
 
     def writable(self):
@@ -106,7 +114,7 @@ class _Directory(object):
     def __next__(self):
         return next(self._iter)
 
-_Stat = collections.namedtuple("Stat", ['name', 'mtime', 'type', 'size', 'id', 'ctime'])
+_Stat = collections.namedtuple("Stat", ['name', 'mtime', 'type', 'size', 'id', 'ctime', 'rev'])
 
 class FileSystem(object):
     def __init__(self, tree):
@@ -128,6 +136,7 @@ class FileSystem(object):
 
                 if child['type'] == 'file':
                     new_child['lock'] = threading.Lock()
+                    new_child['revs'] = [(new_child['mtime'], new_child['data'])]
                 else:
                     assert child['type'] == 'directory'
                     new_child['children'] = []
@@ -139,8 +148,9 @@ class FileSystem(object):
         ctime = md['ctime']
         type = md["type"]
         size = get_size(md)
+        rev = get_rev(md)
 
-        return _Stat(name, mtime, type, size, id=id(md), ctime=ctime)
+        return _Stat(name, mtime, type, size, id=id(md), ctime=ctime, rev=rev)
 
     def _get_file(self, path):
         parent = self._parent

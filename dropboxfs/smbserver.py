@@ -49,6 +49,7 @@ SMB_COM_NT_CREATE_ANDX = 0xA2
 SMB_COM_QUERY_INFORMATION_DISK = 0x80
 SMB_COM_CHECK_DIRECTORY = 0x10
 SMB_COM_TREE_DISCONNECT = 0x71
+SMB_COM_FLUSH = 0x05
 
 SMB_FLAGS_REPLY = 0x80
 SMB_FLAGS2_NT_STATUS = 0x4000
@@ -389,6 +390,11 @@ def decode_write_andx_request_data(_, params, __, buf):
         log.warn("Got more data than was expecting")
     return buf[1:1 + params.data_length]
 
+decode_flush_request_params = generate_simple_params_decoder(
+    "<H",
+    namedtuple('SMBComFlushParameters',
+               ['fid']))
+
 REQUEST = False
 REPLY = True
 _decoder_dispatch = {
@@ -418,6 +424,8 @@ _decoder_dispatch = {
                                          decode_check_directory_request_data),
     (SMB_COM_WRITE_ANDX, REQUEST): (decode_write_andx_request_params,
                                     decode_write_andx_request_data),
+    (SMB_COM_FLUSH, REQUEST): (decode_flush_request_params,
+                               decode_null_data),
 }
 
 def get_decoder(header):
@@ -685,6 +693,8 @@ _encoder_dispatch = {
                                        encode_null_data),
     (SMB_COM_WRITE_ANDX, REPLY): (encode_write_andx_reply_params,
                                   encode_null_data),
+    (SMB_COM_FLUSH, REPLY): (encode_null_params,
+                             encode_null_data),
 }
 
 def get_encoder(header):
@@ -2430,7 +2440,7 @@ def handle_request(server, server_capabilities, cs, backend, req):
 
                 WRITE_THROUGH_MODE = 0x1
                 if req.parameters.write_mode & WRITE_THROUGH_MODE:
-                    yield from fid_md['handle'].flush()
+                    yield from fs.fsync(fid_md['handle'])
 
                 log.debug("PWRITE DONE... %r buf len: %r", fid_md['path'], amt)
             finally:
@@ -2442,6 +2452,24 @@ def handle_request(server, server_capabilities, cs, backend, req):
 
             return SMBMessage(reply_header_from_request(req),
                               parameters, None)
+        finally:
+            yield from cs.deref_tid(req.header.tid)
+    elif req.header.command == SMB_COM_FLUSH:
+        yield from cs.verify_uid(req)
+        fs = yield from cs.verify_tid(req)
+        try:
+            try:
+                fid_md = yield from cs.ref_file(req.parameters.fid)
+            except KeyError:
+                raise ProtocolError(STATUS_INVALID_HANDLE)
+            try:
+                yield from fs.fsync(fid_md['handle'])
+            finally:
+                yield from cs.deref_file(req.parameters.fid)
+
+
+            return SMBMessage(reply_header_from_request(req),
+                              None, None)
         finally:
             yield from cs.deref_tid(req.header.tid)
 
@@ -2491,6 +2519,12 @@ class AsyncFS(AsyncWrapped):
     def fstat(self, handle):
         # NB: we have to unwrap the async handle
         return (yield from self._worker_pool.run_async(self._obj.fstat,
+                                                       handle._obj))
+
+    @asyncio.coroutine
+    def fsync(self, handle):
+        # NB: we have to unwrap the async handle
+        return (yield from self._worker_pool.run_async(self._obj.fsync,
                                                        handle._obj))
 
     def create_watch(self, cb, dir_handle, *n, **kw):

@@ -870,6 +870,9 @@ class _File(PositionIO):
     def writeable(self):
         return (self._mode & os.O_ACCMODE) in (os.O_WRONLY, os.O_RDWR)
 
+    def _file_length(self):
+        return self.stat().size
+
     def ptruncate(self, offset):
         with self._lock.shared_context():
             return self._live_md.cached_file.ptruncate(offset)

@@ -123,6 +123,9 @@ class DropboxAPIError(Exception):
     def __init__(self, json_):
         super().__init__(json_)
 
+class HTTPError(Exception):
+    pass
+
 def download_connection(access_token, path, start=None, length=None):
     target_host_port = ("content.dropboxapi.com", 443)
 
@@ -163,7 +166,7 @@ def download_connection(access_token, path, start=None, length=None):
         raise DropboxAPIError(error)
     elif resp.status not in (200, 206):
         data = resp.read()
-        raise Exception("HTTPError %r %r" % (resp.status, data))
+        raise HTTPError(resp.status)
 
     md = json.loads(resp.getheader("dropbox-api-result"))
 
@@ -180,9 +183,15 @@ class _File(PositionIO):
         #     since pread() is usually parallel-friendly
 
         try:
-            (md, resp) = download_connection(self._fs._access_token, self._id,
-                                             start=offset,
-                                             length=None if size < 0 else size)
+            try:
+                (md, resp) = download_connection(self._fs._access_token, self._id,
+                                                 start=offset,
+                                                 length=None if size < 0 else size)
+            except HTTPError as e:
+                if e.args[0] == 416:
+                    return b''
+                else:
+                    raise
 
             range_was_honored = resp.getheader("content-range")
 

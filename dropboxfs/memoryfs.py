@@ -128,6 +128,51 @@ class _ReadStream(PositionIO):
     def readable(self):
         return True
 
+class _WriteStream(object):
+    def __init__(self, fs, resolver, write_mode, autorename):
+        if autorename:
+            raise NotImplementedError("autorename not supported yet!")
+        self._fs = fs
+        self._resolver = resolver
+        self._write_mode = write_mode
+        self._buf = io.BytesIO()
+
+    def write(self, data):
+        self._buf.write(data)
+
+    def close(self):
+        # this reads a snapshotted file resolved by resolver
+        try:
+            if isinstance(self._resolver, Path):
+                md = self._fs._get_file(self._resolver)
+            else:
+                md = self._fs._md_from_id(self._resolver)
+        except FileNotFoundError:
+            pass
+        else:
+            if self._write_mode == "add":
+                raise Exception("Conflict!")
+
+        with md['lock']:
+            d = md['data'] = self._buf.getvalue()
+            m = md['mtime'] = datetime.utcnow()
+            c = md['ctime'] = datetime.utcnow()
+            md['revs'].append((m, d))
+            rev = get_rev(md)
+        self._buf.close()
+
+        DropboxMD = collections.namedtuple(
+            "DropboxMD",
+            ["path_lower", "name", "client_modified",
+             "size", "server_modified", "rev", "id"])
+        return DropboxMD(path_lower=str(md['path']).lower(),
+                         name=md['name'],
+                         client_modified=m,
+                         size=len(d),
+                         server_modified=c,
+                         id=id(md),
+                         rev=rev)
+
 class FileSystem(object):
     def __init__(self, tree):
         self._parent = {"type": "directory", "children": [],
@@ -141,6 +186,8 @@ class FileSystem(object):
             (dir_path, new_dir, dir_) = files.pop()
             for (name, child) in get_children(dir_):
                 new_child = dict(child)
+                new_child['path'] = dir_path.joinpath(name)
+                new_child['name'] = name
                 if 'mtime' not in new_child:
                     new_child['mtime'] = datetime.utcnow()
                 if 'ctime' not in new_child:
@@ -223,6 +270,9 @@ class FileSystem(object):
             d = md['revs'][rev_idx][1]
 
         return _ReadStream(d)
+
+    def x_write_stream(self, id_, write_mode="add", autorename=False):
+        return _WriteStream(self, id_, write_mode, autorename)
 
     def open_directory(self, path):
         md = self._get_file(path)

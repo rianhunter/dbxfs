@@ -630,6 +630,22 @@ def main(argv):
         print("File Data: %r" % (f.read(4),))
         print("File Data 2: %r" % (f.read(4),))
 
+    file_path_2 = root_path.joinpath("dbfs-test.txt")
+    with contextlib.closing(fs.x_write_stream(file_path_2, "overwrite")) as f:
+        f.write(b"test")
+
+    with contextlib.closing(fs.x_read_stream(file_path_2)) as f:
+        print("File Data (should be %r)" % (b'test',), f.read())
+
+    try:
+        with contextlib.closing(fs.open(file_path_2, os.O_CREAT | os.O_EXCL)) as f:
+            pass
+    except FileExistsError:
+        # Expected
+        pass
+    else:
+        raise Exception("This should raise")
+
     event = threading.Event()
     def cb(changes):
         print(changes)

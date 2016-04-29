@@ -877,7 +877,8 @@ def get_transaction2_request_decoder(smb_parameters):
     try:
         return _TRANS_2_DECODERS[smb_parameters.setup[0]]
     except KeyError:
-        raise ProtocolError(STATUS_NOT_SUPPORTED)
+        raise ProtocolError(STATUS_NOT_SUPPORTED,
+                            "Trans 2 request not supported: %r" % (smb_parameters.setup,))
 
 def decode_transaction_2_request_message(msg):
     assert (msg.parameters.total_parameter_count == msg.parameters.parameter_count and

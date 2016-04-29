@@ -327,6 +327,36 @@ class _File(io.RawIOBase):
                 self._read_conn_is_invalid = False
                 return toret
 
+class _ReadStream(io.RawIOBase):
+    def __init__(self, fs, path):
+        self._fs = fs
+        self._path = path
+        self._offset = 0
+        self._lock = threading.Lock()
+        self._read_conn = None
+
+    def readinto(self, buf):
+        with self._lock:
+            if self._path is None:
+                raise ValueError("closed!")
+            if self._read_conn is None:
+                (_, self._read_conn) = download_connection(self._fs._access_token,
+                                                           self._path)
+            toret = self._read_conn.readinto(buf)
+            self._offset += toret
+            return toret
+
+    def readable(self):
+        return True
+
+    def close(self):
+        with self._lock:
+            if self._read_conn is not None:
+                self._read_conn.close()
+            self._read_conn = None
+            # Set path to none to signal closed
+            self._path = None
+
 Change = collections.namedtuple('Change', ['action', 'path'])
 
 (FILE_NOTIFY_CHANGE_FILE_NAME,
@@ -447,6 +477,9 @@ class FileSystem(object):
 
     def open_by_id(self, id_):
         return _File(self, id_)
+
+    def x_read_stream(self, path):
+        return _ReadStream(self, str(path))
 
     def open_directory(self, path):
         md = self._get_md_inner(path)

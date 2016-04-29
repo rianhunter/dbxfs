@@ -173,10 +173,10 @@ def download_connection(access_token, path, start=None, length=None):
     return (md, resp)
 
 class _File(PositionIO):
-    def __init__(self, fs, id_):
+    def __init__(self, fs, path):
         super().__init__()
         self._fs = fs
-        self._id = id_
+        self._path = path
 
     def pread(self, offset, size=-1):
         # NB: We don't use self._read_conn to avoid locking
@@ -184,7 +184,7 @@ class _File(PositionIO):
 
         try:
             try:
-                (md, resp) = download_connection(self._fs._access_token, self._id,
+                (md, resp) = download_connection(self._fs._access_token, self._path,
                                                  start=offset,
                                                  length=None if size < 0 else size)
             except HTTPError as e:
@@ -238,7 +238,7 @@ class _File(PositionIO):
         return True
 
     def stat(self):
-        return self._fs._get_md(self._id)
+        return self._fs._get_md(self._path)
 
 class _ReadStream(io.RawIOBase):
     def __init__(self, fs, path):
@@ -488,6 +488,9 @@ class FileSystem(object):
 
         return _File(self, id_)
 
+    def x_open_by_rev(self, rev):
+        return _File(self, rev)
+
     def x_write_stream(self, path, write_mode="add", autorename=False):
         return _WriteStream(self, path, write_mode, autorename)
 
@@ -513,7 +516,11 @@ class FileSystem(object):
         if not isinstance(dir_handle, _File):
             raise OSError(errno.EINVAL, os.strerror(errno.EINVAL))
 
-        id_ = dir_handle._id
+        if (str(dir_handle._path) != "/" and
+            not str(dir_handle._path).startswith("id:")):
+            raise OSError(errno.EINVAL, os.strerror(errno.EINVAL))
+
+        id_ = dir_handle._path
         dirpath = [None]
         done = [False]
 

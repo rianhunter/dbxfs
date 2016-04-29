@@ -39,7 +39,7 @@ from dropboxfs.path_common import Path
 
 log = logging.getLogger(__name__)
 
-_StatObject = collections.namedtuple("Stat", ["name", "type", "size", "mtime", "id", "ctime"])
+_StatObject = collections.namedtuple("Stat", ["name", "type", "size", "mtime", "id", "ctime", "rev"])
 
 def md_dict_to_stat(md):
     name = md['name']
@@ -61,7 +61,10 @@ def md_to_stat(md):
              if not isinstance(md, dropbox.files.FolderMetadata) else
              datetime.datetime.utcnow())
     ctime = getattr(md, 'server_modified', datetime.datetime.utcnow())
-    return _StatObject(name, type, size, mtime, md.id, ctime=ctime)
+    rev = ('rev:' + md.rev
+           if type == "file" else
+           None)
+    return _StatObject(name, type, size, mtime, md.id, ctime=ctime, rev=rev)
 
 class _Directory(object):
     def __init__(self, fs, path, id_):

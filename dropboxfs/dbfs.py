@@ -261,6 +261,70 @@ class _ReadStream(io.RawIOBase):
             # Set path to none to signal closed
             self._path = None
 
+BUF_SIZE = 150 * 1024 * 1024
+class _WriteStream(object):
+    def __init__(self, fs, path, write_mode, autorename):
+        self._fs = fs
+        self._path = path
+        self._session_id = None
+        self._buf = io.BytesIO()
+        self._lock = threading.Lock()
+        self._offset = 0
+        if write_mode not in ("add", "overwrite"):
+            raise Exception("invalid argument")
+        self._write_mode = (dropbox.files.WriteMode.overwrite
+                            if write_mode == "overwrite" else
+                            dropbox.files.WriteMode.add)
+        self._autorename = autorename
+
+    def _flush(self):
+        to_up = self._buf.getbuffer()[:BUF_SIZE]
+
+        if self._session_id is None:
+            # start session
+            session_result = self._fs._clientv2.files_upload_session_start(to_up)
+            self._session_id = session_result.session_id
+        else:
+            self._fs._clientv2.files_upload_session_append(to_up, self._session_id, self._offset)
+
+        self._offset += len(to_up)
+
+        self._buf = io.BytesIO(self._buf.getbuffer()[BUF_SIZE:])
+
+    def write(self, buf):
+        with self._lock:
+            self._buf.write(buf)
+
+            while len(self._buf.getbuffer()) >= BUF_SIZE:
+                self._flush()
+
+    def close(self):
+        with self._lock:
+            # Only flush to upload session if we've flushed before
+            # otherwise we'll cut straight to upload()
+            if self._session_id is not None:
+                while self._buf.getbuffer():
+                    self._flush()
+
+            # NB: ideally we would upload directly to ID but
+            #     the dropbox API doesn't support that so we
+            #     have to tolerate a bit of a race.
+            if isinstance(self._path, Path):
+                path = str(self._path)
+            else:
+                md = self._fs._clientv2.files_get_metadata(self._path)
+                path = md.path_lower
+
+            if self._session_id is None:
+                assert len(self._buf.getbuffer()) < BUF_SIZE
+                return self._fs._clientv2.files_upload(self._buf.getbuffer(), path,
+                                                       mode=self._write_mode,
+                                                       autorename=self._autorename)
+
+            cursor = dropbox.files.UploadSessionCursor(self._session_id, self._offset)
+            ci = dropbox.files.CommitInfo(path, mode=self._write_mode, autorename=self._autorename)
+            return self._fs._clientv2.files_upload_session_finish(b'', cursor, ci)
+
 Change = collections.namedtuple('Change', ['action', 'path'])
 
 (FILE_NOTIFY_CHANGE_FILE_NAME,
@@ -414,6 +478,9 @@ class FileSystem(object):
             raise OSError(errno.EINVAL, os.strerror(errno.EINVAL))
 
         return _File(self, id_)
+
+    def x_write_stream(self, path, write_mode="add", autorename=False):
+        return _WriteStream(self, path, write_mode, autorename)
 
     def x_read_stream(self, path):
         return _ReadStream(self, str(path))

@@ -359,6 +359,36 @@ def decode_check_directory_request_data(_, __, ___, buf):
     filename = buf.decode('utf-16-le').rstrip('\0')
     return SMBCheckDirectoryRequestData(filename=filename)
 
+SMBWriteAndxRequestParameters = namedtuple(
+    'SMBWriteAndxRequestParameters',
+    ['andx_command', 'andx_reserved', 'andx_offset',
+     'fid', 'offset', 'timeout', 'write_mode', 'remaining',
+     'data_length', 'data_offset'])
+def decode_write_andx_request_params(_, __, buf):
+    kw = {}
+
+    fmt = "<BBHHLLHHHHH"
+    fmt_size = struct.calcsize(fmt)
+    (kw['andx_command'], kw['andx_reserved'], kw['andx_offset'],
+     kw['fid'], kw['offset'],
+     kw['timeout'], kw['write_mode'],
+     kw['remaining'], _reserved, kw['data_length'],
+     kw['data_offset']) = struct.unpack(fmt, buf[:fmt_size])
+
+    if len(buf) > fmt_size:
+        (offset_high,) = struct.unpack("<L", buf[fmt_size:])
+        kw['offset'] = (offset_high << 32) | kw['offset']
+
+    return SMBWriteAndxRequestParameters(**kw)
+
+def decode_write_andx_request_data(_, params, __, buf):
+    # NB: skip pad byte
+    if (len(buf) - 1) < params.data_length:
+        raise Exception("Not enough data!")
+    elif (len(buf) - 1) > params.data_length:
+        log.warn("Got more data than was expecting")
+    return buf[1:1 + params.data_length]
+
 REQUEST = False
 REPLY = True
 _decoder_dispatch = {
@@ -386,6 +416,8 @@ _decoder_dispatch = {
                                      decode_nt_transact_request_data),
     (SMB_COM_CHECK_DIRECTORY, REQUEST): (decode_null_params,
                                          decode_check_directory_request_data),
+    (SMB_COM_WRITE_ANDX, REQUEST): (decode_write_andx_request_params,
+                                    decode_write_andx_request_data),
 }
 
 def get_decoder(header):
@@ -437,7 +469,8 @@ def encode_byte_data(header, parameters, buf_offset, data):
 
 def generate_simple_parameter_encoder(fmt, attrs):
     def encoder(_, buf_offset, parameters):
-        return struct.pack(fmt, *(getattr(parameters, a) for a in attrs))
+        return struct.pack(fmt, *[getattr(parameters, a) if a is not None else 0
+                                  for a in attrs])
     return encoder
 
 encode_negotiate_reply_parameters = generate_simple_parameter_encoder(
@@ -620,6 +653,11 @@ def encode_nt_transact_reply_data(header, parameters, data_offset, data):
                                                  len(data.parameters))) * b'\0',
                      data.data])
 
+encode_write_andx_reply_params = generate_simple_parameter_encoder(
+    "<BBHHHL",
+    ["andx_command", "andx_reserved", "andx_offset",
+     "count", "available", None])
+
 _encoder_dispatch = {
     (SMB_COM_NEGOTIATE, REPLY): (encode_negotiate_reply_parameters,
                                  encode_negotiate_reply_data),
@@ -645,6 +683,8 @@ _encoder_dispatch = {
                                    encode_nt_transact_reply_data),
     (SMB_COM_CHECK_DIRECTORY, REPLY): (encode_null_params,
                                        encode_null_data),
+    (SMB_COM_WRITE_ANDX, REPLY): (encode_write_andx_reply_params,
+                                  encode_null_data),
 }
 
 def get_encoder(header):
@@ -2366,6 +2406,42 @@ def handle_request(server, server_capabilities, cs, backend, req):
 
                 return SMBMessage(reply_header_from_request(req),
                                   parameters, data)
+        finally:
+            yield from cs.deref_tid(req.header.tid)
+    elif req.header.command == SMB_COM_WRITE_ANDX:
+        verify_andx(req)
+        yield from cs.verify_uid(req)
+        fs = yield from cs.verify_tid(req)
+        try:
+            try:
+                fid_md = yield from cs.ref_file(req.parameters.fid)
+            except KeyError:
+                raise ProtocolError(STATUS_INVALID_HANDLE)
+            try:
+                log.debug("PWRITE START... %r, offset: %r, amt: %r",
+                          fid_md['path'], req.parameters.offset,
+                          req.parameters.data_length)
+
+                if req.parameters.timeout:
+                    log.warning("Got timeout value for SMB_COM_WRITE: %r, ignoring...",
+                                req.parameters.timeout)
+
+                amt = yield from fid_md['handle'].pwrite(req.data, req.parameters.offset)
+
+                WRITE_THROUGH_MODE = 0x1
+                if req.parameters.write_mode & WRITE_THROUGH_MODE:
+                    yield from fid_md['handle'].flush()
+
+                log.debug("PWRITE DONE... %r buf len: %r", fid_md['path'], amt)
+            finally:
+                yield from cs.deref_file(req.parameters.fid)
+
+            parameters = quick_container(count=amt,
+                                         available=0xffff,
+                                         **DEFAULT_ANDX_PARAMETERS)
+
+            return SMBMessage(reply_header_from_request(req),
+                              parameters, None)
         finally:
             yield from cs.deref_tid(req.header.tid)
 

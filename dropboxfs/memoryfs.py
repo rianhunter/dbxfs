@@ -22,6 +22,7 @@ import io
 import itertools
 import logging
 import os
+import threading
 import warnings
 
 from datetime import datetime
@@ -67,14 +68,15 @@ class _File(PositionIO):
     def pwrite(self, buf, offset):
         if not self.writable():
             raise OSError(errno.EBADF, os.strerror(errno.EBADF))
-        header = self._md['data'][:offset]
-        if len(header) < offset:
-            header = b'%s%s' % (header, b'\0' * (offset - len(header),))
-        self._md["data"] = b'%s%s%s' % (header, buf,
-                                        self._md['data'][offset + len(buf):])
-        self._md['mtime'] = datetime.utcnow()
-        self._md['ctime'] = datetime.utcnow()
-        return len(buf)
+        with self._md['lock']:
+            header = self._md['data'][:offset]
+            if len(header) < offset:
+                header = b'%s%s' % (header, b'\0' * (offset - len(header),))
+            d = self._md["data"] = b'%s%s%s' % (header, buf,
+                                                self._md['data'][offset + len(buf):])
+            m = self._md['mtime'] = datetime.utcnow()
+            self._md['ctime'] = datetime.utcnow()
+            return len(buf)
 
     def writable(self):
         return (self._mode & os.O_ACCMODE) in (os.O_WRONLY, os.O_RDWR)
@@ -124,7 +126,9 @@ class FileSystem(object):
                 if 'ctime' not in new_child:
                     new_child['ctime'] = datetime.utcnow()
 
-                if child['type'] != 'file':
+                if child['type'] == 'file':
+                    new_child['lock'] = threading.Lock()
+                else:
                     assert child['type'] == 'directory'
                     new_child['children'] = []
                     files.append((new_child['path'], new_child, child))

@@ -1252,6 +1252,11 @@ def main(argv):
 
         with contextlib.closing(fs.open(fs.create_path("bar"))) as f:
             print("Contents of bar:", b"fhi", "(should be 'fhi')")
+
+        # now create new file
+        with contextlib.closing(fs.open(fs.create_path("newcrazy"),
+                                        os.O_CREAT | os.O_EXCL)):
+            pass
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 

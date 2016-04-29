@@ -27,6 +27,7 @@ import warnings
 from datetime import datetime
 
 from dropboxfs.path_common import Path
+from dropboxfs.util_dumpster import PositionIO
 
 log = logging.getLogger(__name__)
 
@@ -41,10 +42,11 @@ def get_children(md):
     assert md["type"] == "directory"
     return md.get("children", [])
 
-class _File(io.RawIOBase):
+class _File(PositionIO):
     def __init__(self, md, mode):
+        super().__init__()
+
         self._md = md
-        self._offset = 0
         self._mode = mode
 
     def pread(self, offset, size=-1):
@@ -52,39 +54,24 @@ class _File(io.RawIOBase):
             raise OSError(errno.EBADF, os.strerror(errno.EBADF))
         if self._md["type"] == "directory":
             raise OSError(errno.EISDIR, os.strerror(errno.EISDIR))
-        return self._md["data"][offset:
-                                len(self._md["data"]) if size < 0 else offset + size]
-
-    def readinto(self, ibuf):
-        a = self.pread(self._offset, len(ibuf))
-        ibuf[:len(a)] = a
-        self._offset += len(a)
-        return len(a)
+        d = self._md["data"]
+        return d[offset:
+                 len(d) if size < 0 else offset + size]
 
     def readable(self):
         return (self._mode & os.O_ACCMODE) in (os.O_RDONLY, os.O_RDWR)
 
-    def seek(self, amt, whence=0):
-        if whence == io.SEEK_SET:
-            self._offset = amt
-        elif whence == io.SEEK_CUR:
-            self._offset += amt
-        elif whence == io.SEEK_END:
-            self._offset = len(self._md["data"]) + amt
-        else:
-            raise OSError(errno.EINVAL, os.strerror(errno.EINVAL))
+    def _file_length(self):
+        return len(self._md["data"])
 
-    def seekable(self):
-        return True
-
-    def write(self, buf):
+    def pwrite(self, buf, offset):
         if not self.writable():
             raise OSError(errno.EBADF, os.strerror(errno.EBADF))
-        header = self._md['data'][:self._offset]
-        if len(header) < self._offset:
-            header = b'%s%s' % (header, b'\0' * (self._offset - len(header),))
+        header = self._md['data'][:offset]
+        if len(header) < offset:
+            header = b'%s%s' % (header, b'\0' * (offset - len(header),))
         self._md["data"] = b'%s%s%s' % (header, buf,
-                                        self.pread(self._offset + len(buf)))
+                                        self._md['data'][offset + len(buf):])
         self._md['mtime'] = datetime.utcnow()
         self._md['ctime'] = datetime.utcnow()
         return len(buf)

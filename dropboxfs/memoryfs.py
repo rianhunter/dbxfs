@@ -108,22 +108,31 @@ _Stat = collections.namedtuple("Stat", ['name', 'mtime', 'type', 'size', 'id', '
 
 class FileSystem(object):
     def __init__(self, tree):
-        self._mtime = datetime.utcnow()
-        self._ctime = datetime.utcnow()
-        self._parent = {"type": "directory",
-                        "children": tree}
+        self._parent = {"type": "directory", "children": [],
+                        'mtime': datetime.utcnow(), 'ctime': datetime.utcnow()}
+
+        # give all files a lock
+        files = [(self.create_path(),
+                  self._parent,
+                  {"type": "directory", "children": tree})]
+        while files:
+            (dir_path, new_dir, dir_) = files.pop()
+            for (name, child) in get_children(dir_):
+                new_child = dict(child)
+                if 'mtime' not in new_child:
+                    new_child['mtime'] = datetime.utcnow()
+                if 'ctime' not in new_child:
+                    new_child['ctime'] = datetime.utcnow()
+
+                if child['type'] != 'file':
+                    assert child['type'] == 'directory'
+                    new_child['children'] = []
+                    files.append((new_child['path'], new_child, child))
+                new_dir['children'].append((name, new_child))
 
     def _map_entry(self, md, name=None):
-        if 'mtime' in md:
-            mtime = md['mtime']
-        else:
-            mtime = self._mtime
-
-        if 'ctime' in md:
-            ctime = md['ctime']
-        else:
-            ctime = self._ctime
-
+        mtime = md['mtime']
+        ctime = md['ctime']
         type = md["type"]
         size = get_size(md)
 

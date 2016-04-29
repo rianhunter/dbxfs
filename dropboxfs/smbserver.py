@@ -1684,7 +1684,13 @@ def handle_request(server, server_capabilities, cs, backend, req):
 
         return normalize_stat(to_normalize)
 
+    def verify_andx(req):
+        if req.parameters.andx_command != 0xff:
+            raise Exception("Do not support andx chains!")
+
     if req.header.command == SMB_COM_SESSION_SETUP_ANDX:
+        verify_andx(req)
+
         if req.parameters.capabilities & ~server_capabilities:
             log.warning("Client's capabilities aren't a subset of Server's: 0x%x vs 0x%x",
                         req.parameters.capabilities, server_capabilities)
@@ -1698,6 +1704,8 @@ def handle_request(server, server_capabilities, cs, backend, req):
                                primary_domain=req.data.primary_domain)
         return SMBMessage(header, parameters, data)
     elif req.header.command == SMB_COM_TREE_CONNECT_ANDX:
+        verify_andx(req)
+
         yield from cs.verify_uid(req)
 
         if req.parameters.flags & TREE_CONNECT_ANDX_DISCONNECT_TID:
@@ -2129,6 +2137,8 @@ def handle_request(server, server_capabilities, cs, backend, req):
         finally:
             yield from cs.deref_tid(req.header.tid)
     elif req.header.command == SMB_COM_NT_CREATE_ANDX:
+        verify_andx(req)
+
         header = req.parameters
 
         yield from cs.verify_uid(req)
@@ -2231,6 +2241,8 @@ def handle_request(server, server_capabilities, cs, backend, req):
         finally:
             yield from cs.deref_tid(req.header.tid)
     elif req.header.command == SMB_COM_READ_ANDX:
+        verify_andx(req)
+
         request = req.parameters
         yield from cs.verify_uid(req)
         fs = yield from cs.verify_tid(req)

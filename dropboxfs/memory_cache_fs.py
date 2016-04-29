@@ -434,6 +434,9 @@ class CachedFile(object):
 
                     self._start_thread()
 
+                if not size:
+                    return b''
+
                 if not self._should_wait(offset, size):
                     log.debug("Bypassing file cache %r", (offset, size))
                     try:

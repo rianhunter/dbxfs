@@ -36,6 +36,7 @@ import urllib.request
 import dropbox
 
 from dropboxfs.path_common import Path
+from dropboxfs.util_dumpster import PositionIO
 
 log = logging.getLogger(__name__)
 
@@ -163,15 +164,11 @@ def download_connection(access_token, path, start=None, length=None):
 
     return (md, resp)
 
-class _File(io.RawIOBase):
+class _File(PositionIO):
     def __init__(self, fs, id_):
+        super().__init__()
         self._fs = fs
         self._id = id_
-        self._offset = 0
-        self._lock = threading.Lock()
-        self._read_conn = None
-        self._rev = None
-        self._read_conn_is_invalid = True
 
     def pread(self, offset, size=-1):
         # NB: We don't use self._read_conn to avoid locking
@@ -186,11 +183,6 @@ class _File(io.RawIOBase):
 
             if not range_was_honored:
                 log.warning("Range wasn't honored: %r", (offset, size))
-
-            # NB: pread() may restart file download
-            #     this is so we never can read() something older
-            #     that what we pread() previously
-            self._read_conn_is_invalid = md['rev'] != self._rev
 
             with contextlib.closing(resp):
                 bufs = []
@@ -228,90 +220,11 @@ class _File(io.RawIOBase):
                 raise OSError(errno.EISDIR, os.strerror(errno.EISDIR)) from None
             else: raise
 
-    def _restart_read_conn(self):
-        if self._read_conn is not None:
-            self._read_conn.close()
-
-        (md, self._read_conn) = download_connection(self._fs._access_token,
-                                                    self._id)
-        self._rev = md['rev']
-        stat = md_dict_to_stat(md)
-
-        # now skip those bytes
-        toread = self._offset
-        while toread:
-            r = self._read_conn.read(min(toread, 2 ** 16))
-            toread -= len(r)
-
-        return stat
-
-    def _seek(self, offset, whence=io.SEEK_SET):
-        if whence == io.SEEK_CUR:
-            if offset < 0:
-                self._offset += offset
-                whence = io.SEEK_SET
-            else:
-                if self._read_conn_is_invalid:
-                    self._restart_read_conn()
-                    self._read_conn_is_invalid = False
-                # just skip the requested amount of bytes
-                toread = offset
-                while toread:
-                    r = self._read_conn.read(min(toread, 2 ** 16))
-                    toread -= len(r)
-                    self._offset += len(r)
-                return
-
-        if whence != io.SEEK_SET:
-            raise OSError(errno.ENOTSUP, os.strerror(errno.ENOTSUP))
-
-        if self._offset == offset:
-            return
-
-        self._offset = offset
-        self._restart_read_conn()
-
-    def seek(self, *n, **kw):
-        with self._lock:
-            return self._seek(*n, **kw)
-
-    def readinto(self, buf):
-        with self._lock:
-            if self._read_conn_is_invalid:
-                self._restart_read_conn()
-                self._read_conn_is_invalid = False
-            toret = self._read_conn.readinto(buf)
-            self._offset += toret
-            return toret
-
     def readable(self):
         return True
 
-    def seekable(self):
-        return True
-
-    def close(self):
-        if self._read_conn is not None:
-            self._read_conn.close()
-
     def stat(self):
-        with self._lock:
-            if self._read_conn is not None:
-                md = self._fs._get_md_inner(self._id)
-                # Restart read conn if this stat is newer
-                self._read_conn_is_invalid = md['rev'] != self._rev
-                return md_to_stat(md)
-            else:
-                # NB: This is optimized for the case when an fstat()
-                #     is done before any reading.
-                #     => only a single request is made
-                assert not self._offset and self._read_conn_is_invalid, \
-                    ("There should be no instance when offset "
-                     "is non-zero or read_conn_is_invalid is false "
-                     "and read_conn is None")
-                toret = self._restart_read_conn()
-                self._read_conn_is_invalid = False
-                return toret
+        return self._fs._get_md(self._id)
 
 class _ReadStream(io.RawIOBase):
     def __init__(self, fs, path):

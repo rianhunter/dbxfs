@@ -40,6 +40,11 @@ from dropboxfs.util_dumpster import PositionIO
 
 log = logging.getLogger(__name__)
 
+if not hasattr(os, 'O_ACCMODE'):
+    O_ACCMODE = 0x3
+    for accmode in (os.O_RDONLY, os.O_WRONLY, os.O_RDWR):
+        assert (O_ACCMODE & accmode) == accmode
+
 _StatObject = collections.namedtuple("Stat", ["name", "type", "size", "mtime", "id", "ctime", "rev"])
 
 
@@ -370,11 +375,44 @@ class FileSystem(object):
         log.debug("md: %r", md)
         return md_to_stat(md)
 
-    def open(self, path):
-        md = self._get_md_inner(path)
-        return _File(self, md.id)
+    def open(self, path, mode=os.O_RDONLY):
+        if (mode & os.O_CREAT) and (mode & os.O_EXCL):
+            try:
+                # NB: This is a poor implementation of CREAT|EXCL, if an existing
+                #     empty file exists at the target, no conflict will occur
+                #     (this happens no matter what data we upload, so might as
+                #      well upload an empty file)
+                md = self._clientv2.files_upload(b'', str(path))
+            except dropbox.exceptions.ApiError as e:
+                if e.error.get_path().reason.is_conflict():
+                    raise OSError(errno.EEXIST, os.strerror(errno.EEXIST)) from e
+                else:
+                    raise
+        else:
+            while True:
+                try:
+                    md = self._get_md_inner(path)
+                except FileNotFoundError:
+                    if not (mode & os.O_CREAT):
+                        raise
+                    try:
+                        md = self._clientv2.files_upload(b'', str(path))
+                    except dropbox.exceptions.ApiError as e:
+                        if e.error.get_path().reason.is_conflict():
+                            continue
+                        else:
+                            raise
+                break
 
-    def open_by_id(self, id_):
+        return self.open_by_id(md.id, mode)
+
+    def open_by_id(self, id_, mode=os.O_RDONLY):
+        # NB: In general write mode is broken since writes don't propagate across
+        #     file objects. Until Dropbox API provides Range-PUT there is no
+        #     great way to implement it.
+        if (os.O_ACCMODE & mode) != os.O_RDONLY:
+            raise OSError(errno.EINVAL, os.strerror(errno.EINVAL))
+
         return _File(self, id_)
 
     def x_read_stream(self, path):

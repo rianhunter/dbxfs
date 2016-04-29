@@ -831,11 +831,33 @@ def decode_transaction_2_query_file_information_request_params(smb_header, _, bu
 decode_transaction_2_query_file_information_request_data = \
     decode_transaction_2_find_first_request_data
 
+def parse_set_file_data(trans2_params, buf):
+    if trans2_params.information_level == SMB_SET_FILE_END_OF_FILE_INFO:
+        fmt = "<Q"
+        (end_of_file,) = struct.unpack(fmt, buf)
+        return quick_container(end_of_file=end_of_file)
+    else:
+        raise ProtocolError(STATUS_OS2_INVALID_LEVEL,
+                            "Information level not supported: %r" %
+                            (trans2_params.information_level,))
+
+SMBTransaction2SetFileInformationRequestParameters = \
+    namedtuple('SMBTransaction2SetFileInformationRequestParameters',
+               ['fid', 'information_level', 'reserved'])
+def decode_transaction_2_set_file_information_request_params(smb_header, _, buf):
+    fmt = "<HHH"
+    return SMBTransaction2SetFileInformationRequestParameters(*struct.unpack(fmt, buf))
+
+def decode_transaction_2_set_file_information_request_data(smb_header, smb_params,
+                                                           trans2_params, buf):
+    return parse_set_file_data(trans2_params, buf)
+
 SMB_TRANS2_FIND_FIRST2 = 0x1
 SMB_TRANS2_FIND_NEXT2 = 0x2
 SMB_TRANS2_QUERY_FS_INFORMATION = 0x3
 SMB_TRANS2_QUERY_PATH_INFORMATION = 0x5
 SMB_TRANS2_QUERY_FILE_INFORMATION = 0x7
+SMB_TRANS2_SET_FILE_INFORMATION = 0x8
 
 _TRANS_2_DECODERS = {
     SMB_TRANS2_FIND_FIRST2: (decode_transaction_2_find_first_request_params,
@@ -848,6 +870,8 @@ _TRANS_2_DECODERS = {
                                         decode_transaction_2_query_path_information_request_data),
     SMB_TRANS2_QUERY_FILE_INFORMATION: (decode_transaction_2_query_file_information_request_params,
                                         decode_transaction_2_query_file_information_request_data),
+    SMB_TRANS2_SET_FILE_INFORMATION: (decode_transaction_2_set_file_information_request_params,
+                                      decode_transaction_2_set_file_information_request_data),
 }
 def get_transaction2_request_decoder(smb_parameters):
     try:
@@ -1014,6 +1038,8 @@ FILE_ACTION_RENAMED_NEW_NAME = 0x5
 DEFAULT_ANDX_PARAMETERS = dict(andx_command=0xff,
                                andx_reserved=0,
                                andx_offset=0)
+
+SMB_SET_FILE_END_OF_FILE_INFO = 0x104
 
 def encode_smb_datetime(dt):
     log.debug("date is %r", dt)
@@ -2147,6 +2173,25 @@ def handle_request(server, server_capabilities, cs, backend, req):
                 name = fspath.name if fspath.name else '\\'
                 (ea_error_offset, data_bytes) = query_file_info_generator(name, normalize_stat(md))
                 params_bytes = struct.pack("<H", ea_error_offset)
+            elif trans2_type == SMB_TRANS2_SET_FILE_INFORMATION:
+                if trans2_params.information_level != SMB_SET_FILE_END_OF_FILE_INFO:
+                    raise ProtocolError(STATUS_OS2_INVALID_LEVEL,
+                                        "SET FILE INFORMATION Information level not supported: %r" %
+                                        (trans2_params.information_level,))
+
+                try:
+                    fid_md = yield from cs.ref_file(trans2_params.fid)
+                except KeyError:
+                    raise ProtocolError(STATUS_INVALID_HANDLE)
+                try:
+                    yield from fid_md['handle'].seek(trans2_data.end_of_file)
+                    yield from fid_md['handle'].truncate()
+                finally:
+                    yield from cs.deref_file(trans2_params.fid)
+
+                setup = []
+                data_bytes = b''
+                params_bytes = b''
             else:
                 log.warning("TRANS2 Sub command not supported: %02x, %s" % (trans2_type, req))
                 raise ProtocolError(STATUS_NOT_SUPPORTED)

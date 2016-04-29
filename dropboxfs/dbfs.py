@@ -41,17 +41,6 @@ log = logging.getLogger(__name__)
 
 _StatObject = collections.namedtuple("Stat", ["name", "type", "size", "mtime", "id", "ctime", "rev"])
 
-def md_dict_to_stat(md):
-    name = md['name']
-    type = 'directory' if md.get('.tag') == 'folder' else 'file'
-    size = md.get('size', 0)
-    mtime = (datetime.datetime.strptime(md['client_modified'], '%Y-%m-%dT%H:%M:%SZ')
-             if 'client_modified' in md else
-             datetime.datetime.utcnow())
-    ctime = (datetime.datetime.strptime(md['server_modified'], '%Y-%m-%dT%H:%M:%SZ')
-             if 'server_modified' in md else
-             datetime.datetime.utcnow())
-    return _StatObject(name, type, size, mtime, md['id'], ctime=ctime)
 
 def md_to_stat(md):
     name = md.name

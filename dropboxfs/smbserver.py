@@ -951,6 +951,7 @@ STATUS_NOTIFY_ENUM_DIR = 0x10c
 STATUS_OS2_INVALID_LEVEL = 0x7c0001
 STATUS_NOT_A_DIRECTORY = 0xC0000000 | 0x0103
 STATUS_UNSUCCESSFUL = 0xc0000001
+STATUS_OBJECT_NAME_COLLISION = 0xc0000035
 
 TREE_CONNECT_ANDX_DISCONNECT_TID = 0x1
 SMB_INFO_STANDARD = 0x1
@@ -982,9 +983,18 @@ WRITE_DAC = 0x40000
 WRITE_OWNER = 0x80000
 ACCESS_SYSTEM_SECURITY = 0x1000000
 GENERIC_ALL = 0x1000000
+GENERIC_EXECUTE = 0x20000000
 GENERIC_WRITE = 0x40000000
+GENERIC_READ = 0x80000000
+FILE_READ_DATA = 0x1
+MAXIMUM_ALLOWED = 0x02000000
 
+FILE_SUPERSEDE = 0x0
 FILE_OPEN = 0x1
+FILE_CREATE = 0x2
+FILE_OPEN_IF = 0x3
+FILE_OVERWRITE = 0x4
+FILE_OVERWRITE_IF = 0x5
 
 FILE_DELETE_ON_CLOSE = 0x1000
 FILE_OPEN_BY_FILE_ID = 0x2000
@@ -992,6 +1002,8 @@ FILE_OPEN_BY_FILE_ID = 0x2000
 FILE_NON_DIRECTORY_FILE = 0x40
 
 FILE_SHARE_READ = 0x1
+FILE_SHARE_WRITE = 0x2
+FILE_SHARE_DELETE = 0x4
 
 FILE_ACTION_ADDED = 0x1
 FILE_ACTION_REMOVED = 0x2
@@ -1442,13 +1454,6 @@ class SMBClientHandler(object):
             ret['lock'].release()
 
     @asyncio.coroutine
-    def verify_share(self, file_path, is_sharing):
-        for (fid, open_md) in self._open_files.items():
-            if open_md['path'].lower() == file_path.lower():
-                if not (open_md['share'] and is_sharing):
-                    raise ProtocolError(STATUS_SHARING_VIOLATION)
-
-    @asyncio.coroutine
     def ref_file(self, fid):
         # KeyError is okay for now
         toret = self._open_files[fid]
@@ -1465,11 +1470,10 @@ class SMBClientHandler(object):
             toret['closing'].set_result(None)
 
     @asyncio.coroutine
-    def create_file(self, path, is_sharing, handle, tid):
+    def create_file(self, path, handle, tid):
         fid = self._create_id(self._open_files, INVALID_FIDS)
         self._open_files[fid] = dict(path=path,
                                      ref=0,
-                                     share=is_sharing,
                                      handle=handle,
                                      closing=None,
                                      is_closing=asyncio.Future(loop=self._loop),
@@ -2193,18 +2197,42 @@ def handle_request(server, server_capabilities, cs, backend, req):
                  NT_CREATE_OPEN_TARGET_DIR)):
                 raise Exception("SMB_COM_NT_CREATE_ANDX doesn't support flags! 0x%x" % (header.flags,))
 
-            if (header.desired_access &
-                (FILE_WRITE_DATA | FILE_APPEND_DATA |
-                 FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES |
-                 DELETE | WRITE_DAC | WRITE_OWNER |
-                 ACCESS_SYSTEM_SECURITY |
-                 GENERIC_ALL | GENERIC_WRITE)):
-                # Don't allow write access
-                # TODO: allow write access when we have an actual backend
-                raise ProtocolError(STATUS_ACCESS_DENIED)
+            # NB: We only support full sharing for now
+            # TODO: will this be a problem on windows? we can't support
+            #       blocking FILE_SHARE_DELETE on most FSes
+            if ((header.share_access &
+                 (FILE_SHARE_DELETE | FILE_SHARE_WRITE | FILE_SHARE_READ)) !=
+                (FILE_SHARE_DELETE | FILE_SHARE_WRITE | FILE_SHARE_READ)):
+                raise ProtocolError(STATUS_SHARING_VIOLATION)
 
-            if header.create_disposition != FILE_OPEN:
+            mode = 0
+
+            wants_read = (header.desired_access &
+                          (GENERIC_READ | FILE_READ_DATA | MAXIMUM_ALLOWED | GENERIC_EXECUTE |
+                           GENERIC_ALL))
+            wants_write = (header.desired_access &
+                           (GENERIC_WRITE | FILE_WRITE_DATA | MAXIMUM_ALLOWED | GENERIC_ALL))
+
+            if wants_read and wants_write:
+                mode = mode | os.O_RDWR
+            elif wants_read:
+                mode = mode | os.O_RDONLY
+            elif wants_write:
+                mode = mode | os.O_WRONLY
+            else:
+                log.warn("Isn't requesting any READ/WRITE privileges: 0x%x", header.desired_access)
+
+            # we don't support supersede for now
+            if header.create_disposition == FILE_SUPERSEDE:
                 raise ProtocolError(STATUS_ACCESS_DENIED)
+            elif header.create_disposition == FILE_CREATE:
+                mode = mode | os.O_CREAT | os.O_EXCL
+            elif header.create_disposition == FILE_OPEN_IF:
+                mode = mode | os.O_CREAT
+            elif header.create_disposition == FILE_OVERWRITE:
+                mode = mode | os.O_TRUNC
+            elif header.create_disposition == FILE_OVERWRITE_IF:
+                mode = mode | os.O_CREAT | os.O_TRUNC
 
             if header.create_options & FILE_DELETE_ON_CLOSE:
                 raise ProtocolError(STATUS_ACCESS_DENIED)
@@ -2226,19 +2254,13 @@ def handle_request(server, server_capabilities, cs, backend, req):
 
             file_path = root_path + req.data.filename
 
-            is_sharing = header.share_access & FILE_SHARE_READ
-
-            # verify share access
-            # find other files
-            yield from cs.verify_share(file_path, is_sharing)
-
             is_directory = False
             path = yield from smb_path_to_fs_path(file_path)
             try:
-                handle = yield from fs.open(path)
-                # TODO: dbfs currently doesn't return FileNotFoundError
-                #       on open, so we have to fstat in this try-except-block
+                handle = yield from fs.open(path, mode)
                 md = yield from fs.fstat(handle)
+            except FileExistsError:
+                raise ProtocolError(STATUS_OBJECT_NAME_COLLISION)
             except FileNotFoundError:
                 raise ProtocolError(STATUS_NO_SUCH_FILE)
 
@@ -2250,7 +2272,7 @@ def handle_request(server, server_capabilities, cs, backend, req):
                 raise ProtocolError(STATUS_FILE_IS_A_DIRECTORY)
 
             fid = yield from cs.create_file(file_path,
-                                            is_sharing, handle,
+                                            handle,
                                             req.header.tid)
 
             directory = int(is_directory)

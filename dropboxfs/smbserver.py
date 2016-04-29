@@ -587,12 +587,6 @@ encode_nt_create_andx_reply_params = generate_simple_parameter_encoder(
      'ext_file_attributes', 'allocation_size', 'end_of_file',
      'resource_type', 'nm_pipe_status', 'directory'])
 
-encode_read_andx_reply_params = generate_simple_parameter_encoder(
-    "<BBHHHHHHHHHHH",
-    ["andx_command", "andx_reserved", "andx_offset",
-     "available", None, None, "data_length", "data_offset",
-     None, None, None, None, None])
-
 def encode_read_andx_reply_params(header, buf_offset, parameters):
     fmt = "<BBHHHHHHHHHHH"
 

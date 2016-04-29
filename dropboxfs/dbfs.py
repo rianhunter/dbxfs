@@ -439,7 +439,7 @@ class FileSystem(object):
             md = self._clientv2.files_get_metadata(p)
         except dropbox.exceptions.ApiError as e:
             if e.error.is_path():
-                raise OSError(errno.ENOENT, os.strerror(errno.ENOENT))
+                raise OSError(errno.ENOENT, os.strerror(errno.ENOENT)) from e
             else: raise
         return md
 

@@ -377,12 +377,13 @@ class StreamingFile(object):
                     while toread:
                         toread -= len(fsource.read(min(toread, 2 ** 16)))
                 while True:
+                    buf = fsource.read(2 ** 16)
+                    if not buf: break
+
                     if self.stop_signal.is_set():
                         log.debug("File download stopped early!")
                         return
 
-                    buf = fsource.read(2 ** 16)
-                    if not buf: break
                     self.cached_file.write(buf)
                     self.cached_file.flush()
                     with self.cond:

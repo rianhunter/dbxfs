@@ -518,10 +518,15 @@ class SQLiteFrontFile(PositionIO):
             self._update_write_md(cursor, stat.size, stat.ctime, stat.mtime)
 
     def _update_write_md(self, cursor, size, ctime, mtime):
+        toupdate = []
+        if size is not None:
+            toupdate.append(("size", json.dumps(size)))
+        if ctime is not None:
+            toupdate.append(("ctime", json.dumps(utctimestamp(ctime))))
+        if mtime is not None:
+            toupdate.append(("mtime", json.dumps(utctimestamp(mtime))))
         cursor.executemany("INSERT OR REPLACE INTO md (name, value) VALUES (?, ?)",
-                           [("size", json.dumps(size)),
-                            ("ctime", json.dumps(utctimestamp(ctime))),
-                            ("mtime", json.dumps(utctimestamp(mtime)))])
+                           toupdate)
 
     def stat(self):
         conn = self._get_db_conn()
@@ -575,7 +580,12 @@ class SQLiteFrontFile(PositionIO):
         conn = self._get_db_conn()
         with trans(conn, self._db_lock), contextlib.closing(conn.cursor()) as cursor:
             cursor.execute("SELECT EXISTS(SELECT * FROM blocks)")
-            return cursor.fetchone()[0]
+            if cursor.fetchone()[0]:
+                return True
+            cursor.execute("SELECT value FROM md WHERE name = 'size'")
+            if cursor.fetchone()[0] != self._backfile.stat().size:
+                return True
+            return False
 
     def readable(self):
         return True
@@ -642,7 +652,7 @@ class SQLiteFrontFile(PositionIO):
     def writable(self):
         return True
 
-    def pwrite(self, data, offset):
+    def _pwrite(self, cursor, data, offset):
         size = len(data)
 
         blkidx_start = offset // SQLITE_FILE_BLOCK_SIZE
@@ -655,35 +665,60 @@ class SQLiteFrontFile(PositionIO):
             blkidx_end_offset = SQLITE_FILE_BLOCK_SIZE
 
         # write data to backfile
+        desired_header_size = blkidx_start_offset
+        header = self._pread(cursor, blkidx_start * SQLITE_FILE_BLOCK_SIZE, desired_header_size)
+        desired_footer_size = (blkidx_end + 1) * SQLITE_FILE_BLOCK_SIZE - (offset + size)
+        footer = self._pread(cursor, offset + size, desired_footer_size)
+
+        block_aligned_data = (b'%s%s%s%s%s' %
+                              (header, b'\0' * (desired_header_size - len(header)),
+                               data,
+                               footer, b'\0' * (desired_footer_size - len(footer))))
+        assert not (len(block_aligned_data) % SQLITE_FILE_BLOCK_SIZE)
+
+        hai = list((idx, block_aligned_data[(idx - blkidx_start) * SQLITE_FILE_BLOCK_SIZE:
+                                            (idx - blkidx_start + 1) * SQLITE_FILE_BLOCK_SIZE])
+                   for idx in range(blkidx_start, blkidx_end + 1))
+        cursor.executemany("INSERT OR REPLACE INTO blocks (blkidx, data) VALUES (?, ?)",
+                           hai)
+
+        cursor.execute("SELECT value FROM md WHERE name = 'size'")
+        (extent_of_file,) = cursor.fetchone()
+        extent_of_file = int(extent_of_file)
+
+        new_extent_of_file = max(offset + size, extent_of_file)
+        self._update_write_md(cursor, new_extent_of_file,
+                              datetime.datetime.utcnow(), datetime.datetime.utcnow())
+
+        return len(data)
+
+    def pwrite(self, data, offset):
         conn = self._get_db_conn()
         with trans(conn, self._db_lock, is_exclusive=True), \
              contextlib.closing(conn.cursor()) as cursor:
-            desired_header_size = blkidx_start_offset
-            header = self._pread(cursor, blkidx_start * SQLITE_FILE_BLOCK_SIZE, desired_header_size)
-            desired_footer_size = (blkidx_end + 1) * SQLITE_FILE_BLOCK_SIZE - (offset + size)
-            footer = self._pread(cursor, offset + size, desired_footer_size)
+            return self._pwrite(cursor, data, offset)
 
-            block_aligned_data = (b'%s%s%s%s%s' %
-                                  (header, b'\0' * (desired_header_size - len(header)),
-                                   data,
-                                   footer, b'\0' * (desired_footer_size - len(footer))))
-            assert not (len(block_aligned_data) % SQLITE_FILE_BLOCK_SIZE)
+    def ptruncate(self, offset):
+        blkidx_start = offset // SQLITE_FILE_BLOCK_SIZE
+        blkidx_start_offset = offset % SQLITE_FILE_BLOCK_SIZE
+        if not blkidx_start_offset:
+            blkidx_start -= 1
 
-            hai = list((idx, block_aligned_data[(idx - blkidx_start) * SQLITE_FILE_BLOCK_SIZE:
-                                                (idx - blkidx_start + 1) * SQLITE_FILE_BLOCK_SIZE])
-                       for idx in range(blkidx_start, blkidx_end + 1))
-            cursor.executemany("INSERT OR REPLACE INTO blocks (blkidx, data) VALUES (?, ?)",
-                               hai)
-
+        conn = self._get_db_conn()
+        with trans(conn, self._db_lock, is_exclusive=True), \
+             contextlib.closing(conn.cursor()) as cursor:
             cursor.execute("SELECT value FROM md WHERE name = 'size'")
-            (extent_of_file,) = cursor.fetchone()
-            extent_of_file = int(extent_of_file)
-
-            new_extent_of_file = max(offset + size, extent_of_file)
-            self._update_write_md(cursor, new_extent_of_file,
-                                  datetime.datetime.utcnow(), datetime.datetime.utcnow())
-
-        return len(data)
+            cur_size = int(cursor.fetchone()[0])
+            if offset < cur_size:
+                # NB: technically the delete isn't necessary
+                #     also this is likely a vain attempt to save space.
+                #     doing things in vain is our way of life, so carry on.
+                cursor.execute("DELETE FROM blocks WHERE blkidx > ?",
+                               (blkidx_start,))
+                self._update_write_md(cursor, offset, None, None)
+            else:
+                # NB: extend with zeros to block data in backfile
+                self._pwrite(cursor, b'\0' * (offset - cur_size), cur_size)
 
 class CachedFile(object):
     def __init__(self, fs, stat):
@@ -726,14 +761,6 @@ class CachedFile(object):
 
             self._fs._submit_write(md)
 
-    def clear(self):
-        with self._upload_cond:
-            self._file.close()
-            self._file = SQLiteFrontFile(NullFile(self._id))
-            # NB: upload the truncate even if the sqlite frontend is not dirty
-            self._upload_next = self._file
-            self._upload_cond.notify_all()
-
     def pread(self, offset, size):
         return self._file.pread(offset, size)
 
@@ -742,6 +769,10 @@ class CachedFile(object):
         #     it's the argument of SQLiteFrontFile (from _upload_thread)
         with self._upload_cond:
             return self._file.pwrite(data, offset)
+
+    def ptruncate(self, offset):
+        with self._upload_cond:
+            return self._file.ptruncate(offset)
 
     def stat(self):
         return self._file.stat()
@@ -802,7 +833,7 @@ class _File(PositionIO):
         self._mode = mode
 
         if self._mode & os.O_TRUNC:
-            self._live_md.cached_file.clear()
+            self._live_md.cached_file.ptruncate(0)
 
     def stat(self):
         with self._lock.shared_context():
@@ -838,6 +869,10 @@ class _File(PositionIO):
 
     def writeable(self):
         return (self._mode & os.O_ACCMODE) in (os.O_WRONLY, os.O_RDWR)
+
+    def ptruncate(self, offset):
+        with self._lock.shared_context():
+            return self._live_md.cached_file.ptruncate(offset)
 
     def close(self):
         with self._lock:

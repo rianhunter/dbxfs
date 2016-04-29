@@ -42,5 +42,9 @@ class PositionIO(io.RawIOBase):
             else:
                 raise OSError(errno.EINVAL, os.strerror(errno.EINVAL))
 
+    def truncate(self):
+        with self._offset_lock:
+            return self.ptruncate(self._offset)
+
     def seekable(self):
         return hasattr(self, '_file_length')

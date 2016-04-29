@@ -792,6 +792,8 @@ class _File(PositionIO):
 
             live_md.open_files.add(self)
 
+        # NB: this lock lives above all file system locks
+        self._lock = SharedLock()
         self._live_md = live_md
         self._id = stat.id
         self._stat = stat
@@ -802,15 +804,23 @@ class _File(PositionIO):
             self._live_md.cached_file.clear()
 
     def stat(self):
-        # NB: handle directory handles
-        if not isinstance(self._live_md.cached_file, CachedFile):
-            return self._stat
-        return self._live_md.cached_file.stat()
+        with self._lock.shared_context():
+            if self._live_md is None:
+                raise OSError(errno.EBADF, os.strerror(errno.EBADF))
+            # NB: handle directory handles
+            if not isinstance(self._live_md.cached_file, CachedFile):
+                return self._stat
+            return self._live_md.cached_file.stat()
 
     def pread(self, offset, size):
         if not self.readable():
             raise OSError(errno.EBADF, os.strerror(errno.EBADF))
-        return self._live_md.cached_file.pread(offset, size)
+
+        with self._lock.shared_context():
+            if self._live_md is None:
+                raise OSError(errno.EBADF, os.strerror(errno.EBADF))
+
+            return self._live_md.cached_file.pread(offset, size)
 
     def readable(self):
         return (self._mode & os.O_ACCMODE) in (os.O_RDONLY, os.O_RDWR)
@@ -818,21 +828,31 @@ class _File(PositionIO):
     def pwrite(self, data, offset):
         if not self.writeable():
             raise OSError(errno.EBADF, os.strerror(errno.EBADF))
-        return self._live_md.cached_file.pwrite(data, offset)
+
+        with self._lock.shared_context():
+            if self._live_md is None:
+                raise OSError(errno.EBADF, os.strerror(errno.EBADF))
+
+            return self._live_md.cached_file.pwrite(data, offset)
 
     def writeable(self):
         return (self._mode & os.O_ACCMODE) in (os.O_WRONLY, os.O_RDWR)
 
     def close(self):
-        toclose = None
-        with self._fs._file_cache_lock:
-            self._live_md.open_files.remove(self)
-            if not self._live_md.open_files:
-                if (not isinstance(live_md.cached_file, CachedFile) or
-                    not live_md.cached_file.queue_sync()):
-                    toclose = self._live_md.cached_file
+        with self._lock:
+            live_md = self._live_md
+            self._live_md = None
+
+            toclose = None
+            with self._fs._file_cache_lock:
+                live_md.open_files.remove(self)
+                if (not live_md.open_files and
+                    (not isinstance(live_md.cached_file, CachedFile) or
+                     not live_md.cached_file.queue_sync())):
+                    toclose = live_md.cached_file
                     popped = self._fs._open_files_by_id.pop(self._id)
-                    assert popped is self._live_md
+                    assert popped is live_md
+
         if toclose is not None:
             toclose.close()
 

@@ -1661,7 +1661,7 @@ class SMBClientHandler(object):
                                 ret = encode_smb_message(ret)
                             except ProtocolError as e:
                                 if e.error not in (STATUS_NO_SUCH_FILE,):
-                                    log.debug("Protocol Error!!! Command:%x %r",
+                                    log.debug("Protocol Error!!! Command:0x%x %r",
                                               header.command, e)
                                 ret = encode_smb_message(error_response(header, e.error))
                             except Exception:

@@ -116,6 +116,18 @@ class _Directory(object):
 
 _Stat = collections.namedtuple("Stat", ['name', 'mtime', 'type', 'size', 'id', 'ctime', 'rev'])
 
+class _ReadStream(PositionIO):
+    def __init__(self, data):
+        super().__init__()
+        self._data = data
+
+    def pread(self, offset, size=-1):
+        return self._data[offset:
+                          len(self._data) if size < 0 else offset + size]
+
+    def readable(self):
+        return True
+
 class FileSystem(object):
     def __init__(self, tree):
         self._parent = {"type": "directory", "children": [],
@@ -184,10 +196,33 @@ class FileSystem(object):
         md = self._get_file(path)
         return _File(md, mode)
 
-    def open_by_id(self, id_, mode=os.O_RDONLY):
+    def _md_from_id(self, id_):
         warnings.warn("Don't use this in production, could cause segfault if used with an invalid ID")
+        return ctypes.cast(id_, ctypes.py_object).value
+
+    def open_by_id(self, id_, mode=os.O_RDONLY):
         # id is the memory address of the md object
-        return _File(ctypes.cast(id_, ctypes.py_object).value, mode)
+        return _File(self._md_from_id(id_), mode)
+
+    def x_read_stream(self, resolver):
+        # this reads a snapshotted file resolved by resolver
+        if isinstance(resolver, Path):
+            md = self._get_file(resolver)
+            rev_idx = None
+        else:
+            try:
+                (md_id, rev_idx) = json.loads(resolver)
+            except ValueError:
+                md_id = resolver
+                rev_idx = None
+            md = self._md_from_id(md_id)
+
+        if rev_idx is None:
+            d = md['data']
+        else:
+            d = md['revs'][rev_idx][1]
+
+        return _ReadStream(d)
 
     def open_directory(self, path):
         md = self._get_file(path)

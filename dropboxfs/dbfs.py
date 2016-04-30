@@ -480,6 +480,11 @@ class FileSystem(object):
                             continue
                         else:
                             raise
+                else:
+                    if (not isinstance(md, dropbox.files.FolderMetadata) and
+                        (mode & os.O_TRUNC)):
+                        md = self._clientv2.files_upload(b'', str(path),
+                                                         mode=dropbox.files.WriteMode.update(md.rev))
                 break
         return md
 

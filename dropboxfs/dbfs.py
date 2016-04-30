@@ -448,7 +448,7 @@ class FileSystem(object):
         log.debug("md: %r", md)
         return md_to_stat(md)
 
-    def open(self, path, mode=os.O_RDONLY):
+    def _stat_create(self, path, mode=0):
         if (mode & os.O_CREAT) and (mode & os.O_EXCL):
             try:
                 # NB: This is a poor implementation of CREAT|EXCL, if an existing
@@ -463,6 +463,8 @@ class FileSystem(object):
                     raise
         else:
             while True:
+                # NB: would be nice if dropbox API had an API for
+                #     "create/get metadata" which is basically what stat_create() is
                 try:
                     md = self._get_md_inner(path)
                 except FileNotFoundError:
@@ -476,7 +478,14 @@ class FileSystem(object):
                         else:
                             raise
                 break
+        return md
 
+    def x_stat_create(self, path, mode=0):
+        # x_stat_create() doesn't honor O_TRUNC (but open() does)
+        return md_to_stat(self._stat_create(path, mode & ~os.O_TRUNC))
+
+    def open(self, path, mode=os.O_RDONLY):
+        md = self._stat_create(path, mode)
         return self.open_by_id(md.id, mode)
 
     def open_by_id(self, id_, mode=os.O_RDONLY):

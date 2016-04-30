@@ -96,8 +96,12 @@ class _Directory(object):
         self.reset()
 
     def reset(self):
+        # copy list of children, n/s exactly what ext2/POSIX others do
+        # in concurrent situations
+        with self._md['lock']:
+            l = list(get_children(self._md))
         # NB: I apologize if you're about to grep for _map_entry()
-        self._iter = iter(map(lambda tup: self._fs._map_entry(tup[1], tup[0]), get_children(self._md)))
+        self._iter = iter(map(lambda tup: self._fs._map_entry(tup[1], tup[0]), l))
 
     def close(self):
         pass
@@ -176,6 +180,7 @@ class _WriteStream(object):
 class FileSystem(object):
     def __init__(self, tree):
         self._parent = {"type": "directory", "children": [],
+                        'lock': threading.Lock(),
                         'mtime': datetime.utcnow(), 'ctime': datetime.utcnow()}
 
         # give all files a lock
@@ -193,8 +198,9 @@ class FileSystem(object):
                 if 'ctime' not in new_child:
                     new_child['ctime'] = datetime.utcnow()
 
+                new_child['lock'] = threading.Lock()
+
                 if child['type'] == 'file':
-                    new_child['lock'] = threading.Lock()
                     new_child['revs'] = [(new_child['mtime'], new_child['data'])]
                 else:
                     assert child['type'] == 'directory'
@@ -211,25 +217,44 @@ class FileSystem(object):
 
         return _Stat(name, mtime, type, size, id=id(md), ctime=ctime, rev=rev)
 
-    def _get_file(self, path):
+    def _get_file(self, path, mode=0):
         parent = self._parent
         real_comps = []
         for comp in itertools.islice(path.parts, 1, None):
             if parent["type"] != "directory":
-                parent = None
-                break
+                raise OSError(errno.ENOTDIR, os.strerror(errno.ENOTDIR))
 
-            for (name, md) in get_children(parent):
-                if name.lower() == comp.lower():
-                    real_comps.append(name)
-                    parent = md
-                    break
-            else:
-                parent = None
-                break
+            with parent['lock']:
+                for (name, md) in get_children(parent):
+                    if name.lower() == comp.lower():
+                        real_comps.append(name)
+                        parent = md
+                        if (len(real_comps) == len(path.parts) - 1 and
+                            (mode & os.O_CREAT) and (mode & os.O_EXCL)):
+                            raise OSError(errno.EEXIST, os.strerror(errno.EEXIST))
+                        break
+                else:
+                    real_comps.append(comp)
+                    if (len(real_comps) == len(path.parts) - 1 and
+                        (mode & os.O_CREAT)):
+                        t = datetime.utcnow()
+                        md = dict(type='file',
+                                  data=b'',
+                                  path=self.create_path(*real_comps),
+                                  name=comp,
+                                  mtime=t,
+                                  ctime=t,
+                                  lock=threading.Lock(),
+                                  revs=[(t, b'')])
+                        parent.setdefault('children', []).append((comp, md))
+                        parent = md
+                        break
+                    raise OSError(errno.ENOENT, os.strerror(errno.ENOENT))
 
-        if parent is None:
-            raise OSError(errno.ENOENT, os.strerror(errno.ENOENT))
+        if mode & os.O_TRUNC and parent['type'] == 'file':
+            with parent['lock']:
+                parent['data'] = b''
+                parent['revs'].append((datetime.utcnow(), b''))
 
         return parent
 
@@ -240,7 +265,7 @@ class FileSystem(object):
         return Path.root_path().joinpath(*args)
 
     def open(self, path, mode=os.O_RDONLY):
-        md = self._get_file(path)
+        md = self._get_file(path, mode)
         return _File(md, mode)
 
     def _md_from_id(self, id_):
@@ -284,8 +309,11 @@ class FileSystem(object):
     def stat_has_attr(self, attr):
         return attr in ["type", "name", "mtime"]
 
+    def x_stat_create(self, path, mode):
+        return self._map_entry(self._get_file(path, mode & ~os.O_TRUNC))
+
     def stat(self, path):
-        return self._map_entry(self._get_file(path))
+        return self.x_stat_create(path, 0)
 
     def fstat(self, fobj):
         return self._map_entry(fobj._md)

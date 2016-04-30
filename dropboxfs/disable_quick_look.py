@@ -60,10 +60,10 @@ class FileSystem(object):
                         self.create_path(".metadata_never_index"),
                         self.create_path(".ql_disablecache")]
 
-    def open(self, path):
+    def open(self, path, mode=os.O_RDONLY):
         if self._filter(path):
             return QLFile(self._overlay.open(self._overlay.create_path(*path.parts[1:])))
-        return self._fs.open(path)
+        return self._fs.open(path, mode=mode)
 
     def open_directory(self, path):
         dir_ = self._fs.open_directory(path)

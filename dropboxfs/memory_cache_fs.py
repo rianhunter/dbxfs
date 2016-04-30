@@ -340,42 +340,23 @@ class StreamingFile(object):
         return self._stat
 
     def _thread_has_started(self):
-        assert (self.stop_signal is None) == (self.thread is None) == (self.cond is None)
-        return self.thread is not None
+        assert (self.stop_signal is None) == (self.cond is None)
+        return self.cond is not None
 
     def _start_thread(self):
         self.cond = threading.Condition()
+        self.stop_signal = threading.Event()
         self._reset()
 
     def _reset(self):
         # start thread to stream file in
-        def stream_file():
+        def stream_file(is_temp, amt):
             # XXX: Handle errors
             with contextlib.closing(self.fs.x_read_stream(self._stat.rev)) as fsource:
-                is_temp = False
-                if self.cache_folder is None:
-                    self.cached_file = tempfile.TemporaryFile()
-                    is_temp = True
-                else:
-                    fn = '%s.bin' % (self._stat.rev)
-                    self.cached_file = open(os.path.join(self.cache_folder, fn), 'a+b')
-                    # XXX: make sure no other process has `cached_file` open
-
-                    # Restart a previous download
-                    # TODO: check integrity of file
-                    amt = self.cached_file.tell()
-
-                    with self.cond:
-                        assert not self.stored and self.eof is None
-                        self.stored = amt
-                        self.eof = amt if amt == self._stat.size else None
-                        self.cond.notify_all()
-                        if self.eof is not None: return
-
-                    # Skip bytes if we already have them
-                    toread = amt
-                    while toread:
-                        toread -= len(fsource.read(min(toread, 2 ** 16)))
+                # Skip bytes if we already have them
+                toread = amt
+                while toread:
+                    toread -= len(fsource.read(min(toread, 2 ** 16)))
                 while True:
                     buf = fsource.read(2 ** 16)
                     if not buf: break
@@ -401,12 +382,28 @@ class StreamingFile(object):
 
                 log.debug("Done downloading %r", self._stat.rev)
 
-        with self.cond:
-            self.stored = 0
-            self.eof = None
+        is_temp = self.cache_folder is None
+        if is_temp:
+            self.cached_file = tempfile.TemporaryFile()
+        else:
+            fn = '%s.bin' % (self._stat.rev)
+            self.cached_file = open(os.path.join(self.cache_folder, fn), 'a+b')
+            # XXX: make sure no other process has `cached_file` open
 
-        self.stop_signal = threading.Event()
-        self.thread = threading.Thread(target=stream_file, daemon=True)
+        # Restart a previous download
+        # TODO: check integrity of file
+        amt = self.cached_file.tell()
+
+        with self.cond:
+            self.stored = amt
+            self.eof = amt if amt == self._stat.size else None
+
+        if self.eof is not None:
+            return
+
+        self.thread = threading.Thread(target=stream_file,
+                                       args=(is_temp, amt),
+                                       daemon=True)
         self.thread.start()
 
     def _wait_for_range(self, offset, size):
@@ -463,12 +460,7 @@ class StreamingFile(object):
             self.is_closed = True
             if self._thread_has_started():
                 self.stop_signal.set()
-                # Wait for stream_file thread to initialize self.cached_file
-                while True:
-                    if self.cached_file is not None:
-                        # NB: this may cause the stream_file thread to throw an exc, that's okay
-                        self.cached_file.close()
-                        break
+                self.cached_file.close()
                 self.cached_file = None
 
 class NullFile(object):

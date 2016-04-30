@@ -1163,23 +1163,25 @@ class FileSystem(object):
                     # NB: Potentially slow!
                     # TODO: do mvcc before storing back in md_cache
                     try:
-                        stat = self._fs.stat(path)
+                        stat = self._fs.x_stat_create(path, create_mode)
                     except FileNotFoundError:
                         stat = None
+
+                    # Make it explicit that following call of fs.stat_create()
+                    # will not trigger
+                    assert not (stat is None and (create_mode & os.O_CREAT))
 
                     store_existence = True
             else:
                 (md,) = row
                 stat =  None if md is None else json_to_stat(md)
-
-            if stat is None:
-                if create_mode & os.O_CREAT:
-                    with contextlib.closing(self._fs.open(path, create_mode)) as f:
-                        stat = self._fs.fstat(f)
-                        store_existence = True
-            else:
-                if create_mode & os.O_EXCL:
+                if (stat is not None and (create_mode & os.O_CREAT) and
+                    (create_mode & os.O_EXCL)):
                     raise OSError(errno.EEXIST, os.strerror(errno.EEXIST))
+
+            if stat is None and (create_mode & os.O_CREAT):
+                stat = self._fs.x_stat_create(path, create_mode)
+                store_existence = True
 
             if store_existence:
                 md_str = None if stat is None else stat_to_json(stat)

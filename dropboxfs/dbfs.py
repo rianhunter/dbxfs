@@ -461,6 +461,9 @@ class FileSystem(object):
                     raise OSError(errno.EEXIST, os.strerror(errno.EEXIST)) from e
                 else:
                     raise
+        elif (mode & os.O_CREAT) and (mode & os.O_TRUNC):
+            md = self._clientv2.files_upload(b'', str(path),
+                                             mode=dropbox.files.WriteMode.overwrite)
         else:
             while True:
                 # NB: would be nice if dropbox API had an API for

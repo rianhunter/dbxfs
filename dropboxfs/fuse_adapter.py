@@ -1,3 +1,4 @@
+import contextlib
 import datetime
 import errno
 import itertools
@@ -50,10 +51,9 @@ class FUSEAdapter(Operations):
 
         toret['st_size'] = st.size
 
-        # TODO: change when we allow writing
-        toret['st_mode'] = ((stat.S_IFDIR | 0o555)
+        toret['st_mode'] = ((stat.S_IFDIR | 0o777)
                             if st.type == 'directory' else
-                            (stat.S_IFREG | 0o444))
+                            (stat.S_IFREG | 0o666))
 
         # NB: st_nlink on directories is really inconsistent across filesystems
         #     and OSes. it arguably doesn't matter at all but we set it to
@@ -76,15 +76,33 @@ class FUSEAdapter(Operations):
             st = self._fs.stat(self._conv_path(path))
         return self._fs_stat_to_fuse_attrs(st)
 
-    def open(self, path, flags):
-        if flags & os.O_WRONLY:
-            raise OSError(errno.EROFS)
+    def create(self, path, mode):
+        return self._save_file(self._fs.open(self._conv_path(path),
+                                             os.O_WRONLY | os.O_CREAT))
 
-        return self._save_file(self._fs.open(self._conv_path(path)))
+    def open(self, path, flags):
+        return self._save_file(self._fs.open(self._conv_path(path), flags))
 
     def read(self, path, size, offset, fh):
         f = self._fh_to_file[fh]
         return f.pread(offset, size)
+
+    def write(self, path, data, offset, fh):
+        f = self._fh_to_file[fh]
+        return f.pwrite(data, offset)
+
+    def truncate(self, path, length, fh=None):
+        if fh is None:
+            # TODO: add truncate() call to FS interface
+            with contextlib.closing(self._fs.open(self._conv_path(path), os.O_WRONLY)) as f:
+                f.ptruncate(length)
+        else:
+            f = self._fh_to_file[fh]
+            f.ptruncate(length)
+
+    def fsync(self, path, datasync, fh):
+        self._fs.fsync(self._fh_to_file[fh])
+        return 0
 
     def release(self, path, fh):
         self._delete_file(fh).close()

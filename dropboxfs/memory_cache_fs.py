@@ -777,15 +777,29 @@ class CachedFile(object):
     def stat(self):
         return self._file.stat()
 
+    def _queue_sync(self):
+        if self._file.is_dirty():
+            assert self._upload_next is None or self._upload_next is self._file
+            self._upload_next = self._file
+            self._upload_cond.notify_all()
+
+        return (self._upload_now
+                if self._upload_next is None else
+                self._upload_next)
+
     def queue_sync(self):
         with self._upload_cond:
-            if self._file.is_dirty():
-                assert self._upload_next is None or self._upload_next is self._file
-                self._upload_next = self._file
-                self._upload_cond.notify_all()
+            return self._queue_sync()
 
-            return (self._upload_next is not None or
-                    self._upload_now is not None)
+    def sync(self):
+        with self._upload_cond:
+            uploading = self._queue_sync()
+            if uploading is None:
+                return
+
+            # wait for upload
+            while self._upload_now is uploading or self._upload_next is uploading:
+                self._upload_cond.wait()
 
     def is_dirty(self):
         with self._upload_cond:
@@ -843,6 +857,15 @@ class _File(PositionIO):
             if not isinstance(self._live_md.cached_file, CachedFile):
                 return self._stat
             return self._live_md.cached_file.stat()
+
+    def sync(self):
+        with self._lock.shared_context():
+            if self._live_md is None:
+                raise OSError(errno.EBADF, os.strerror(errno.EBADF))
+
+            # NB: handle directory handles
+            if isinstance(self._live_md.cached_file, CachedFile):
+                return self._live_md.cached_file.sync()
 
     def pread(self, offset, size):
         if not self.readable():
@@ -1192,6 +1215,9 @@ class FileSystem(object):
 
     def create_watch(self, cb, handle, *n, **kw):
         return self._fs.create_watch(cb, handle._live_md.cached_file, *n, **kw)
+
+    def fsync(self, fobj):
+        return fobj.sync()
 
 def main(argv):
     logging.basicConfig(level=logging.DEBUG)

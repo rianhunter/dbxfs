@@ -767,6 +767,10 @@ class CachedFile(object):
                                 to_save = None
                 finally:
                     md = towrite.close()
+
+                if md.id != self._id:
+                    md = None
+                    raise Exception("Bad assumption on how overwrite works :(")
             finally:
                 if to_save is not None:
                     try:

@@ -619,6 +619,21 @@ class FileSystem(object):
 
         return stop
 
+    def unlink(self, path):
+        # NB: dropbox api provides no single-file delete call
+        #     if a directory exists at this location, it will recursively
+        #     delete everything
+        try:
+            md = self._clientv2.files_delete(str(path))
+        except dropbox.exceptions.ApiError as e:
+            if e.error.is_path_lookup():
+                raise OSError(errno.ENOENT, os.strerror(errno.ENOENT)) from e
+            else:
+                raise
+        else:
+            if isinstance(md, dropbox.files.FolderMetadata):
+                log.warn("Called unlink() on directory and it succeeded: %r", path)
+
 def main(argv):
     # run some basic tests on this class
 

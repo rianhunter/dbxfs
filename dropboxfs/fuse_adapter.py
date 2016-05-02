@@ -119,6 +119,9 @@ class FUSEAdapter(Operations):
     def releasedir(self, path, fh):
         self._delete_file(fh).close()
 
+    def unlink(self, path):
+        self._fs.unlink(self._conv_path(path))
+
 def run_fuse_mount(create_fs, mount_point, foreground=False):
     FUSE(FUSEAdapter(create_fs), mount_point, foreground=foreground, hard_remove=True)
 

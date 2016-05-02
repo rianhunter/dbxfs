@@ -1,3 +1,2 @@
-* cache uploaded file
 * sync file metadata mutation (move, delete)
 * async file metadata mutation

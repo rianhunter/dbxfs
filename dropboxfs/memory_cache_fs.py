@@ -1142,8 +1142,8 @@ class FileSystem(object):
                         (parent_path_key, name, parent_path_key))
 
                     # set deleted in the metadata cache
-                    cursor.execute("UPDATE md_cache SET md = ? WHERE path_key = ?",
-                                   (json.dumps(None), path_key,))
+                    cursor.execute("UPDATE md_cache SET md = NULL WHERE path_key = ?",
+                                   (path_key,))
                 else:
                     # add to directory tree cache if parent is in cache
                     cursor.execute("""

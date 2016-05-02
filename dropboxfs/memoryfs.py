@@ -179,6 +179,7 @@ class _WriteStream(object):
 
 class FileSystem(object):
     def __init__(self, tree):
+        self._unlinked_files = []
         self._parent = {"type": "directory", "children": [],
                         'lock': threading.Lock(),
                         'mtime': datetime.utcnow(), 'ctime': datetime.utcnow()}
@@ -217,7 +218,9 @@ class FileSystem(object):
 
         return _Stat(name, mtime, type, size, id=id(md), ctime=ctime, rev=rev)
 
-    def _get_file(self, path, mode=0):
+    def _get_file(self, path, mode=0, remove=False):
+        assert not (remove and mode),\
+            "Only one of mode/remove should be specified"
         parent = self._parent
         real_comps = []
         for comp in itertools.islice(path.parts, 1, None):
@@ -225,17 +228,23 @@ class FileSystem(object):
                 raise OSError(errno.ENOTDIR, os.strerror(errno.ENOTDIR))
 
             with parent['lock']:
-                for (name, md) in get_children(parent):
+                for (idx, (name, md)) in enumerate(get_children(parent)):
                     if name.lower() == comp.lower():
                         real_comps.append(name)
+                        if len(real_comps) == len(path.parts) - 1:
+                            if (mode & os.O_CREAT) and (mode & os.O_EXCL):
+                                raise OSError(errno.EEXIST, os.strerror(errno.EEXIST))
+                            if remove:
+                                if md.type != 'file':
+                                    raise OSError(errno.EPERM, os.strerror(errno.EPERM))
+                                del parent['children'][idx]
+
                         parent = md
-                        if (len(real_comps) == len(path.parts) - 1 and
-                            (mode & os.O_CREAT) and (mode & os.O_EXCL)):
-                            raise OSError(errno.EEXIST, os.strerror(errno.EEXIST))
                         break
                 else:
                     real_comps.append(comp)
-                    if (len(real_comps) == len(path.parts) - 1 and
+                    if (not remove and
+                        len(real_comps) == len(path.parts) - 1 and
                         (mode & os.O_CREAT)):
                         t = datetime.utcnow()
                         md = dict(type='file',
@@ -329,3 +338,9 @@ class FileSystem(object):
 
         return stop
 
+    def unlink(self, path):
+        md = self._get_file(path, remove=True)
+        # NB: we need to save a reference to the 'inode' of the unlinked file
+        #     since there still may still be ID holders (we resolve by object
+        #     address)
+        self._unlinked_files.append(md)

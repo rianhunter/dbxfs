@@ -1257,6 +1257,12 @@ class FileSystem(object):
     def fsync(self, fobj):
         return fobj.sync()
 
+    def unlink(self, path):
+        self._fs.unlink(path)
+        md = dropbox.files.DeletedMetadata(name=path.name,
+                                           path_lower=str(path.normed()))
+        self._handle_changes([md])
+
 def main(argv):
     logging.basicConfig(level=logging.DEBUG)
 
@@ -1335,6 +1341,16 @@ def main(argv):
         with contextlib.closing(fs.open(fs.create_path("newcrazy"),
                                         os.O_CREAT | os.O_RDONLY)) as f:
             print("Contents of bar:", f.read(), "(should be 'test')")
+
+        fs.unlink(fs.create_path("newcrazy"))
+
+        try:
+            with contextlib.closing(fs.open(fs.create_path("newcrazy"))) as f:
+                print("Contents of bar:", f.read(), "(should be '')")
+        except FileNotFoundError:
+            pass
+        else:
+            raise Exception("Didn't throw on file not found!!")
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 

@@ -51,6 +51,7 @@ SMB_COM_CHECK_DIRECTORY = 0x10
 SMB_COM_TREE_DISCONNECT = 0x71
 SMB_COM_FLUSH = 0x05
 SMB_COM_CREATE_DIRECTORY = 0x0
+SMB_COM_DELETE_DIRECTORY = 0x1
 
 SMB_FLAGS_REPLY = 0x80
 SMB_FLAGS2_NT_STATUS = 0x4000
@@ -413,6 +414,7 @@ def decode_delete_request_data(smb_header, params, __, buf):
 
 # It's the same structure
 decode_create_directory_request_data = decode_delete_request_data
+decode_delete_directory_request_data = decode_delete_request_data
 
 REQUEST = False
 REPLY = True
@@ -449,6 +451,8 @@ _decoder_dispatch = {
                                 decode_delete_request_data),
     (SMB_COM_CREATE_DIRECTORY, REQUEST): (decode_null_params,
                                           decode_create_directory_request_data),
+    (SMB_COM_DELETE_DIRECTORY, REQUEST): (decode_null_params,
+                                          decode_delete_directory_request_data),
 }
 
 def get_decoder(header):
@@ -715,6 +719,8 @@ _encoder_dispatch = {
     (SMB_COM_DELETE, REPLY): (encode_null_params,
                               encode_null_data),
     (SMB_COM_CREATE_DIRECTORY, REPLY): (encode_null_params,
+                                        encode_null_data),
+    (SMB_COM_DELETE_DIRECTORY, REPLY): (encode_null_params,
                                         encode_null_data),
 }
 
@@ -1005,6 +1011,7 @@ STATUS_NOT_A_DIRECTORY = 0xC0000000 | 0x0103
 STATUS_UNSUCCESSFUL = 0xc0000001
 STATUS_OBJECT_NAME_COLLISION = 0xc0000035
 STATUS_OBJECT_PATH_SYNTAX_BAD = 0xc000003B
+STATUS_OBJECT_PATH_INVALID = 0xc0000039
 
 TREE_CONNECT_ANDX_DISCONNECT_TID = 0x1
 SMB_INFO_STANDARD = 0x1
@@ -2593,6 +2600,32 @@ def handle_request(server, server_capabilities, cs, backend, req):
                 raise ProtocolError(STATUS_OBJECT_PATH_NOT_FOUND)
             except FileExistsError:
                 raise ProtocolError(STATUS_OBJECT_NAME_COLLISION)
+
+            return SMBMessage(reply_header_from_request(req),
+                              None, None)
+        finally:
+            yield from cs.deref_tid(req.header.tid)
+    elif req.header.command == SMB_COM_DELETE_DIRECTORY:
+        yield from cs.verify_uid(req)
+        fs = yield from cs.verify_tid(req)
+        try:
+            if req.data.buffer_format != 0x4:
+                raise Exception("Buffer format not accepted!")
+            path = yield from smb_path_to_fs_path(req.data.filename)
+
+            try:
+                yield from fs.rmdir(path)
+            except FileNotFoundError:
+                raise ProtocolError(STATUS_NO_SUCH_FILE)
+            except FileExistsError:
+                raise ProtocolError(STATUS_DIRECTORY_NOT_EMPTY)
+            except NotADirectoryError:
+                raise ProtocolError(STATUS_OBJECT_PATH_INVALID)
+            except OSError as e:
+                if e.errno == errno.ENOTEMPTY:
+                    raise ProtocolError(STATUS_DIRECTORY_NOT_EMPTY)
+                else:
+                    raise
 
             return SMBMessage(reply_header_from_request(req),
                               None, None)

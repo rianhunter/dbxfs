@@ -416,6 +416,24 @@ def decode_delete_request_data(smb_header, params, __, buf):
 decode_create_directory_request_data = decode_delete_request_data
 decode_delete_directory_request_data = decode_delete_request_data
 
+# same structure
+decode_rename_request_params = decode_delete_request_params
+
+SMBRenameRequestData = namedtuple('SMBRenameRequestData',
+                                  ['buffer_format_1', 'old_filename',
+                                   'buffer_format_2', 'new_filename'])
+def decode_rename_request_data(smb_header, params, __, buf):
+    if not (smb_header.flags2 & SMB_FLAGS2_UNICODE):
+        raise Exception("Only support unicode!")
+
+    (buffer_format_1,) = struct.unpack("<B", buf[:1])
+    (old_filename, new_offset) = parse_zero_terminated_utf16(buf, 1)
+    (buffer_format_2,) = struct.unpack("<B", buf[new_offset:new_offset + 1])
+    (new_filname, _) = parse_zero_terminated_utf16(buf, new_offset + 2)
+
+    return SMBRenameRequestData(buffer_format_1, old_filename,
+                                buffer_format_2, new_filname)
+
 REQUEST = False
 REPLY = True
 _decoder_dispatch = {
@@ -453,6 +471,8 @@ _decoder_dispatch = {
                                           decode_create_directory_request_data),
     (SMB_COM_DELETE_DIRECTORY, REQUEST): (decode_null_params,
                                           decode_delete_directory_request_data),
+    (SMB_COM_RENAME, REQUEST): (decode_rename_request_params,
+                                decode_rename_request_data),
 }
 
 def get_decoder(header):
@@ -722,6 +742,8 @@ _encoder_dispatch = {
                                         encode_null_data),
     (SMB_COM_DELETE_DIRECTORY, REPLY): (encode_null_params,
                                         encode_null_data),
+    (SMB_COM_RENAME, REPLY): (encode_null_params,
+                              encode_null_data),
 }
 
 def get_encoder(header):
@@ -2626,6 +2648,27 @@ def handle_request(server, server_capabilities, cs, backend, req):
                     raise ProtocolError(STATUS_DIRECTORY_NOT_EMPTY)
                 else:
                     raise
+
+            return SMBMessage(reply_header_from_request(req),
+                              None, None)
+        finally:
+            yield from cs.deref_tid(req.header.tid)
+    elif req.header.command == SMB_COM_RENAME:
+        yield from cs.verify_uid(req)
+        fs = yield from cs.verify_tid(req)
+        try:
+            if (req.data.buffer_format_1 != 0x4 or
+                req.data.buffer_format_2 != 0x4):
+                raise Exception("Buffer format not accepted!")
+            old_path = yield from smb_path_to_fs_path(req.data.old_filename)
+            new_path = yield from smb_path_to_fs_path(req.data.new_filename)
+
+            try:
+                yield from fs.rename_noreplace(old_path, new_path)
+            except FileNotFoundError:
+                raise ProtocolError(STATUS_NO_SUCH_FILE)
+            except FileExistsError:
+                raise ProtocolError(STATUS_OBJECT_NAME_COLLISION)
 
             return SMBMessage(reply_header_from_request(req),
                               None, None)

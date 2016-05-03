@@ -50,6 +50,7 @@ SMB_COM_QUERY_INFORMATION_DISK = 0x80
 SMB_COM_CHECK_DIRECTORY = 0x10
 SMB_COM_TREE_DISCONNECT = 0x71
 SMB_COM_FLUSH = 0x05
+SMB_COM_CREATE_DIRECTORY = 0x0
 
 SMB_FLAGS_REPLY = 0x80
 SMB_FLAGS2_NT_STATUS = 0x4000
@@ -410,6 +411,9 @@ def decode_delete_request_data(smb_header, params, __, buf):
     filename = buf[1:].decode('utf-16-le').rstrip('\0')
     return SMBDeleteRequestData(buffer_format, filename)
 
+# It's the same structure
+decode_create_directory_request_data = decode_delete_request_data
+
 REQUEST = False
 REPLY = True
 _decoder_dispatch = {
@@ -443,6 +447,8 @@ _decoder_dispatch = {
                                decode_null_data),
     (SMB_COM_DELETE, REQUEST): (decode_delete_request_params,
                                 decode_delete_request_data),
+    (SMB_COM_CREATE_DIRECTORY, REQUEST): (decode_null_params,
+                                          decode_create_directory_request_data),
 }
 
 def get_decoder(header):
@@ -708,6 +714,8 @@ _encoder_dispatch = {
                              encode_null_data),
     (SMB_COM_DELETE, REPLY): (encode_null_params,
                               encode_null_data),
+    (SMB_COM_CREATE_DIRECTORY, REPLY): (encode_null_params,
+                                        encode_null_data),
 }
 
 def get_encoder(header):
@@ -2566,6 +2574,25 @@ def handle_request(server, server_capabilities, cs, backend, req):
                 yield from fs.unlink(path)
             except FileNotFoundError:
                 raise ProtocolError(STATUS_NO_SUCH_FILE)
+
+            return SMBMessage(reply_header_from_request(req),
+                              None, None)
+        finally:
+            yield from cs.deref_tid(req.header.tid)
+    elif req.header.command == SMB_COM_CREATE_DIRECTORY:
+        yield from cs.verify_uid(req)
+        fs = yield from cs.verify_tid(req)
+        try:
+            if req.data.buffer_format != 0x4:
+                raise Exception("Buffer format not accepted!")
+            path = yield from smb_path_to_fs_path(req.data.filename)
+
+            try:
+                yield from fs.mkdir(path)
+            except FileNotFoundError:
+                raise ProtocolError(STATUS_OBJECT_PATH_NOT_FOUND)
+            except FileExistsError:
+                raise ProtocolError(STATUS_OBJECT_NAME_COLLISION)
 
             return SMBMessage(reply_header_from_request(req),
                               None, None)

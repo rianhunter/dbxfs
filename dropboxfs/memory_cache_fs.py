@@ -1266,6 +1266,12 @@ class FileSystem(object):
     def mkdir(self, path):
         self.stat(path, create_mode=os.O_CREAT | os.O_EXCL, directory=True)
 
+    def rmdir(self, path):
+        self._fs.rmdir(path)
+        md = dropbox.files.DeletedMetadata(name=path.name,
+                                           path_lower=str(path.normed()))
+        self._handle_changes([md])
+
 def main(argv):
     logging.basicConfig(level=logging.DEBUG)
 
@@ -1371,6 +1377,7 @@ def main(argv):
             print("Contents of newdir/test-file: %r (should be b'TEST AGAIN')" %
                   (f.read(),))
 
+        fs.rmdir(fs.create_path("newdir"))
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 

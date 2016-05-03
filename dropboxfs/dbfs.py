@@ -656,6 +656,20 @@ class FileSystem(object):
         st = self.x_stat_create(path, os.O_CREAT | os.O_EXCL, True)
         assert st.type == 'directory'
 
+    def rmdir(self, path):
+        # NB: dropbox api provides no empty-directory delete call
+        #     if there are files under this directory, this will delete them
+        try:
+            md = self._clientv2.files_delete(str(path))
+        except dropbox.exceptions.ApiError as e:
+            if e.error.is_path_lookup():
+                raise OSError(errno.ENOENT, os.strerror(errno.ENOENT)) from e
+            else:
+                raise
+        else:
+            if not isinstance(md, dropbox.files.FolderMetadata):
+                log.warn("Called rmdir() on non-directory and it succeeded: %r", path)
+
 def main(argv):
     # run some basic tests on this class
 
@@ -719,6 +733,8 @@ def main(argv):
         pass
     else:
         raise Exception("This should raise")
+
+    fs.rmdir(file_path_3)
 
     with contextlib.closing(fs.open(root_path)) as root:
         stop = fs.create_watch(cb, root, ~0, False)

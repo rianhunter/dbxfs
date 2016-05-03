@@ -56,6 +56,9 @@ def decode_rev(rev):
         raise ValueError("bad rev!")
     return json.loads(codecs.decode(rev[4:].encode('ascii'), 'hex').decode('utf-8'))
 
+def get_id(md):
+    return 'id:' + str(id(md))
+
 class _File(PositionIO):
     def __init__(self, md, mode):
         super().__init__()
@@ -180,7 +183,7 @@ class _WriteStream(object):
                          client_modified=m,
                          size=len(d),
                          server_modified=c,
-                         id=id(md),
+                         id=get_id(md),
                          rev=rev)
 
 class FileSystem(object):
@@ -222,7 +225,7 @@ class FileSystem(object):
         size = get_size(md)
         rev = get_rev(md)
 
-        return _Stat(name, mtime, type, size, id=id(md), ctime=ctime, rev=rev)
+        return _Stat(name, mtime, type, size, id=get_id(md), ctime=ctime, rev=rev)
 
     def _get_file(self, path, mode=0, remove=None, directory=False):
         assert not (remove is not None and mode),\
@@ -300,9 +303,15 @@ class FileSystem(object):
         md = self._get_file(path, mode)
         return _File(md, mode)
 
-    def _md_from_id(self, id_):
+    def _low_md_from_id(self, id_):
         warnings.warn("Don't use this in production, could cause segfault if used with an invalid ID")
         return ctypes.cast(id_, ctypes.py_object).value
+
+    def _md_from_id(self, id_):
+        if not id_.startswith('id:'):
+            raise ValueError("Bad id!")
+        id_ = int(id_[3:])
+        return self._low_md_from_id(id_)
 
     def open_by_id(self, id_, mode=os.O_RDONLY):
         # id is the memory address of the md object
@@ -316,10 +325,10 @@ class FileSystem(object):
         else:
             try:
                 (md_id, rev_idx) = decode_rev(resolver)
+                md = self._low_md_from_id(md_id)
             except ValueError:
-                md_id = resolver
+                md = self._md_from_id(resolver)
                 rev_idx = None
-            md = self._md_from_id(md_id)
 
         if rev_idx is None:
             d = md['data']

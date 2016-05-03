@@ -62,11 +62,14 @@ def md_to_stat(md):
     return _StatObject(name, type, size, mtime, md.id, ctime=ctime, rev=rev)
 
 class _Directory(object):
-    def __init__(self, fs, path, id_):
+    def __init__(self, fs, path):
         self._fs = fs
         self._path = path
-        self._id = id_
-        self.reset()
+
+        self._md = self.__it()
+        # Provoke initial list_folder() call
+        ret = next(self._md)
+        assert ret is None
 
     def __it(self):
         # XXX: Hack: we "snapshot" this directory by not returning entries
@@ -106,9 +109,6 @@ class _Directory(object):
             return list(self)
         else:
             return list(itertools.islice(self, size))
-
-    def reset(self):
-        self._md = self.__it()
 
     def close(self):
         pass
@@ -533,8 +533,7 @@ class FileSystem(object):
         return _ReadStream(self, str(path))
 
     def open_directory(self, path):
-        md = self._get_md_inner(path)
-        return _Directory(self, md.path_lower, md.id)
+        return _Directory(self, str(path))
 
     def stat_has_attr(self, attr):
         return attr in ["type", "size", "mtime", "id"]

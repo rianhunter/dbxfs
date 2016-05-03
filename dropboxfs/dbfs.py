@@ -448,20 +448,29 @@ class FileSystem(object):
         log.debug("md: %r", md)
         return md_to_stat(md)
 
-    def _stat_create(self, path, mode=0):
+    def _stat_create(self, path, mode=0, directory=False):
         if (mode & os.O_CREAT) and (mode & os.O_EXCL):
-            try:
-                # NB: This is a poor implementation of CREAT|EXCL, if an existing
-                #     empty file exists at the target, no conflict will occur
-                #     (this happens no matter what data we upload, so might as
-                #      well upload an empty file)
-                md = self._clientv2.files_upload(b'', str(path))
-            except dropbox.exceptions.ApiError as e:
-                if e.error.get_path().reason.is_conflict():
-                    raise OSError(errno.EEXIST, os.strerror(errno.EEXIST)) from e
-                else:
-                    raise
-        elif (mode & os.O_CREAT) and (mode & os.O_TRUNC):
+            if directory:
+                try:
+                    md = self._clientv2.files_create_folder(str(path))
+                except dropbox.exceptions.ApiError as e:
+                    if e.error.get_path().is_conflict():
+                        raise OSError(errno.EEXIST, os.strerror(errno.EEXIST)) from e
+                    else:
+                        raise
+            else:
+                try:
+                    # NB: This is a poor implementation of CREAT|EXCL, if an existing
+                    #     empty file exists at the target, no conflict will occur
+                    #     (this happens no matter what data we upload, so might as
+                    #      well upload an empty file)
+                    md = self._clientv2.files_upload(b'', str(path))
+                except dropbox.exceptions.ApiError as e:
+                    if e.error.get_path().reason.is_conflict():
+                        raise OSError(errno.EEXIST, os.strerror(errno.EEXIST)) from e
+                    else:
+                        raise
+        elif (mode & os.O_CREAT) and (mode & os.O_TRUNC) and not directory:
             md = self._clientv2.files_upload(b'', str(path),
                                              mode=dropbox.files.WriteMode.overwrite)
         else:
@@ -473,13 +482,22 @@ class FileSystem(object):
                 except FileNotFoundError:
                     if not (mode & os.O_CREAT):
                         raise
-                    try:
-                        md = self._clientv2.files_upload(b'', str(path))
-                    except dropbox.exceptions.ApiError as e:
-                        if e.error.get_path().reason.is_conflict():
-                            continue
-                        else:
-                            raise
+                    if directory:
+                        try:
+                            md = self._clientv2.files_create_folder(str(path))
+                        except dropbox.exceptions.ApiError as e:
+                            if e.error.get_path().is_conflict():
+                                continue
+                            else:
+                                raise
+                    else:
+                        try:
+                            md = self._clientv2.files_upload(b'', str(path))
+                        except dropbox.exceptions.ApiError as e:
+                            if e.error.get_path().reason.is_conflict():
+                                continue
+                            else:
+                                raise
                 else:
                     if (not isinstance(md, dropbox.files.FolderMetadata) and
                         (mode & os.O_TRUNC)):
@@ -488,9 +506,9 @@ class FileSystem(object):
                 break
         return md
 
-    def x_stat_create(self, path, mode=0):
+    def x_stat_create(self, path, mode=0, directory=False):
         # x_stat_create() doesn't honor O_TRUNC (but open() does)
-        return md_to_stat(self._stat_create(path, mode & ~os.O_TRUNC))
+        return md_to_stat(self._stat_create(path, mode & ~os.O_TRUNC, directory))
 
     def open(self, path, mode=os.O_RDONLY):
         md = self._stat_create(path, mode)
@@ -634,6 +652,10 @@ class FileSystem(object):
             if isinstance(md, dropbox.files.FolderMetadata):
                 log.warn("Called unlink() on directory and it succeeded: %r", path)
 
+    def mkdir(self, path):
+        st = self.x_stat_create(path, os.O_CREAT | os.O_EXCL, True)
+        assert st.type == 'directory'
+
 def main(argv):
     # run some basic tests on this class
 
@@ -682,6 +704,21 @@ def main(argv):
     def cb(changes):
         print(changes)
         event.set()
+
+    file_path_3 = root_path.joinpath("dbfs-test-dir")
+
+    try:
+        fs.mkdir(file_path_3)
+    except FileExistsError:
+        print("Directory already existed", file_path_3)
+
+    try:
+        fs.mkdir(file_path_3)
+    except FileExistsError:
+        # expected
+        pass
+    else:
+        raise Exception("This should raise")
 
     with contextlib.closing(fs.open(root_path)) as root:
         stop = fs.create_watch(cb, root, ~0, False)

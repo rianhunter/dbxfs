@@ -218,8 +218,8 @@ class FileSystem(object):
 
         return _Stat(name, mtime, type, size, id=id(md), ctime=ctime, rev=rev)
 
-    def _get_file(self, path, mode=0, remove=False, directory=False):
-        assert not (remove and mode),\
+    def _get_file(self, path, mode=0, remove=None, directory=False):
+        assert not (remove is not None and mode),\
             "Only one of mode/remove should be specified"
         parent = self._parent
         real_comps = []
@@ -234,16 +234,24 @@ class FileSystem(object):
                         if len(real_comps) == len(path.parts) - 1:
                             if (mode & os.O_CREAT) and (mode & os.O_EXCL):
                                 raise OSError(errno.EEXIST, os.strerror(errno.EEXIST))
-                            if remove:
-                                if md.type != 'file':
-                                    raise OSError(errno.EPERM, os.strerror(errno.EPERM))
+                            if remove is not None:
+                                if remove == 'unlink':
+                                    if md['type'] != 'file':
+                                        raise OSError(errno.EPERM, os.strerror(errno.EPERM))
+                                elif remove == 'rmdir':
+                                    if md['type'] != 'directory':
+                                        raise OSError(errno.ENOTDIR, os.strerror(errno.ENOTDIR))
+                                    if get_children(md):
+                                        raise OSError(errno.ENOTEMPTY, os.strerror(errno.ENOTEMPTY))
+                                else:
+                                    assert False, "Bad remove value!"
                                 del parent['children'][idx]
 
                         parent = md
                         break
                 else:
                     real_comps.append(comp)
-                    if (not remove and
+                    if (remove is None and
                         len(real_comps) == len(path.parts) - 1 and
                         (mode & os.O_CREAT)):
                         t = datetime.utcnow()
@@ -348,7 +356,7 @@ class FileSystem(object):
         return stop
 
     def unlink(self, path):
-        md = self._get_file(path, remove=True)
+        md = self._get_file(path, remove='unlink')
         # NB: we need to save a reference to the 'inode' of the unlinked file
         #     since there still may still be ID holders (we resolve by object
         #     address)
@@ -357,3 +365,10 @@ class FileSystem(object):
     def mkdir(self, path):
         st = self._get_file(path, mode=os.O_CREAT | os.O_EXCL, directory='file')
         assert st['type'] == 'directory'
+
+    def rmdir(self, path):
+        md = self._get_file(path, remove='rmdir')
+        # NB: we need to save a reference to the 'inode' of the unlinked file
+        #     since there still may still be ID holders (we resolve by object
+        #     address)
+        self._unlinked_files.append(md)

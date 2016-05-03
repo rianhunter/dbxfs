@@ -122,6 +122,9 @@ class FUSEAdapter(Operations):
     def unlink(self, path):
         self._fs.unlink(self._conv_path(path))
 
+    def mkdir(self, path, mode):
+        self._fs.mkdir(self._conv_path(path))
+
 def run_fuse_mount(create_fs, mount_point, foreground=False):
     FUSE(FUSEAdapter(create_fs), mount_point, foreground=foreground, hard_remove=True)
 

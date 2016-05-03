@@ -20,7 +20,7 @@ import weakref
 
 from dropboxfs.path_common import file_name_norm
 from dropboxfs.dbfs import md_to_stat as dbmd_to_stat
-from dropboxfs.util_dumpster import utctimestamp, PositionIO
+from dropboxfs.util_dumpster import utctimestamp, PositionIO, null_context
 
 import dropbox
 
@@ -150,10 +150,6 @@ def register_deterministic_function(conn, name, num_params, func):
         if conn not in _hold_ref:
             _hold_ref[conn] = []
         _hold_ref[conn].append(func)
-
-@contextlib.contextmanager
-def null_context():
-    yield
 
 @contextlib.contextmanager
 def trans(conn, lock, is_exclusive=False):

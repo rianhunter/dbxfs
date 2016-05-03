@@ -5,6 +5,7 @@
 # keep this file small, if there is a theme of utility functions then
 # put group them into a separate file
 
+import contextlib
 import io
 import datetime
 import threading
@@ -48,3 +49,7 @@ class PositionIO(io.RawIOBase):
 
     def seekable(self):
         return hasattr(self, '_file_length')
+
+@contextlib.contextmanager
+def null_context():
+    yield

@@ -128,6 +128,21 @@ class FUSEAdapter(Operations):
     def rmdir(self, path):
         self._fs.rmdir(self._conv_path(path))
 
+    def rename(self, oldpath, newpath):
+        oldpath_ = self._conv_path(oldpath)
+        newpath_ = self._conv_path(newpath)
+        while True:
+            try:
+                self._fs.rename_noreplace(oldpath_, newpath_)
+            except FileExistsError:
+                try:
+                    self._fs.unlink(newpath_)
+                except FileNotFoundError:
+                    pass
+            else:
+                break
+
+
 def run_fuse_mount(create_fs, mount_point, foreground=False):
     FUSE(FUSEAdapter(create_fs), mount_point, foreground=foreground, hard_remove=True)
 

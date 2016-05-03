@@ -358,7 +358,10 @@ def decode_nt_transact_request_data(smb_header, smb_parameters, buf_offset, buf)
     return SMBNTTransactRequestData(params, data)
 
 SMBCheckDirectoryRequestData = namedtuple('SMBCheckDirectoryRequestData', ['filename'])
-def decode_check_directory_request_data(_, __, ___, buf):
+def decode_check_directory_request_data(smb_header, __, ___, buf):
+    if not (smb_header.flags2 & SMB_FLAGS2_UNICODE):
+        raise Exception("Only support unicode!")
+
     filename = buf.decode('utf-16-le').rstrip('\0')
     return SMBCheckDirectoryRequestData(filename=filename)
 

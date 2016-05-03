@@ -80,7 +80,16 @@ class _Directory(object):
         while not stop:
             if self._cursor is None:
                 path_ = "" if self._path == "/" else self._path
-                res = self._fs._clientv2.files_list_folder(path_)
+                try:
+                    res = self._fs._clientv2.files_list_folder(path_)
+                except dropbox.exceptions.ApiError as e:
+                    if e.error.is_path():
+                        if e.error.get_path().is_not_found():
+                            raise OSError(errno.ENOENT, os.strerror(errno.ENOENT)) from e
+                        elif e.error.get_path().is_not_folder():
+                            raise OSError(errno.ENOTDIR, os.strerror(errno.ENOTDIR)) from e
+                    raise
+                yield
             else:
                 res = self._fs._clientv2.files_list_folder_continue(self._cursor)
 

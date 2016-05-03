@@ -670,6 +670,20 @@ class FileSystem(object):
             if not isinstance(md, dropbox.files.FolderMetadata):
                 log.warn("Called rmdir() on non-directory and it succeeded: %r", path)
 
+    def x_rename_stat(self, old_path, new_path):
+        try:
+            md = self._clientv2.files_move(str(old_path), str(new_path))
+        except dropbox.exceptions.ApiError as e:
+            if (e.error.is_to() and
+                e.error.get_to().is_conflict()):
+                raise OSError(errno.EEXIST, os.strerror(errno.EEXIST)) from e
+            else:
+                raise
+        return md_to_stat(md)
+
+    def rename_noreplace(self, old_path, new_path):
+        self.x_rename_stat(old_path, new_path)
+
 def main(argv):
     # run some basic tests on this class
 
@@ -735,6 +749,22 @@ def main(argv):
         raise Exception("This should raise")
 
     fs.rmdir(file_path_3)
+
+    file_path_4 = root_path.joinpath("dbfs-test-file.txt")
+
+    with fs.open(file_path_4, os.O_CREAT) as f:
+        pass
+
+    file_path_5 = file_path_4.parent.joinpath("dbfs-test-file-2.txt")
+
+    try:
+        fs.unlink(file_path_5)
+    except FileNotFoundError:
+        pass
+
+    fs.rename_noreplace(file_path_4, file_path_5)
+
+    fs.unlink(file_path_5)
 
     with contextlib.closing(fs.open(root_path)) as root:
         stop = fs.create_watch(cb, root, ~0, False)

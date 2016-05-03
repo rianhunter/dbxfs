@@ -2053,6 +2053,8 @@ def handle_request(server, server_capabilities, cs, backend, req):
                         buffered_entries_idx = 0
                 except FileNotFoundError:
                     raise ProtocolError(STATUS_NO_SUCH_FILE)
+                except NotADirectoryError:
+                    raise ProtocolError(STATUS_OBJECT_PATH_SYNTAX_BAD)
 
                 PARAMS_FMT = "<HHHHH"
                 PARAMS_SIZE = struct.calcsize(PARAMS_FMT)
@@ -2205,6 +2207,8 @@ def handle_request(server, server_capabilities, cs, backend, req):
                     md = yield from fs.stat(fspath)
                 except FileNotFoundError:
                     raise ProtocolError(STATUS_NO_SUCH_FILE)
+                except NotADirectoryError:
+                    raise ProtocolError(STATUS_OBJECT_PATH_SYNTAX_BAD)
 
                 setup = []
                 name = fspath.name if fspath.name else '\\'
@@ -2369,6 +2373,8 @@ def handle_request(server, server_capabilities, cs, backend, req):
                 raise ProtocolError(STATUS_OBJECT_NAME_COLLISION)
             except FileNotFoundError:
                 raise ProtocolError(STATUS_NO_SUCH_FILE)
+            except NotADirectoryError:
+                raise ProtocolError(STATUS_OBJECT_PATH_SYNTAX_BAD)
 
             is_directory = md.type == "directory"
 
@@ -2606,6 +2612,8 @@ def handle_request(server, server_capabilities, cs, backend, req):
                 yield from fs.unlink(path)
             except FileNotFoundError:
                 raise ProtocolError(STATUS_NO_SUCH_FILE)
+            except NotADirectoryError:
+                raise ProtocolError(STATUS_OBJECT_PATH_SYNTAX_BAD)
 
             return SMBMessage(reply_header_from_request(req),
                               None, None)
@@ -2625,6 +2633,8 @@ def handle_request(server, server_capabilities, cs, backend, req):
                 raise ProtocolError(STATUS_OBJECT_PATH_NOT_FOUND)
             except FileExistsError:
                 raise ProtocolError(STATUS_OBJECT_NAME_COLLISION)
+            except NotADirectoryError:
+                raise ProtocolError(STATUS_OBJECT_PATH_SYNTAX_BAD)
 
             return SMBMessage(reply_header_from_request(req),
                               None, None)
@@ -2672,6 +2682,8 @@ def handle_request(server, server_capabilities, cs, backend, req):
                 raise ProtocolError(STATUS_NO_SUCH_FILE)
             except FileExistsError:
                 raise ProtocolError(STATUS_OBJECT_NAME_COLLISION)
+            except NotADirectoryError:
+                raise ProtocolError(STATUS_OBJECT_PATH_SYNTAX_BAD)
 
             return SMBMessage(reply_header_from_request(req),
                               None, None)

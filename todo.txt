@@ -1,2 +1,1 @@
-* make memory_cache_fs.stat_create() hit backend on O_CREAT|O_EXCL
 * async file metadata mutation

@@ -1175,6 +1175,12 @@ class FileSystem(object):
         return self._fs.stat_has_attr(attr)
 
     def stat(self, path, create_mode=0, directory=False):
+        pre_stat = None
+        # NB: EXCL forces us to hit FS synchronously, since cache
+        #     always has a chance of being out of date
+        if (create_mode & os.O_CREAT) and (create_mode & os.O_EXCL):
+            pre_stat = self._fs.x_stat_create(path, create_mode, directory)
+
         conn = self._get_db_conn()
         # We use BEGIN IMMEDIATE here because SQLite's deferred transactions
         # will immediately throw a BUSY error if two threads concurrently attempt to
@@ -1189,7 +1195,7 @@ class FileSystem(object):
             cursor.execute("SELECT md FROM md_cache WHERE path_key = ? limit 1",
                            (path_key,))
             row = cursor.fetchone()
-            if row is None:
+            if pre_stat is None and row is None:
                 # if it didn't exist in the md_cache, check if the
                 # parent exists in md_cache_entries, if so then this
                 # file doesn't exist
@@ -1212,12 +1218,18 @@ class FileSystem(object):
                     assert not (stat is None and (create_mode & os.O_CREAT))
 
                     store_existence = True
+            elif pre_stat is not None and row is None:
+                stat = pre_stat
+                store_existence = True
             else:
                 (md,) = row
                 stat =  None if md is None else json_to_stat(md)
-                if (stat is not None and (create_mode & os.O_CREAT) and
-                    (create_mode & os.O_EXCL)):
-                    raise OSError(errno.EEXIST, os.strerror(errno.EEXIST))
+
+                # Only update cache if pre_stat is newer
+                if (pre_stat is not None and
+                    (stat is None or pre_stat.ctime > stat.ctime)):
+                    stat = pre_stat
+                    store_existence = True
 
             if stat is None and (create_mode & os.O_CREAT):
                 stat = self._fs.x_stat_create(path, create_mode, directory)
@@ -1227,6 +1239,9 @@ class FileSystem(object):
                 md_str = None if stat is None else stat_to_json(stat)
                 cursor.execute("INSERT OR REPLACE INTO md_cache (path_key, md) values (?, ?)",
                                (path_key, md_str))
+
+        if pre_stat is not None:
+            return pre_stat
 
         if stat is None:
             raise OSError(errno.ENOENT, os.strerror(errno.ENOENT))

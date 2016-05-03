@@ -1268,6 +1268,28 @@ class FileSystem(object):
                                            path_lower=str(path.normed()))
         self._handle_changes([md])
 
+    def rename_noreplace(self, oldpath, newpath):
+        stat_ = self._fs.x_rename_stat(oldpath, newpath)
+        md_delete = dropbox.files.DeletedMetadata(name=oldpath.name,
+                                                  path_lower=str(oldpath.normed()))
+        if stat_.type == "directory":
+            md = dropbox.files.FolderMetadata(name=newpath.name,
+                                              path_lower=str(newpath.normed()),
+                                              id=stat_.id)
+        else:
+            assert stat_.rev.startswith("rev:")
+            md = dropbox.files.FileMetadata(name=newpath.name,
+                                            path_lower=str(newpath.normed()),
+                                            id=stat_.id,
+                                            client_modified=stat_.mtime,
+                                            server_modified=stat_.ctime,
+                                            rev=stat_.rev[len("rev:"):],
+                                            size=stat_.size)
+        # NB: this is best effort, for directories _handle_changes() expects
+        #     all deletes/adds for descendant files as well. that would
+        #     not be efficiently implemented here.
+        self._handle_changes([md_delete, md])
+
 def main(argv):
     logging.basicConfig(level=logging.DEBUG)
 
@@ -1373,7 +1395,43 @@ def main(argv):
             print("Contents of newdir/test-file: %r (should be b'TEST AGAIN')" %
                   (f.read(),))
 
+        try:
+            fs.rmdir(fs.create_path("newdir"))
+        except OSError as e:
+            if e.errno not in (errno.EEXIST, errno.ENOTEMPTY):
+                # Not expected
+                raise
+        else:
+            raise Exception("Expected not empty error")
+
+        fs.unlink(fs.create_path("newdir", "test-file"))
         fs.rmdir(fs.create_path("newdir"))
+
+        root_path = fs.create_path()
+        file_path_4 = root_path.joinpath("dbfs-test-file.txt")
+
+        with fs.open(file_path_4, os.O_CREAT) as f:
+            pass
+
+        file_path_5 = file_path_4.parent.joinpath("dbfs-test-file-2.txt")
+
+        try:
+            fs.unlink(file_path_5)
+        except FileNotFoundError:
+            pass
+
+        fs.rename_noreplace(file_path_4, file_path_5)
+
+        try:
+            with fs.open(file_path_4) as f:
+                pass
+        except FileNotFoundError:
+            # expected
+            pass
+        else:
+            raise Exception("expected file not found error!")
+
+        fs.unlink(file_path_5)
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 

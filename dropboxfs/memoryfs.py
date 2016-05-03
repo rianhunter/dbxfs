@@ -218,7 +218,7 @@ class FileSystem(object):
 
         return _Stat(name, mtime, type, size, id=id(md), ctime=ctime, rev=rev)
 
-    def _get_file(self, path, mode=0, remove=False):
+    def _get_file(self, path, mode=0, remove=False, directory=False):
         assert not (remove and mode),\
             "Only one of mode/remove should be specified"
         parent = self._parent
@@ -247,14 +247,23 @@ class FileSystem(object):
                         len(real_comps) == len(path.parts) - 1 and
                         (mode & os.O_CREAT)):
                         t = datetime.utcnow()
-                        md = dict(type='file',
-                                  data=b'',
-                                  path=self.create_path(*real_comps),
-                                  name=comp,
-                                  mtime=t,
-                                  ctime=t,
-                                  lock=threading.Lock(),
-                                  revs=[(t, b'')])
+                        if directory:
+                            md = dict(type='directory',
+                                      children=[],
+                                      path=self.create_path(*real_comps),
+                                      name=comp,
+                                      mtime=t,
+                                      ctime=t,
+                                      lock=threading.Lock())
+                        else:
+                            md = dict(type='file',
+                                      data=b'',
+                                      path=self.create_path(*real_comps),
+                                      name=comp,
+                                      mtime=t,
+                                      ctime=t,
+                                      lock=threading.Lock(),
+                                      revs=[(t, b'')])
                         parent.setdefault('children', []).append((comp, md))
                         parent = md
                         break
@@ -318,8 +327,8 @@ class FileSystem(object):
     def stat_has_attr(self, attr):
         return attr in ["type", "name", "mtime"]
 
-    def x_stat_create(self, path, mode):
-        return self._map_entry(self._get_file(path, mode & ~os.O_TRUNC))
+    def x_stat_create(self, path, mode, directory=False):
+        return self._map_entry(self._get_file(path, mode & ~os.O_TRUNC, directory=directory))
 
     def stat(self, path):
         return self.x_stat_create(path, 0)
@@ -344,3 +353,7 @@ class FileSystem(object):
         #     since there still may still be ID holders (we resolve by object
         #     address)
         self._unlinked_files.append(md)
+
+    def mkdir(self, path):
+        st = self._get_file(path, mode=os.O_CREAT | os.O_EXCL, directory='file')
+        assert st['type'] == 'directory'

@@ -15,6 +15,7 @@
 # You should have received a copy of the GNU General Public License
 # along with dropboxfs.  If not, see <http://www.gnu.org/licenses/>.
 
+import codecs
 import collections
 import ctypes
 import errno
@@ -48,7 +49,12 @@ def get_rev(md):
     if md['type'] == 'directory':
         return None
     else:
-        return json.dumps((id(md), len(md['revs']) - 1))
+        return 'rev:' + codecs.encode(json.dumps((id(md), len(md['revs']) - 1)).encode('utf-8'), 'hex').decode('ascii')
+
+def decode_rev(rev):
+    if not rev.startswith('rev:'):
+        raise ValueError("bad rev!")
+    return json.loads(codecs.decode(rev[4:].encode('ascii'), 'hex').decode('utf-8'))
 
 class _File(PositionIO):
     def __init__(self, md, mode):
@@ -309,7 +315,7 @@ class FileSystem(object):
             rev_idx = None
         else:
             try:
-                (md_id, rev_idx) = json.loads(resolver)
+                (md_id, rev_idx) = decode_rev(resolver)
             except ValueError:
                 md_id = resolver
                 rev_idx = None

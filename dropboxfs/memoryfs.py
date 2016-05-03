@@ -30,7 +30,7 @@ import warnings
 from datetime import datetime
 
 from dropboxfs.path_common import Path
-from dropboxfs.util_dumpster import PositionIO
+from dropboxfs.util_dumpster import PositionIO, null_context
 
 log = logging.getLogger(__name__)
 
@@ -387,3 +387,37 @@ class FileSystem(object):
         #     since there still may still be ID holders (we resolve by object
         #     address)
         self._unlinked_files.append(md)
+
+    def x_rename_stat(self, old_path, new_path):
+        parent = self._get_file(old_path.parent)
+        target_parent = self._get_file(new_path.parent)
+
+        if parent['type'] != 'directory' or target_parent['type'] != 'directory':
+            raise OSError(errno.ENOTDIR, os.strerror(errno.ENOTDIR))
+
+        if id(parent) == id(target_parent):
+            first, second = parent['lock'], null_context()
+        elif id(parent) < id(target_parent):
+            first, second = parent['lock'], target_parent['lock']
+        else:
+            first, second = target_parent['lock'], parent['lock']
+
+        with first, second:
+            for (name, _) in get_children(target_parent):
+                if name.lower() == new_path.name.lower():
+                    raise OSError(errno.EEXIST, os.strerror(errno.EEXIST))
+            for (idx, (name, md)) in enumerate(get_children(parent)):
+                if name.lower() == old_path.name.lower():
+                    del parent['children'][idx]
+                    break
+            else:
+                # In the period between the original get_file and now
+                # the file was deleted
+                raise OSError(errno.ENOENT, os.strerror(errno.ENOENT))
+
+            get_children(target_parent).append((new_path.name, md))
+
+            return self._map_entry(md)
+
+    def rename_noreplace(self, old_path, new_path):
+        self.x_rename_stat(old_path, new_path)

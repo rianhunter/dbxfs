@@ -1178,7 +1178,7 @@ class FileSystem(object):
     def stat_has_attr(self, attr):
         return self._fs.stat_has_attr(attr)
 
-    def stat(self, path, create_mode=0):
+    def stat(self, path, create_mode=0, directory=False):
         conn = self._get_db_conn()
         # We use BEGIN IMMEDIATE here because SQLite's deferred transactions
         # will immediately throw a BUSY error if two threads concurrently attempt to
@@ -1207,7 +1207,7 @@ class FileSystem(object):
                     # NB: Potentially slow!
                     # TODO: do mvcc before storing back in md_cache
                     try:
-                        stat = self._fs.x_stat_create(path, create_mode)
+                        stat = self._fs.x_stat_create(path, create_mode, directory)
                     except FileNotFoundError:
                         stat = None
 
@@ -1224,7 +1224,7 @@ class FileSystem(object):
                     raise OSError(errno.EEXIST, os.strerror(errno.EEXIST))
 
             if stat is None and (create_mode & os.O_CREAT):
-                stat = self._fs.x_stat_create(path, create_mode)
+                stat = self._fs.x_stat_create(path, create_mode, directory)
                 store_existence = True
 
             if store_existence:
@@ -1262,6 +1262,9 @@ class FileSystem(object):
         md = dropbox.files.DeletedMetadata(name=path.name,
                                            path_lower=str(path.normed()))
         self._handle_changes([md])
+
+    def mkdir(self, path):
+        self.stat(path, create_mode=os.O_CREAT | os.O_EXCL, directory=True)
 
 def main(argv):
     logging.basicConfig(level=logging.DEBUG)
@@ -1351,6 +1354,23 @@ def main(argv):
             pass
         else:
             raise Exception("Didn't throw on file not found!!")
+
+        fs.mkdir(fs.create_path("newdir"))
+
+        try:
+            fs.mkdir(fs.create_path("newdir"))
+        except FileExistsError:
+            pass
+        else:
+            raise Exception("Didn't throw file exists error!!")
+
+        with fs.open(fs.create_path("newdir", "test-file"), os.O_CREAT | os.O_WRONLY) as f:
+            f.write(b"TEST AGAIN")
+
+        with fs.open(fs.create_path("newdir", "test-file")) as f:
+            print("Contents of newdir/test-file: %r (should be b'TEST AGAIN')" %
+                  (f.read(),))
+
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 

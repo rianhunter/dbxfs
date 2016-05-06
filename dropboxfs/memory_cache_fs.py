@@ -1152,7 +1152,7 @@ class FileSystem(object):
                         (SELECT EXISTS(SELECT * FROM md_cache_entries WHERE
                                        path_key = ?)) = 0
                         """,
-                        (parent_path_key, name, parent_path_key))
+                        (parent_path_key, EMPTY_DIR_ENT, parent_path_key))
 
                     # set deleted in the metadata cache
                     cursor.execute("UPDATE md_cache SET md = NULL WHERE path_key = ?",

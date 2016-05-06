@@ -245,8 +245,10 @@ def main(argv=None):
                                    "cifs://guest:@127.0.0.1:%d/dropboxfs" % (port,),
                                    mount_point])
             if ret:
+                log.debug("Mount failed, Sending kill signal!")
                 os.kill(child_pid, signal.SIGTERM)
             else:
+                log.debug("Mount succeeded, Sending mounted signal!")
                 os.kill(child_pid, signal.SIGUSR1)
         else:
             ret = 0
@@ -277,22 +279,27 @@ def main(argv=None):
                 if r:
                     is_mounted = True
                 else:
+                    log.debug("Got kill flag!")
                     break
 
             if is_mounted and not os.path.ismount(mount_point):
+                log.debug("Drive has gone unmounted")
                 is_mounted = False
                 break
 
         if is_mounted:
             subprocess.call(["umount", "-f", mount_point])
 
+        log.debug("CALLING SERVER CLOSE")
         server.close()
     threading.Thread(target=check_mount, daemon=True).start()
 
     def handle_mounted(self, *_):
+        log.debug("Got mounted signal!")
         mm_q.put(True)
 
     def kill_signal(self, *_):
+        log.debug("Got kill signal!")
         mm_q.put(False)
 
     signal.signal(signal.SIGTERM, kill_signal)

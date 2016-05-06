@@ -143,6 +143,17 @@ class FUSEAdapter(Operations):
                 break
 
 
+    def statfs(self, _):
+        vfs = self._fs.statvfs()
+        toret = {}
+        for n in ['f_bavail', 'f_blocks', 'f_frsize']:
+            toret[n] = getattr(vfs, n)
+
+        toret['f_bfree'] = toret['f_bavail']
+        toret['f_bsize'] = toret['f_frsize']
+
+        return toret
+
 def run_fuse_mount(create_fs, mount_point, foreground=False):
     FUSE(FUSEAdapter(create_fs), mount_point, foreground=foreground, hard_remove=True)
 

@@ -166,4 +166,5 @@ class FUSEAdapter(object):
         return getattr(self, op)(*args)
 
 def run_fuse_mount(create_fs, mount_point, foreground=False):
-    FUSE(FUSEAdapter(create_fs), mount_point, foreground=foreground, hard_remove=True)
+    FUSE(FUSEAdapter(create_fs), mount_point, foreground=foreground, hard_remove=True,
+         default_permissions=True)

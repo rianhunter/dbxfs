@@ -1207,6 +1207,7 @@ class FileSystem(object):
         #       if a write is necessary
         with trans(conn, self._db_lock, is_exclusive=True), contextlib.closing(conn.cursor()) as cursor:
             path_key = str(path.normed())
+            parent_path_key = str(path.parent.normed())
 
             store_existence = False
 
@@ -1219,7 +1220,7 @@ class FileSystem(object):
                 # file doesn't exist
                 (parent_has_been_iterated,) = cursor.execute("""
                 SELECT EXISTS(SELECT * FROM md_cache_entries WHERE path_key = ?)
-                """, (str(path.parent.normed()),)).fetchone()
+                """, (parent_path_key,)).fetchone()
 
                 if parent_has_been_iterated:
                     stat = None
@@ -1257,6 +1258,15 @@ class FileSystem(object):
                 md_str = None if stat is None else stat_to_json(stat)
                 cursor.execute("INSERT OR REPLACE INTO md_cache (path_key, md) values (?, ?)",
                                (path_key, md_str))
+                # NB: store in parent directory if it is cached
+                cursor.execute("""
+                INSERT OR REPLACE INTO md_cache_entries (path_key, name)
+                SELECT ?, ? WHERE
+                (SELECT EXISTS(SELECT * FROM md_cache_entries WHERE path_key = ?))
+                """, (parent_path_key, path.name, parent_path_key))
+                if cursor.rowcount:
+                    # delete directory empty marker if it existed
+                    cursor.execute("DELETE FROM md_cache_entries WHERE path_key = ? and name = ?", (parent_path_key, EMPTY_DIR_ENT))
 
         if pre_stat is not None:
             return pre_stat

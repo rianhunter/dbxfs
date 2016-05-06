@@ -36,7 +36,7 @@ import urllib.request
 import dropbox
 
 from dropboxfs.path_common import Path
-from dropboxfs.util_dumpster import PositionIO
+from dropboxfs.util_dumpster import PositionIO, quick_container
 
 log = logging.getLogger(__name__)
 
@@ -691,6 +691,16 @@ class FileSystem(object):
 
     def rename_noreplace(self, old_path, new_path):
         self.x_rename_stat(old_path, new_path)
+
+    def statvfs(self):
+        ALLOCATION_UNIT_SIZE = 4 * 1024 * 1024
+        space_usage = self._clientv2.users_get_space_usage()
+        allocation = (space_usage.allocation.get_individual()
+                      if space_usage.allocation.is_individual() else
+                      space_usage.allocation.get_team()).allocated
+        return quick_container(f_frsize=ALLOCATION_UNIT_SIZE,
+                               f_blocks=allocation // ALLOCATION_UNIT_SIZE,
+                               f_bavail=(allocation - space_usage.used) // ALLOCATION_UNIT_SIZE)
 
 def main(argv):
     # run some basic tests on this class

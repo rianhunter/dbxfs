@@ -299,8 +299,8 @@ class FileSystem(object):
     def create_path(self, *args):
         return Path.root_path().joinpath(*args)
 
-    def open(self, path, mode=os.O_RDONLY):
-        md = self._get_file(path, mode)
+    def open(self, path, mode=os.O_RDONLY, directory=False):
+        md = self._get_file(path, mode, directory=directory)
         return _File(md, mode)
 
     def _low_md_from_id(self, id_):

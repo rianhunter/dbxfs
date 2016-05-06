@@ -1084,6 +1084,7 @@ FILE_OVERWRITE_IF = 0x5
 FILE_DELETE_ON_CLOSE = 0x1000
 FILE_OPEN_BY_FILE_ID = 0x2000
 
+FILE_DIRECTORY_FILE = 0x1
 FILE_NON_DIRECTORY_FILE = 0x40
 
 FILE_SHARE_READ = 0x1
@@ -2367,7 +2368,7 @@ def handle_request(server, server_capabilities, cs, backend, req):
             is_directory = False
             path = yield from smb_path_to_fs_path(file_path)
             try:
-                handle = yield from fs.open(path, mode)
+                handle = yield from fs.open(path, mode, header.create_options & FILE_DIRECTORY_FILE)
                 md = yield from fs.fstat(handle)
             except FileExistsError:
                 raise ProtocolError(STATUS_OBJECT_NAME_COLLISION)

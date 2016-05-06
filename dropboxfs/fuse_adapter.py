@@ -72,8 +72,8 @@ class FUSEAdapter(object):
 
     def getattr(self, path, fh=None):
         if fh is not None:
-            if fh in self._fh_to_file:
-                raise Exception("Fuse passed us invalid file handle!")
+            if fh not in self._fh_to_file:
+                raise Exception("Fuse passed us invalid file handle!: %r" % (fh,))
             st = self._fs.fstat(self._fh_to_file[fh])
         else:
             st = self._fs.stat(self._conv_path(path))

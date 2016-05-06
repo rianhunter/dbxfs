@@ -317,6 +317,8 @@ class SharedLock(object):
     def __exit__(self, *n):
         self.release()
 
+DOWNLOAD_UNIT = 2 ** 16
+
 # File downloads start on first call to pread()
 class StreamingFile(object):
     def __init__(self, fs, stat):
@@ -352,9 +354,9 @@ class StreamingFile(object):
                 # Skip bytes if we already have them
                 toread = amt
                 while toread:
-                    toread -= len(fsource.read(min(toread, 2 ** 16)))
+                    toread -= len(fsource.read(min(toread, DOWNLOAD_UNIT)))
                 while True:
-                    buf = fsource.read(2 ** 16)
+                    buf = fsource.read(DOWNLOAD_UNIT)
                     if not buf: break
 
                     if self.stop_signal.is_set():
@@ -410,7 +412,7 @@ class StreamingFile(object):
     def _should_wait(self, offset, size):
         with self.cond:
             # if this is currently being downloaded, then just wait
-            if (offset + size <= self.stored + 2 ** 16 or
+            if (offset + size <= self.stored + DOWNLOAD_UNIT or
                 offset == self.stored):
                 return True
 

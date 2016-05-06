@@ -53,3 +53,14 @@ class PositionIO(io.RawIOBase):
 @contextlib.contextmanager
 def null_context():
     yield
+
+class quick_container(object):
+    def __init__(self, **kw):
+        self._fields = []
+        for (k, v) in kw.items():
+            setattr(self, k, v)
+            self._fields.append(k)
+        self._fields = tuple(self._fields)
+
+    def __repr__(self):
+        return 'quick_container(' + ','.join("%s=%r" % (k, getattr(self, k)) for k in self._fields) + ')'

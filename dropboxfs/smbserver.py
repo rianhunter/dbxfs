@@ -30,6 +30,8 @@ from collections import defaultdict, namedtuple
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
+from dropboxfs.util_dumpster import quick_container
+
 log = logging.getLogger(__name__)
 
 SMB_COM_CLOSE = 0x04
@@ -1004,17 +1006,6 @@ def reply_header_from_request_header(header, **kw):
 
 def reply_header_from_request(msg, **kw):
     return reply_header_from_request_header(msg.header, **kw)
-
-class quick_container(object):
-    def __init__(self, **kw):
-        self._fields = []
-        for (k, v) in kw.items():
-            setattr(self, k, v)
-            self._fields.append(k)
-        self._fields = tuple(self._fields)
-
-    def __repr__(self):
-        return 'quick_container(' + ','.join("%s=%r" % (k, getattr(self, k)) for k in self._fields) + ')'
 
 STATUS_SUCCESS = 0x0
 STATUS_NOT_FOUND = 0xc0000225

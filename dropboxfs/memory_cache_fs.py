@@ -20,7 +20,7 @@ import weakref
 
 from dropboxfs.path_common import file_name_norm
 from dropboxfs.dbfs import md_to_stat as dbmd_to_stat
-from dropboxfs.util_dumpster import utctimestamp, PositionIO, null_context
+from dropboxfs.util_dumpster import utctimestamp, PositionIO, null_context, quick_container
 
 import dropbox
 
@@ -995,6 +995,20 @@ class FileSystem(object):
         self._close_prune_thread = False
         threading.Thread(target=self._prune_thread, daemon=True).start()
 
+        # start statvfs caching thread
+        self._statvfs_event = threading.Event()
+        self._statvfs = None
+        threading.Thread(target=self._statvfs_caching_thread, daemon=True).start()
+
+    def _statvfs_caching_thread(self):
+        while not self._close_prune_thread:
+            try:
+                self._statvfs = self._fs.statvfs()
+            except Exception:
+                log.exception("Error while calling statvfs")
+            self._statvfs_event.wait()
+            self._statvfs_event.clear()
+
     def close(self):
         self._close_prune_thread = True
         self._prune_event.set()
@@ -1103,6 +1117,7 @@ class FileSystem(object):
             toclose.close()
 
     def _handle_changes(self, changes):
+        self._statvfs_event.set()
         conn = self._get_db_conn()
         with trans(conn, self._db_lock, is_exclusive=True):
             cursor = conn.cursor()
@@ -1305,6 +1320,17 @@ class FileSystem(object):
         #     all deletes/adds for descendant files as well. that would
         #     not be efficiently implemented here.
         self._handle_changes([md_delete, md])
+
+    def statvfs(self):
+        if self._statvfs is None:
+            vfs = quick_container(f_frsize=DOWNLOAD_UNIT,
+                                  f_blocks=0,
+                                  f_bavail=0)
+        else:
+            vfs = self._statvfs
+        return quick_container(f_frsize=DOWNLOAD_UNIT,
+                               f_blocks=(vfs.f_blocks * vfs.f_frsize) // DOWNLOAD_UNIT,
+                               f_bavail=(vfs.f_bavail * vfs.f_frsize) // DOWNLOAD_UNIT)
 
 def main(argv):
     logging.basicConfig(level=logging.DEBUG)

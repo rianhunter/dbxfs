@@ -206,7 +206,8 @@ def main(argv=None):
 
     if not args.smb_only and run_fuse_mount is not None:
         log.debug("Attempting fuse mount")
-        run_fuse_mount(create_fs, mount_point, foreground=args.foreground)
+        run_fuse_mount(create_fs, mount_point, foreground=args.foreground,
+                       display_name="dropboxfs", fsname="dropboxfs")
         return 0
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

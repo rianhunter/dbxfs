@@ -142,12 +142,14 @@ def main(argv=None):
     mount_point = os.path.abspath(mount_point)
 
     if args.foreground:
+        format_ = '%(asctime)s:%(levelname)s:%(name)s:%(message)s'
         logging_stream = logging.StreamHandler()
     else:
+        format_ = '%(levelname)s:%(name)s:%(message)s'
         logging_stream = RealSysLogHandler("dropboxfs", syslog.LOG_PID)
 
     level = [logging.WARNING, logging.INFO, logging.DEBUG][min(2, args.verbose)]
-    logging.basicConfig(level=level, handlers=[logging_stream])
+    logging.basicConfig(level=level, handlers=[logging_stream], format=format_)
 
     if args.config_file is not None:
         config_file = args.config_file

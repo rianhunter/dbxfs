@@ -163,13 +163,12 @@ class FUSEAdapter(object):
 
         return toret
 
-
     def __call__(self, op, *args):
         return getattr(self, op)(*args)
 
-def run_fuse_mount(create_fs, mount_point, foreground=False, display_name=None):
+def run_fuse_mount(create_fs, mount_point, foreground=False, display_name=None, fsname=None):
     kw = {}
     if sys.platform == 'darwin':
         kw['volname'] = display_name
     FUSE(FUSEAdapter(create_fs), mount_point, foreground=foreground, hard_remove=True,
-         default_permissions=True, **kw)
+         default_permissions=True, fsname=fsname, **kw)

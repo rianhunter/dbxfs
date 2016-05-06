@@ -1164,8 +1164,9 @@ class FileSystem(object):
     def create_path(self, *args):
         return self._fs.create_path(*args)
 
-    def open(self, path, mode=os.O_RDONLY):
-        st = self.stat(path, create_mode=mode & (os.O_CREAT | os.O_EXCL))
+    def open(self, path, mode=os.O_RDONLY, directory=False):
+        st = self.stat(path, create_mode=mode & (os.O_CREAT | os.O_EXCL),
+                       directory=directory)
         return _File(self, st, mode)
 
     def open_directory(self, path):

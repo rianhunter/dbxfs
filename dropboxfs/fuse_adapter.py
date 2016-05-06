@@ -8,13 +8,16 @@ import random
 import threading
 import stat
 
-from fuse import FUSE, Operations
+from fuse import FUSE
 
 from dropboxfs.util_dumpster import utctimestamp
 
 log = logging.getLogger(__name__)
 
-class FUSEAdapter(Operations):
+# Can't derive from fuse.Operations because Finder will
+# fail to copy if getxattr() returns ENOTSUP, better to
+# not implement it at all
+class FUSEAdapter(object):
     flag_nopath = 1
 
     def __init__(self, create_fs):
@@ -142,6 +145,11 @@ class FUSEAdapter(Operations):
             else:
                 break
 
+    def chmod(self, path, mode):
+        return 0
+
+    def utimens(self, path, times=None):
+        return 0
 
     def statfs(self, _):
         vfs = self._fs.statvfs()
@@ -154,7 +162,8 @@ class FUSEAdapter(Operations):
 
         return toret
 
+    def __call__(self, op, *args):
+        return getattr(self, op)(*args)
+
 def run_fuse_mount(create_fs, mount_point, foreground=False):
     FUSE(FUSEAdapter(create_fs), mount_point, foreground=foreground, hard_remove=True)
-
-

@@ -98,6 +98,16 @@ class _File(PositionIO):
     def writable(self):
         return (self._mode & os.O_ACCMODE) in (os.O_WRONLY, os.O_RDWR)
 
+    def ptruncate(self, offset):
+        if not self.writable():
+            raise OSError(errno.EBADF, os.strerror(errno.EBADF))
+        with self._md['lock']:
+            d = self._md["data"] = self._md['data'][:offset]
+            m = self._md['mtime'] = datetime.utcnow()
+            self._md['ctime'] = datetime.utcnow()
+            self._md['revs'].append((m, d))
+            return 0
+
 class _Directory(object):
     def __init__(self, fs, md):
         self._fs = fs

@@ -51,8 +51,7 @@ class FileSystem(object):
         self._fs = backing_fs
 
     def _filter(self, path):
-        if (path.name.startswith("._") or
-            path.name.lower() == ".ds_store" or
+        if (path.name.lower() == ".ds_store" or
             path == self.create_path(".TemporaryItems") or
             path == self.create_path(".Trashes")):
             raise OSError(errno.ENOENT, os.strerror(errno.ENOENT))

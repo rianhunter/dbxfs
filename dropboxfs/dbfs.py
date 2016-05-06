@@ -519,8 +519,8 @@ class FileSystem(object):
         # x_stat_create() doesn't honor O_TRUNC (but open() does)
         return md_to_stat(self._stat_create(path, mode & ~os.O_TRUNC, directory))
 
-    def open(self, path, mode=os.O_RDONLY):
-        md = self._stat_create(path, mode)
+    def open(self, path, mode=os.O_RDONLY, directory=False):
+        md = self._stat_create(path, mode, directory)
         return self.open_by_id(md.id, mode)
 
     def open_by_id(self, id_, mode=os.O_RDONLY):

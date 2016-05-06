@@ -891,11 +891,26 @@ def decode_transaction_2_query_file_information_request_params(smb_header, _, bu
 decode_transaction_2_query_file_information_request_data = \
     decode_transaction_2_find_first_request_data
 
+def win32_to_datetime(ft):
+    ts = (ft / 10000000) - 11644473600
+    return datetime.utcfromtimestamp(ts)
+
 def parse_set_file_data(trans2_params, buf):
     if trans2_params.information_level == SMB_SET_FILE_END_OF_FILE_INFO:
         fmt = "<Q"
         (end_of_file,) = struct.unpack(fmt, buf)
         return quick_container(end_of_file=end_of_file)
+    elif trans2_params.information_level == SMB_SET_FILE_BASIC_INFO:
+        fmt = "<QQQQLL"
+        fmt_size = struct.calcsize(fmt)
+        (creation_time, last_access_time,
+         last_write_time, change_time,
+         ext_file_attributes, _) = struct.unpack(fmt, buf)
+        return quick_container(creation_time=creation_time,
+                               last_access_time=last_access_time,
+                               last_write_time=last_write_time,
+                               change_time=change_time,
+                               ext_file_attributes=ext_file_attributes)
     else:
         raise ProtocolError(STATUS_OS2_INVALID_LEVEL,
                             "Information level not supported: %r" %
@@ -1093,6 +1108,7 @@ DEFAULT_ANDX_PARAMETERS = dict(andx_command=0xff,
                                andx_offset=0)
 
 SMB_SET_FILE_END_OF_FILE_INFO = 0x104
+SMB_SET_FILE_BASIC_INFO = 0x101
 
 def encode_smb_datetime(dt):
     log.debug("date is %r", dt)
@@ -2235,18 +2251,24 @@ def handle_request(server, server_capabilities, cs, backend, req):
                 (ea_error_offset, data_bytes) = query_file_info_generator(name, normalize_stat(md))
                 params_bytes = struct.pack("<H", ea_error_offset)
             elif trans2_type == SMB_TRANS2_SET_FILE_INFORMATION:
-                if trans2_params.information_level != SMB_SET_FILE_END_OF_FILE_INFO:
-                    raise ProtocolError(STATUS_OS2_INVALID_LEVEL,
-                                        "SET FILE INFORMATION Information level not supported: %r" %
-                                        (trans2_params.information_level,))
-
                 try:
                     fid_md = yield from cs.ref_file(trans2_params.fid)
                 except KeyError:
                     raise ProtocolError(STATUS_INVALID_HANDLE)
                 try:
-                    yield from fid_md['handle'].seek(trans2_data.end_of_file)
-                    yield from fid_md['handle'].truncate()
+                    if trans2_params.information_level == SMB_SET_FILE_BASIC_INFO:
+                        # TODO: implement this
+                        # NB: this call is advisory and can be ignored per
+                        #     SetFileTime documentation, e.g. FAT can't record
+                        #     these times.
+                        pass
+                    elif trans2_params.information_level == SMB_SET_FILE_END_OF_FILE_INFO:
+                        yield from fid_md['handle'].seek(trans2_data.end_of_file)
+                        yield from fid_md['handle'].truncate()
+                    else:
+                        raise ProtocolError(STATUS_OS2_INVALID_LEVEL,
+                                            "SET FILE INFORMATION Information level not supported: %r" %
+                                            (trans2_params.information_level,))
                 finally:
                     yield from cs.deref_file(trans2_params.fid)
 

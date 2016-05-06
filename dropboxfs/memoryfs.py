@@ -30,7 +30,7 @@ import warnings
 from datetime import datetime
 
 from dropboxfs.path_common import Path
-from dropboxfs.util_dumpster import PositionIO, null_context
+from dropboxfs.util_dumpster import PositionIO, null_context, quick_container
 
 log = logging.getLogger(__name__)
 
@@ -421,3 +421,8 @@ class FileSystem(object):
 
     def rename_noreplace(self, old_path, new_path):
         self.x_rename_stat(old_path, new_path)
+
+    def statvfs(self):
+        return quick_container(f_frsize=2 ** 16,
+                               f_blocks=2 ** 32 - 1,
+                               f_bavail=2 ** 32 - 1)

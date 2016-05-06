@@ -1252,17 +1252,20 @@ INFO_GENERATORS = {
     SMB_FIND_FILE_BOTH_DIRECTORY_INFO: generate_find_file_both_directory_info,
 }
 
-def generate_fs_size_info():
+@asyncio.coroutine
+def generate_fs_size_info(fs):
+    st = yield from fs.statvfs()
     return struct.pack("<QQII",
-                       2 ** 64 - 1, # total allocation units
-                       0, # total free allocation units
-                       16384, # sectors per allocation unit
+                       st.f_blocks, # total allocation units
+                       st.f_bavail, # total free allocation units
+                       st.f_frsize // 512, # sectors per allocation unit
                        512, # bytes per sector
                        )
 
 FILE_DEVICE_DISK = 0x7
 
-def generate_fs_device_info():
+@asyncio.coroutine
+def generate_fs_device_info(fs):
     # TODO: there are a whole bunch of options we can use for the
     #       "characteristics" field
     return struct.pack("<II",
@@ -1273,7 +1276,8 @@ FILE_CASE_SENSITIVE_SEARCH = 0x1
 FILE_CASE_PRESERVED_NAMES = 0x2
 FILE_UNICODE_ON_DISK = 0x4
 
-def generate_fs_attribute_info():
+@asyncio.coroutine
+def generate_fs_attribute_info(fs):
     file_system_attributes = FILE_UNICODE_ON_DISK | FILE_CASE_PRESERVED_NAMES
     max_file_name_length_in_bytes = 255 * 2
     file_system_name = "what"
@@ -2178,7 +2182,7 @@ def handle_request(server, server_capabilities, cs, backend, req):
                                         "QUERY FS Information level not supported: %r" %
                                         (information_level,))
 
-                data_bytes = fs_info_generator()
+                data_bytes = yield from fs_info_generator(fs)
 
                 setup = []
                 params_bytes = b''

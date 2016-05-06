@@ -1296,7 +1296,7 @@ FILE_UNICODE_ON_DISK = 0x4
 def generate_fs_attribute_info(fs):
     file_system_attributes = FILE_UNICODE_ON_DISK | FILE_CASE_PRESERVED_NAMES
     max_file_name_length_in_bytes = 255 * 2
-    file_system_name = "what"
+    file_system_name = "NTFS"
     file_system_name_encoded = file_system_name.encode("utf-16-le")
     header = struct.pack("<LlL",
                          file_system_attributes,

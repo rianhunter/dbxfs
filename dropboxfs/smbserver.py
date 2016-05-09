@@ -2454,7 +2454,7 @@ def handle_request(server, server_capabilities, cs, backend, req):
                           fid_md['path'], request.offset,
                           request.max_count_of_bytes_to_return)
 
-                buf = yield from fid_md['handle'].pread(request.max_count_of_bytes_to_return, request.offset)
+                buf = yield from fs.pread(fid_md['handle'], request.max_count_of_bytes_to_return, request.offset)
 
                 log.debug("PREAD DONE... %r buf len: %r", fid_md['path'], len(buf))
             finally:
@@ -2761,6 +2761,12 @@ class AsyncFS(AsyncWrapped):
         # NB: we have to unwrap the async handle
         return (yield from self._worker_pool.run_async(self._obj.fsync,
                                                        handle._obj))
+
+    @asyncio.coroutine
+    def pread(self, handle, *n, **kw):
+        # NB: we have to unwrap the async handle
+        return (yield from self._worker_pool.run_async(self._obj.pread,
+                                                       handle._obj, *n, **kw))
 
     def create_watch(self, cb, dir_handle, *n, **kw):
         is_stopped = [False]

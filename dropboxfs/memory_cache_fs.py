@@ -442,7 +442,7 @@ class StreamingFile(object):
                     log.debug("Bypassing file cache %r", (offset, size))
                     try:
                         with contextlib.closing(self.fs.x_open_by_rev(self._stat.rev)) as fsource:
-                            return fsource.pread(size, offset)
+                            return self.fs.pread(fsource, size, offset)
                     finally:
                         log.debug("Done bypassing file cache %r", (offset, size))
 
@@ -1343,6 +1343,9 @@ class FileSystem(object):
         return quick_container(f_frsize=DOWNLOAD_UNIT,
                                f_blocks=(vfs.f_blocks * vfs.f_frsize) // DOWNLOAD_UNIT,
                                f_bavail=(vfs.f_bavail * vfs.f_frsize) // DOWNLOAD_UNIT)
+
+    def pread(self, handle, size, offset):
+        return handle.pread(size, offset)
 
 def main(argv):
     logging.basicConfig(level=logging.DEBUG)

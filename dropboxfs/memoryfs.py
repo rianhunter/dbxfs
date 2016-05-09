@@ -436,3 +436,6 @@ class FileSystem(object):
         return quick_container(f_frsize=2 ** 16,
                                f_blocks=2 ** 32 - 1,
                                f_bavail=2 ** 32 - 1)
+
+    def pread(self, handle, size, offset):
+        return handle.pread(size, offset)

@@ -89,7 +89,7 @@ class FUSEAdapter(object):
 
     def read(self, path, size, offset, fh):
         f = self._fh_to_file[fh]
-        return f.pread(size, offset)
+        return self._fs.pread(f, size, offset)
 
     def write(self, path, data, offset, fh):
         f = self._fh_to_file[fh]

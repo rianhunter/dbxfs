@@ -21,7 +21,7 @@ class PositionIO(io.RawIOBase):
 
     def readinto(self, ibuf):
         with self._offset_lock:
-            obuf = self.pread(self._offset, len(ibuf))
+            obuf = self.pread(len(ibuf), self._offset)
             ibuf[:len(obuf)] = obuf
             self._offset += len(obuf)
             return len(obuf)

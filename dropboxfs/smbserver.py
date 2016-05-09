@@ -2454,7 +2454,7 @@ def handle_request(server, server_capabilities, cs, backend, req):
                           fid_md['path'], request.offset,
                           request.max_count_of_bytes_to_return)
 
-                buf = yield from fid_md['handle'].pread(request.offset, request.max_count_of_bytes_to_return)
+                buf = yield from fid_md['handle'].pread(request.max_count_of_bytes_to_return, request.offset)
 
                 log.debug("PREAD DONE... %r buf len: %r", fid_md['path'], len(buf))
             finally:

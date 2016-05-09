@@ -418,7 +418,7 @@ class StreamingFile(object):
 
             return not (self.stored < offset + size and self.eof is None)
 
-    def pread(self, offset, size):
+    def pread(self, size, offset):
         ctx = self.reset_lock.shared_context()
 
         while True:
@@ -442,7 +442,7 @@ class StreamingFile(object):
                     log.debug("Bypassing file cache %r", (offset, size))
                     try:
                         with contextlib.closing(self.fs.x_open_by_rev(self._stat.rev)) as fsource:
-                            return fsource.pread(offset, size)
+                            return fsource.pread(size, offset)
                     finally:
                         log.debug("Done bypassing file cache %r", (offset, size))
 
@@ -470,7 +470,7 @@ class NullFile(object):
     def stat(self):
         return self._stat
 
-    def pread(self, offset, size):
+    def pread(self, size, offset):
         return b''
 
     def close(self):
@@ -580,7 +580,7 @@ class SQLiteFrontFile(PositionIO):
     def readable(self):
         return True
 
-    def _pread(self, cursor, offset, size):
+    def _pread(self, cursor, size, offset):
         blkidx_start = offset // SQLITE_FILE_BLOCK_SIZE
         blkidx_start_offset = offset % SQLITE_FILE_BLOCK_SIZE
 
@@ -610,7 +610,7 @@ class SQLiteFrontFile(PositionIO):
             if blks[idx] is not None:
                 continue
             bidx = idx + blkidx_start
-            read_ = self._backfile.pread(bidx * SQLITE_FILE_BLOCK_SIZE, SQLITE_FILE_BLOCK_SIZE)
+            read_ = self._backfile.pread(SQLITE_FILE_BLOCK_SIZE, bidx * SQLITE_FILE_BLOCK_SIZE)
             blks[idx] = b'%s%s' % (read_, b'\0' * (SQLITE_FILE_BLOCK_SIZE - len(read_)))
 
         assert all(len(a) == SQLITE_FILE_BLOCK_SIZE for a in blks)
@@ -633,11 +633,11 @@ class SQLiteFrontFile(PositionIO):
 
         return toret
 
-    def pread(self, offset, size):
+    def pread(self, size, offset):
         conn = self._get_db_conn()
         with trans(conn, self._db_lock), \
              contextlib.closing(conn.cursor()) as cursor:
-            return self._pread(cursor, offset, size)
+            return self._pread(cursor, size, offset)
 
     def writable(self):
         return True
@@ -656,9 +656,9 @@ class SQLiteFrontFile(PositionIO):
 
         # write data to backfile
         desired_header_size = blkidx_start_offset
-        header = self._pread(cursor, blkidx_start * SQLITE_FILE_BLOCK_SIZE, desired_header_size)
+        header = self._pread(cursor, desired_header_size, blkidx_start * SQLITE_FILE_BLOCK_SIZE)
         desired_footer_size = (blkidx_end + 1) * SQLITE_FILE_BLOCK_SIZE - (offset + size)
-        footer = self._pread(cursor, offset + size, desired_footer_size)
+        footer = self._pread(cursor, desired_footer_size, offset + size)
 
         block_aligned_data = (b'%s%s%s%s%s' %
                               (header, b'\0' * (desired_header_size - len(header)),
@@ -795,8 +795,8 @@ class CachedFile(object):
 
             self._fs._submit_write(md)
 
-    def pread(self, offset, size):
-        return self._file.pread(offset, size)
+    def pread(self, size, offset):
+        return self._file.pread(size, offset)
 
     def pwrite(self, data, offset):
         # NB: grab lock so we don't modify self._file while
@@ -901,7 +901,7 @@ class _File(PositionIO):
             if isinstance(self._live_md.cached_file, CachedFile):
                 return self._live_md.cached_file.sync()
 
-    def pread(self, offset, size):
+    def pread(self, size, offset):
         if not self.readable():
             raise OSError(errno.EBADF, os.strerror(errno.EBADF))
 
@@ -909,7 +909,7 @@ class _File(PositionIO):
             if self._live_md is None:
                 raise OSError(errno.EBADF, os.strerror(errno.EBADF))
 
-            return self._live_md.cached_file.pread(offset, size)
+            return self._live_md.cached_file.pread(size, offset)
 
     def readable(self):
         return (self._mode & os.O_ACCMODE) in (os.O_RDONLY, os.O_RDWR)

@@ -66,7 +66,7 @@ class _File(PositionIO):
         self._md = md
         self._mode = mode
 
-    def pread(self, offset, size=-1):
+    def pread(self, size, offset):
         if not self.readable():
             raise OSError(errno.EBADF, os.strerror(errno.EBADF))
         if self._md["type"] == "directory":
@@ -144,7 +144,7 @@ class _ReadStream(PositionIO):
         super().__init__()
         self._data = data
 
-    def pread(self, offset, size=-1):
+    def pread(self, size, offset):
         return self._data[offset:
                           len(self._data) if size < 0 else offset + size]
 

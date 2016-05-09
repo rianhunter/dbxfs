@@ -187,7 +187,7 @@ class _File(PositionIO):
         self._fs = fs
         self._path = path
 
-    def pread(self, offset, size=-1):
+    def pread(self, size, offset):
         # NB: We don't use self._read_conn to avoid locking
         #     since pread() is usually parallel-friendly
 

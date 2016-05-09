@@ -864,7 +864,7 @@ class _File(PositionIO):
                 if stat.type == "file":
                     cached_file = CachedFile(fs, stat)
                 else:
-                    cached_file = self._fs._fs.open_by_id(stat.id)
+                    cached_file = self._fs._fs.x_open_by_id(stat.id)
 
                 live_md = self._fs._open_files_by_id[stat.id] = \
                           LiveFileMetadata(cached_file=cached_file,

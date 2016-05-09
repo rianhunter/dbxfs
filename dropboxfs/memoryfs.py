@@ -323,7 +323,7 @@ class FileSystem(object):
         id_ = int(id_[3:])
         return self._low_md_from_id(id_)
 
-    def open_by_id(self, id_, mode=os.O_RDONLY):
+    def x_open_by_id(self, id_, mode=os.O_RDONLY):
         # id is the memory address of the md object
         return _File(self._md_from_id(id_), mode)
 

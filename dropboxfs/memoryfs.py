@@ -439,3 +439,6 @@ class FileSystem(object):
 
     def pread(self, handle, size, offset):
         return handle.pread(size, offset)
+
+    def pwrite(self, handle, data, offset):
+        return handle.pwrite(data, offset)

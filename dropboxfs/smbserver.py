@@ -2582,7 +2582,7 @@ def handle_request(server, server_capabilities, cs, backend, req):
                     log.warning("Got timeout value for SMB_COM_WRITE: %r, ignoring...",
                                 req.parameters.timeout)
 
-                amt = yield from fid_md['handle'].pwrite(req.data, req.parameters.offset)
+                amt = yield from fs.pwrite(fid_md['handle'], req.data, req.parameters.offset)
 
                 WRITE_THROUGH_MODE = 0x1
                 if req.parameters.write_mode & WRITE_THROUGH_MODE:
@@ -2766,6 +2766,12 @@ class AsyncFS(AsyncWrapped):
     def pread(self, handle, *n, **kw):
         # NB: we have to unwrap the async handle
         return (yield from self._worker_pool.run_async(self._obj.pread,
+                                                       handle._obj, *n, **kw))
+
+    @asyncio.coroutine
+    def pwrite(self, handle, *n, **kw):
+        # NB: we have to unwrap the async handle
+        return (yield from self._worker_pool.run_async(self._obj.pwrite,
                                                        handle._obj, *n, **kw))
 
     def create_watch(self, cb, dir_handle, *n, **kw):

@@ -93,7 +93,7 @@ class FUSEAdapter(object):
 
     def write(self, path, data, offset, fh):
         f = self._fh_to_file[fh]
-        return f.pwrite(data, offset)
+        return self._fs.pwrite(f, data, offset)
 
     def truncate(self, path, length, fh=None):
         if fh is None:

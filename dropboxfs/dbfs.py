@@ -637,7 +637,7 @@ class FileSystem(object):
 
         return stop
 
-    def create_db_style_watch(self, cb):
+    def x_create_db_style_watch(self, cb):
         self._add_watch(cb)
 
         def stop():

@@ -986,7 +986,7 @@ class FileSystem(object):
         # NB: we need to use a 'db style' watch because we need the
         #     ids, and create_watch() doesn't promise ids
         try:
-            create_db_watch = self._fs.create_db_style_watch
+            create_db_watch = self._fs.x_create_db_style_watch
         except AttributeError:
             self._watch_stop = None
         else:

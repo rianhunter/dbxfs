@@ -2263,8 +2263,7 @@ def handle_request(server, server_capabilities, cs, backend, req):
                         #     these times.
                         pass
                     elif trans2_params.information_level == SMB_SET_FILE_END_OF_FILE_INFO:
-                        yield from fid_md['handle'].seek(trans2_data.end_of_file)
-                        yield from fid_md['handle'].truncate()
+                        yield from fs.ftruncate(fid_md['handle'], trans2_data.end_of_file)
                     else:
                         raise ProtocolError(STATUS_OS2_INVALID_LEVEL,
                                             "SET FILE INFORMATION Information level not supported: %r" %
@@ -2772,6 +2771,12 @@ class AsyncFS(AsyncWrapped):
     def pwrite(self, handle, *n, **kw):
         # NB: we have to unwrap the async handle
         return (yield from self._worker_pool.run_async(self._obj.pwrite,
+                                                       handle._obj, *n, **kw))
+
+    @asyncio.coroutine
+    def ftruncate(self, handle, *n, **kw):
+        # NB: we have to unwrap the async handle
+        return (yield from self._worker_pool.run_async(self._obj.ftruncate,
                                                        handle._obj, *n, **kw))
 
     def create_watch(self, cb, dir_handle, *n, **kw):

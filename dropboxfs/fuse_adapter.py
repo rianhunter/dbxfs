@@ -99,10 +99,10 @@ class FUSEAdapter(object):
         if fh is None:
             # TODO: add truncate() call to FS interface
             with contextlib.closing(self._fs.open(self._conv_path(path), os.O_WRONLY)) as f:
-                f.ptruncate(length)
+                self._fs.ftruncate(f, length)
         else:
             f = self._fh_to_file[fh]
-            f.ptruncate(length)
+            self._fs.ftruncate(f, length)
 
     def fsync(self, path, datasync, fh):
         self._fs.fsync(self._fh_to_file[fh])

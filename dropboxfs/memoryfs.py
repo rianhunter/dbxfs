@@ -442,3 +442,6 @@ class FileSystem(object):
 
     def pwrite(self, handle, data, offset):
         return handle.pwrite(data, offset)
+
+    def ftruncate(self, handle, offset):
+        return handle.ptruncate(offset)

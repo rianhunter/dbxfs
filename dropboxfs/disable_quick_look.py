@@ -3,7 +3,7 @@ import itertools
 import logging
 import os
 
-from dropboxfs.memoryfs import FileSystem as MemoryFileSystem
+from userspacefs.memoryfs import FileSystem as MemoryFileSystem
 
 log = logging.getLogger(__name__)
 

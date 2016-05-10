@@ -31,7 +31,7 @@ setup(
     install_requires=[
         "dropbox>=3.38,<7",
         "appdirs>=1.4,<2",
-        "fusepy>=2,<3",
+        "userspacefs",
     ],
     entry_points={
         'console_scripts': [

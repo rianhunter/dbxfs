@@ -18,9 +18,10 @@ import sqlite3
 import sys
 import weakref
 
-from dropboxfs.path_common import file_name_norm
+from userspacefs.path_common import file_name_norm
+from userspacefs.util_dumpster import utctimestamp, PositionIO, null_context, quick_container
+
 from dropboxfs.dbfs import md_to_stat as dbmd_to_stat
-from dropboxfs.util_dumpster import utctimestamp, PositionIO, null_context, quick_container
 
 import dropbox
 
@@ -1357,7 +1358,7 @@ def main(argv):
     logging.basicConfig(level=logging.DEBUG)
 
     # This runtime import is okay because it happens in main()
-    from dropboxfs.memoryfs import FileSystem as MemoryFileSystem
+    from userspacefs.memoryfs import FileSystem as MemoryFileSystem
 
     backing_fs = MemoryFileSystem([("foo", {"type": "directory",
                                             "children" : [

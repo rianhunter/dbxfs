@@ -35,8 +35,8 @@ import urllib.request
 
 import dropbox
 
-from dropboxfs.path_common import Path
-from dropboxfs.util_dumpster import PositionIO, quick_container
+from userspacefs.path_common import Path
+from userspacefs.util_dumpster import PositionIO, quick_container
 
 log = logging.getLogger(__name__)
 

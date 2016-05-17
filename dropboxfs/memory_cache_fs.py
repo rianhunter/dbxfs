@@ -35,7 +35,6 @@ import sqlite3
 import sys
 import weakref
 
-from userspacefs.path_common import file_name_norm
 from userspacefs.util_dumpster import utctimestamp, PositionIO, null_context, quick_container
 
 from dropboxfs.dbfs import md_to_stat as dbmd_to_stat
@@ -112,9 +111,6 @@ def wrap_show_exc(fn):
             traceback.print_exc()
             raise
     return fn2
-
-def file_name_norm_2(*n, **kw):
-    return file_name_norm(*n, **kw)
 
 _hold_ref_lock = threading.Lock()
 _hold_ref = weakref.WeakKeyDictionary()
@@ -1106,7 +1102,7 @@ class FileSystem(object):
         conn = sqlite3.connect(self._db_file, factory=WeakrefableConnection, uri=True)
         conn.create_function("attr_merge", 2, wrap_show_exc(attr_merge_sql))
         conn.create_function("norm_join", 2, wrap_show_exc(self._norm_join_sql))
-        register_deterministic_function(conn, "file_name_norm", 1, wrap_show_exc(file_name_norm_2))
+        register_deterministic_function(conn, "file_name_norm", 1, wrap_show_exc(self._fs.file_name_norm))
         return conn
 
     def _get_db_conn(self):
@@ -1161,7 +1157,7 @@ class FileSystem(object):
                 if isinstance(change, dropbox.files.DeletedMetadata):
                     # remove from the directory tree cache
                     cursor.execute("DELETE FROM md_cache_entries WHERE path_key = ? and file_name_norm(name) = ?",
-                                   (parent_path_key, file_name_norm(name)))
+                                   (parent_path_key, self._fs.file_name_norm(name)))
                     if cursor.rowcount:
                         # insert directory empty marker if there are no more
                         # files under this directory
@@ -1199,6 +1195,9 @@ class FileSystem(object):
 
     def create_path(self, *args):
         return self._fs.create_path(*args)
+
+    def file_name_norm(self, fn):
+        return self._fs.file_name_norm(fn)
 
     def open(self, path, mode=os.O_RDONLY, directory=False):
         st = self.stat(path, create_mode=mode & (os.O_CREAT | os.O_EXCL),

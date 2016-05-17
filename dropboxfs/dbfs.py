@@ -425,10 +425,14 @@ class FileSystem(object):
         pass
 
     def create_path(self, *args):
-        return Path.root_path().joinpath(*args)
+        return Path([], fn_norm=self.file_name_norm).joinpath(*args)
 
     def parse_path(self, p):
-        return Path.parse_path(p)
+        return Path.parse_path(p, fn_norm=self.file_name_norm)
+
+    def file_name_norm(self, n):
+        # XXX: not all upper<->lower characters are equivalent in Dropbox
+        return n.lower()
 
     # NB: This is probably evil opaque magic
     @property

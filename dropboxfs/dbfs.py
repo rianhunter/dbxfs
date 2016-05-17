@@ -45,8 +45,8 @@ if not hasattr(os, 'O_ACCMODE'):
     for accmode in (os.O_RDONLY, os.O_WRONLY, os.O_RDWR):
         assert (O_ACCMODE & accmode) == accmode
 
-_StatObject = collections.namedtuple("Stat", ["name", "type", "size", "mtime", "id", "ctime", "rev"])
-
+STAT_ATTRS = ["name", "type", "size", "mtime", "id", "ctime", "rev"]
+_StatObject = collections.namedtuple("Stat", STAT_ATTRS + ['attrs'])
 
 def md_to_stat(md):
     name = md.name
@@ -59,7 +59,8 @@ def md_to_stat(md):
     rev = ('rev:' + md.rev
            if type == "file" else
            None)
-    return _StatObject(name, type, size, mtime, md.id, ctime=ctime, rev=rev)
+    return _StatObject(name, type, size, mtime, md.id, ctime=ctime, rev=rev,
+                       attrs=STAT_ATTRS)
 
 class _Directory(object):
     def __init__(self, fs, path):
@@ -545,7 +546,7 @@ class FileSystem(object):
         return _Directory(self, str(path))
 
     def stat_has_attr(self, attr):
-        return attr in ["type", "size", "mtime", "id"]
+        return attr in STAT_ATTRS
 
     def stat(self, path):
         return self._get_md(path)

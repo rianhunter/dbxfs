@@ -51,22 +51,22 @@ if not hasattr(os, 'O_ACCMODE'):
 
 class attr_merge(object):
     def __init__(self, *n):
+        attrs = set()
         for obj in n:
-            for name in dir(obj):
-                if name.startswith("__") or name.startswith("_"):
-                    continue
+            for name in obj.attrs:
                 setattr(self, name, getattr(obj, name))
+                attrs.add(name)
+        self.attrs = list(attrs)
 
     def __repr__(self):
-        return 'attr_merge(' + ', '.join('%s=%r' % (k, getattr(self, k)) for k in dir(self)
-                                         if not (k.startswith("__") and k.startswith("_"))) + ')'
+        return 'attr_merge(' + ', '.join('%s=%r' % (k, getattr(self, k)) for k in self.attrs) + ')'
 
-Name = collections.namedtuple('Name', ['name'])
+Name = collections.namedtuple('Name', ['name', 'attrs'])
 def md_plus_name(name, md):
-    return attr_merge(Name(name), md)
+    return attr_merge(Name(name, attrs=['name']), md)
 
 REQUIRED_ATTRS = ["mtime", "type", "size", "id", "ctime", "rev"]
-Stat = collections.namedtuple("Stat", REQUIRED_ATTRS)
+Stat = collections.namedtuple("Stat", REQUIRED_ATTRS + ["attrs"])
 
 def stat_to_json(obj):
     toret = {}
@@ -88,6 +88,7 @@ def json_to_stat(str_):
         elif name in ("mtime", "ctime"):
             val = datetime.datetime.utcfromtimestamp(val)
             info[name] = val
+    info['attrs'] = REQUIRED_ATTRS
     return Stat(**info)
 
 def attr_merge_sql(md_str_1, md_str_2):
@@ -483,7 +484,7 @@ class NullFile(object):
     def __init__(self, id_):
         now_ = datetime.datetime.utcfromtimestamp(0)
         self._stat = Stat(size=0, mtime=now_, ctime=now_, type='file', id=id_,
-                          rev=None)
+                          rev=None, attrs=REQUIRED_ATTRS)
 
     def stat(self):
         return self._stat
@@ -550,7 +551,7 @@ class SQLiteFrontFile(PositionIO):
                 stat_dict[name] = value
 
         r = self._backfile.stat()
-        return Stat(type=r.type, id=r.id, rev=None,
+        return Stat(type=r.type, id=r.id, rev=None, attrs=REQUIRED_ATTRS,
                     **stat_dict)
 
     def close(self):

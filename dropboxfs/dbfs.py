@@ -496,6 +496,9 @@ class FileSystem(object):
                 except FileNotFoundError:
                     if not (mode & os.O_CREAT):
                         raise
+                    md = None
+
+                if md is None:
                     if directory:
                         try:
                             md = self._clientv2.files_create_folder(str(path))

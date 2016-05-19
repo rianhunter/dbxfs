@@ -630,7 +630,7 @@ class FileSystem(object):
                 action = ("removed"
                           if isinstance(entry, dropbox.files.DeletedMetadata) else
                           "modified")
-                to_sub.append(Change(action, path))
+                to_sub.append(Change(action, path.parts[1:]))
 
             if to_sub:
                 try:

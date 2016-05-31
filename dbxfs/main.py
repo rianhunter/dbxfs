@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 
-# This file is part of dropboxfs.
+# This file is part of dbxfs.
 
-# dropboxfs is free software: you can redistribute it and/or modify
+# dbxfs is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
 
-# dropboxfs is distributed in the hope that it will be useful,
+# dbxfs is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU General Public License for more details.
 
 # You should have received a copy of the GNU General Public License
-# along with dropboxfs.  If not, see <http://www.gnu.org/licenses/>.
+# along with dbxfs.  If not, see <http://www.gnu.org/licenses/>.
 
 import argparse
 import contextlib
@@ -29,9 +29,9 @@ import dropbox
 
 import userspacefs
 
-from dropboxfs.dbfs import FileSystem as DropboxFileSystem
-from dropboxfs.memory_cache_fs import FileSystem as CachingFileSystem
-from dropboxfs.disable_quick_look import FileSystem as DisableQuickLookFileSystem
+from dbxfs.dbfs import FileSystem as DropboxFileSystem
+from dbxfs.memory_cache_fs import FileSystem as CachingFileSystem
+from dbxfs.disable_quick_look import FileSystem as DisableQuickLookFileSystem
 
 log = logging.getLogger(__name__)
 
@@ -47,7 +47,7 @@ def main(argv=None):
     if args.config_file is not None:
         config_file = args.config_file
     else:
-        config_file = os.path.expanduser("~/.dropboxfs")
+        config_file = os.path.expanduser("~/.dbxfs")
 
     access_token = None
     try:
@@ -87,7 +87,7 @@ def main(argv=None):
             with open(config_file, "w") as f:
                 json.dump(dict(access_token=access_token), f)
 
-    cache_folder = os.path.join(appdirs.user_cache_dir(), "dropboxfs", "file_cache")
+    cache_folder = os.path.join(appdirs.user_cache_dir(), "dbxfs", "file_cache")
     with contextlib.suppress(FileExistsError):
         os.makedirs(cache_folder)
 
@@ -97,7 +97,7 @@ def main(argv=None):
             fs = DisableQuickLookFileSystem(fs)
         return fs
 
-    return userspacefs.simple_main("dropboxfs", create_fs, args)
+    return userspacefs.simple_main("dbxfs", create_fs, args)
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv))

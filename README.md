@@ -1,6 +1,6 @@
-# dropboxfs
+# dbxfs
 
-Yo! Welcome to dropboxfs. This is how you should dev:
+Yo! Welcome to dbxfs. This is how you should dev:
 
 1. Get virtualenv (either use brew, apt-get, yum, or pip)
 2. Create your virtualenv (make sure to use Python 3):
@@ -15,6 +15,6 @@ Yo! Welcome to dropboxfs. This is how you should dev:
 
         $ python setup.py develop
 
-5. Run executable (this will run the module at "dropboxfs/main.py"):
+5. Run executable (this will run the module at "dbxfs/main.py"):
 
-        $ dropboxfs
+        $ dbxfs

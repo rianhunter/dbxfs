@@ -332,7 +332,7 @@ class _WriteStream(object):
                 path = str(self._path)
             else:
                 md = self._fs._clientv2.files_get_metadata(self._path)
-                path = md.path_lower
+                path = md.path_display
 
             if self._session_id is None:
                 assert len(self._buf.getbuffer()) < BUF_SIZE

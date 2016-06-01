@@ -32,6 +32,7 @@ import userspacefs
 from dbxfs.dbfs import FileSystem as DropboxFileSystem
 from dbxfs.memory_cache_fs import FileSystem as CachingFileSystem
 from dbxfs.disable_quick_look import FileSystem as DisableQuickLookFileSystem
+from dbxfs.safefs_glue import safefs_wrap_create_fs
 
 log = logging.getLogger(__name__)
 
@@ -42,6 +43,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser()
     userspacefs.add_cli_arguments(parser)
     parser.add_argument("-c", "--config-file")
+    parser.add_argument("-e", "--encrypted-folder", dest='encrypted_folders', action='append')
     args = parser.parse_args(argv[1:])
 
     if args.config_file is not None:
@@ -96,6 +98,8 @@ def main(argv=None):
         if sys.platform == 'darwin':
             fs = DisableQuickLookFileSystem(fs)
         return fs
+
+    create_fs = safefs_wrap_create_fs(create_fs, args.encrypted_folders)
 
     return userspacefs.simple_main("dbxfs", create_fs, args)
 

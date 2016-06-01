@@ -32,6 +32,7 @@ setup(
         "dropbox>=3.38,<7",
         "appdirs>=1.4,<2",
         "userspacefs",
+        "safefs",
     ],
     entry_points={
         'console_scripts': [

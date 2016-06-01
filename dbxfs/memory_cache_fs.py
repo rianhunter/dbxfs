@@ -949,6 +949,8 @@ class _File(PositionIO):
 
     def close(self):
         with self._lock:
+            if self._live_md is None:
+                return
             live_md = self._live_md
             self._live_md = None
 

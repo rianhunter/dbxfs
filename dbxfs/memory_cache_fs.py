@@ -612,8 +612,6 @@ class SQLiteFrontFile(PositionIO):
         cursor.execute("SELECT blkidx, data FROM blocks WHERE blkidx >= ? AND blkidx <= ?",
                        (blkidx_start, blkidx_end))
         for (blkidx, data) in cursor:
-            if all(not a for a in data):
-                raise Exception("WTF A")
             blks[blkidx - blkidx_start] = data
 
         cursor.execute("SELECT value FROM md WHERE name = 'size'")

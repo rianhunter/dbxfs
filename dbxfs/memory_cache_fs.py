@@ -1032,6 +1032,7 @@ class FileSystem(object):
         self._conn.close()
         if self._watch_stop is not None:
             self._watch_stop()
+        self._fs.close()
 
     def _prune_thread(self):
         if not self._cache_folder:

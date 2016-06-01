@@ -67,6 +67,9 @@ class FileSystem(object):
 
         self._fs = backing_fs
 
+    def close(self):
+        self._fs.close()
+
     def _filter(self, path):
         if (path.name.lower() == ".ds_store" or
             path == self.create_path(".TemporaryItems") or

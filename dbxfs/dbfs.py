@@ -362,7 +362,7 @@ Change = collections.namedtuple('Change', ['action', 'path'])
 def delta_thread(dbfs):
     cursor = None
     needs_reset = True
-    while True:
+    while not dbfs._closed:
         try:
             if cursor is None:
                 cursor = dbfs._clientv2.files_list_folder_get_latest_cursor('', True).cursor
@@ -392,7 +392,7 @@ def delta_thread(dbfs):
             try:
                 while True:
                     res = dbfs._clientv2.files_list_folder_longpoll(cursor)
-                    if res.changes:
+                    if dbfs._closed or res.changes:
                         break
                     if res.backoff is not None:
                         time.sleep(res.backoff)
@@ -405,6 +405,7 @@ class FileSystem(object):
         self._local = threading.local()
         self._watches = []
         self._watches_lock = threading.Lock()
+        self._closed = False
 
         # share this session (i.e. connection pool) across threads
         self._db_session = dropbox.create_session()
@@ -421,8 +422,7 @@ class FileSystem(object):
             self._watches.remove(watch_fn)
 
     def close(self):
-        # TODO: send signal to stop delta_thread
-        pass
+        self._closed = True
 
     def create_path(self, *args):
         return Path([], fn_norm=self.file_name_norm).joinpath(*args)

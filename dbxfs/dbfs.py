@@ -654,6 +654,10 @@ class FileSystem(object):
         return stop
 
     def unlink(self, path):
+        if path.parent == path:
+            # Short-circuit on failing on root
+            raise OSError(errno.EISDIR, os.strerror(errno.EISDIR))
+
         # NB: dropbox api provides no single-file delete call
         #     if a directory exists at this location, it will recursively
         #     delete everything

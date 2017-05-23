@@ -619,11 +619,13 @@ class SQLiteFrontFile(PositionIO):
         extent_of_file = int(extent_of_file)
 
         # get remaining blocks from backing store
+        # NB: read everything at once to minimize potential latency
+        data = self._backfile.pread(len(blks) * SQLITE_FILE_BLOCK_SIZE,
+                                    blkidx_start * SQLITE_FILE_BLOCK_SIZE)
         for (idx, _) in enumerate(blks):
             if blks[idx] is not None:
                 continue
-            bidx = idx + blkidx_start
-            read_ = self._backfile.pread(SQLITE_FILE_BLOCK_SIZE, bidx * SQLITE_FILE_BLOCK_SIZE)
+            read_ = data[idx * SQLITE_FILE_BLOCK_SIZE : (idx + 1) * SQLITE_FILE_BLOCK_SIZE]
             blks[idx] = b'%s%s' % (read_, b'\0' * (SQLITE_FILE_BLOCK_SIZE - len(read_)))
 
         assert all(len(a) == SQLITE_FILE_BLOCK_SIZE for a in blks)

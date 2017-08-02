@@ -304,7 +304,7 @@ class _WriteStream(object):
             session_result = self._fs._clientv2.files_upload_session_start(to_up)
             self._session_id = session_result.session_id
         else:
-            self._fs._clientv2.files_upload_session_append(to_up, self._session_id, self._offset)
+            self._fs._clientv2.files_upload_session_append(bytes(to_up), self._session_id, self._offset)
 
         self._offset += len(to_up)
 
@@ -336,7 +336,7 @@ class _WriteStream(object):
 
             if self._session_id is None:
                 assert len(self._buf.getbuffer()) < BUF_SIZE
-                return self._fs._clientv2.files_upload(self._buf.getbuffer(), path,
+                return self._fs._clientv2.files_upload(bytes(self._buf.getbuffer()), path,
                                                        mode=self._write_mode,
                                                        autorename=self._autorename)
 

@@ -29,7 +29,7 @@ setup(
     ],
     packages=["dbxfs"],
     install_requires=[
-        "dropbox>=3.38,<7",
+        "dropbox>=3.38",
         "appdirs>=1.4,<2",
         "userspacefs",
         "safefs",

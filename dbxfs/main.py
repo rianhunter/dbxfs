@@ -73,7 +73,7 @@ def main(argv=None):
 
         print("We're all connected. Do you want to save this access token to disk? Caution: it can be saved and abused by a rogue program to access your entire Dropbox!")
         answer = input("[y/N]: ")
-        while answer.strip() not in ("y", "n", "yes", "no", ""):
+        while answer.lower().strip() not in ("y", "n", "yes", "no", ""):
             print("Please answer yes or no!")
             answer = input("[y/N]: ")
         if answer in ("y", "yes"):

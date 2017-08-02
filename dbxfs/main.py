@@ -68,17 +68,8 @@ def main(argv=None):
 
     if access_token is None:
         print("First go to https://dropbox.com/developers/apps to "
-              "create an app and get an API key and secret! (Press Ctrl-C if you make a mistake)")
-        app_key = input("Enter App Key: ")
-        app_secret = input("Enter App Secret: ")
-        auth_flow = dropbox.DropboxOAuth2FlowNoRedirect(app_key, app_secret)
-        authorize_url = auth_flow.start()
-        print("1. Go to: " + authorize_url)
-        print("2. Click \"Allow\" (you might have to log in first).")
-        print("3. Copy the authorization code.")
-        auth_code = input("Enter the authorization code here: ").strip()
-
-        access_token, _ = auth_flow.finish(auth_code)
+              "create an app then generate an access token for yourself! (Press Ctrl-C if you make a mistake)")
+        access_token = input("Enter Access Token: ")
 
         print("We're all connected. Do you want to save this access token to disk? Caution: it can be saved and abused by a rogue program to access your entire Dropbox!")
         answer = input("[y/N]: ")

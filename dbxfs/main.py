@@ -18,6 +18,7 @@
 import argparse
 import contextlib
 import errno
+import getpass
 import json
 import logging
 import os
@@ -82,7 +83,7 @@ def main(argv=None):
         if access_token is None:
             print("First go to https://dropbox.com/developers/apps to "
                   "create an app then generate an access token for yourself! (Press Ctrl-C if you make a mistake)")
-            access_token = input("Enter Access Token: ")
+            access_token = getpass.getpass("Enter Access Token: ")
 
             print("We're all connected. Do you want to save this access token to disk? Caution: it can be saved and abused by a rogue program to access your entire Dropbox!")
             if yes_no_input():

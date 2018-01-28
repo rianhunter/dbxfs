@@ -38,6 +38,13 @@ from dbxfs.safefs_glue import safefs_wrap_create_fs
 
 log = logging.getLogger(__name__)
 
+def yes_no_input(message=None):
+    answer = input("%s[y/N]" % (message + ' ' if message is not None else ''))
+    while answer.lower().strip() not in ("y", "n", "yes", "no", ""):
+        print("Please answer yes or no!")
+        answer = input("%s[y/N]" % (message + ' ' if message is not None else ''))
+    return answer.lower().startswith('y')
+
 def main(argv=None):
     # Protect access token and potentially encryption keys
     block_tracing()
@@ -71,19 +78,32 @@ def main(argv=None):
         except (ValueError, AttributeError):
             os.remove(config_file)
 
-    if access_token is None:
-        print("First go to https://dropbox.com/developers/apps to "
-              "create an app then generate an access token for yourself! (Press Ctrl-C if you make a mistake)")
-        access_token = input("Enter Access Token: ")
+    while True:
+        if access_token is None:
+            print("First go to https://dropbox.com/developers/apps to "
+                  "create an app then generate an access token for yourself! (Press Ctrl-C if you make a mistake)")
+            access_token = input("Enter Access Token: ")
 
-        print("We're all connected. Do you want to save this access token to disk? Caution: it can be saved and abused by a rogue program to access your entire Dropbox!")
-        answer = input("[y/N]: ")
-        while answer.lower().strip() not in ("y", "n", "yes", "no", ""):
-            print("Please answer yes or no!")
-            answer = input("[y/N]: ")
-        if answer in ("y", "yes"):
-            with open(config_file, "w") as f:
-                json.dump(dict(access_token=access_token), f)
+            print("We're all connected. Do you want to save this access token to disk? Caution: it can be saved and abused by a rogue program to access your entire Dropbox!")
+            if yes_no_input():
+                with open(config_file, "w") as f:
+                    json.dump(dict(access_token=access_token), f)
+
+        # test out access token
+        try:
+            dropbox.Dropbox(access_token).users_get_current_account()
+        except (dropbox.exceptions.BadInputError,
+                dropbox.exceptions.AuthError) as e:
+            print("Error using access token: %s" % (e.message,))
+            answer = yes_no_input("Create new access token?")
+            if not answer:
+                print("Okay, quitting!")
+                return 0
+            else:
+                access_token = None
+                os.remove(config_file)
+        else:
+            break
 
     cache_folder = os.path.join(appdirs.user_cache_dir(), "dbxfs", "file_cache")
     with contextlib.suppress(FileExistsError):

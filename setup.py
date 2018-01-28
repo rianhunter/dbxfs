@@ -34,6 +34,7 @@ setup(
         "userspacefs",
         "safefs",
         "block_tracing",
+        "privy",
     ],
     entry_points={
         'console_scripts': [

@@ -22,11 +22,14 @@ import getpass
 import json
 import logging
 import os
+import subprocess
 import sys
 
 import appdirs
 
 import dropbox
+
+import privy
 
 import userspacefs
 
@@ -38,6 +41,8 @@ from dbxfs.disable_quick_look import FileSystem as DisableQuickLookFileSystem
 from dbxfs.safefs_glue import safefs_wrap_create_fs
 
 log = logging.getLogger(__name__)
+
+APP_NAME = "dbxfs"
 
 def yes_no_input(message=None):
     answer = input("%s[y/N]" % (message + ' ' if message is not None else ''))
@@ -59,12 +64,14 @@ def main(argv=None):
     parser.add_argument("-e", "--encrypted-folder", dest='encrypted_folders', action='append')
     args = parser.parse_args(argv[1:])
 
+    config_dir = appdirs.user_config_dir(APP_NAME)
+
     if args.config_file is not None:
         config_file = args.config_file
     else:
-        config_file = os.path.expanduser("~/.dbxfs")
+        config_file = os.path.join(config_dir, "config.json")
 
-    access_token = None
+    config = {}
     try:
         f = open(config_file)
     except IOError as e:
@@ -72,23 +79,40 @@ def main(argv=None):
     else:
         try:
             with f:
-                access_token = json.load(f).get("access_token", None)
-            if type(access_token) != str:
-                access_token = None
-                raise ValueError("access token isn't a str")
-        except (ValueError, AttributeError):
-            os.remove(config_file)
+                config = json.load(f)
+        except ValueError as e:
+            print("Config file %r is not valid json: %r" % (config_file, e.message))
+            return -1
 
+    access_token = None
+
+    if access_token is None:
+        access_token_privy = config.get("access_token_privy", None)
+        if access_token_privy is not None:
+            passwd = None
+            while True:
+                passwd = getpass.getpass("Enter access token passphrase (not your Dropbox password): ")
+                try:
+                    access_token = privy.peek(access_token_privy, passwd).decode('utf-8')
+                except ValueError:
+                    if not yes_no_input("Incorrect password, create new access token?"):
+                        continue
+                break
+            del passwd
+
+    save_access_token = False
     while True:
         if access_token is None:
-            print("First go to https://dropbox.com/developers/apps to "
-                  "create an app then generate an access token for yourself! (Press Ctrl-C if you make a mistake)")
-            access_token = getpass.getpass("Enter Access Token: ")
+            print("We need an access token. "
+                  "Go to https://dropbox.com/developers/apps to "
+                  "create an app and generate a personal access token.")
 
-            print("We're all connected. Do you want to save this access token to disk? Caution: it can be saved and abused by a rogue program to access your entire Dropbox!")
-            if yes_no_input():
-                with open(config_file, "w") as f:
-                    json.dump(dict(access_token=access_token), f)
+            access_token = getpass.getpass("Enter Access token: ")
+            if not access_token:
+                print("Access tokens cannot be empty")
+                access_token = None
+                continue
+            save_access_token = True
 
         # test out access token
         try:
@@ -96,17 +120,29 @@ def main(argv=None):
         except (dropbox.exceptions.BadInputError,
                 dropbox.exceptions.AuthError) as e:
             print("Error using access token: %s" % (e.message,))
-            answer = yes_no_input("Create new access token?")
-            if not answer:
-                print("Okay, quitting!")
-                return 0
-            else:
-                access_token = None
-                os.remove(config_file)
+            access_token = None
         else:
             break
 
-    cache_folder = os.path.join(appdirs.user_cache_dir(), "dbxfs", "file_cache")
+    if save_access_token and yes_no_input("We're all connected. Do you want to save this access token for future runs?"):
+        print("We need a passphrase to encrypt your access token before we can save it.")
+        print("Warning: Your access token passphrase must contain enough randomness to be resistent to hacking. You can read this for more info: https://blogs.dropbox.com/tech/2012/04/zxcvbn-realistic-password-strength-estimation/")
+        while True:
+            pass_ = getpass.getpass("Enter new access token passphrase: ")
+            pass2_ = getpass.getpass("Enter new access token passphrase (again): ")
+            if pass_ != pass2_:
+                print("Passphrases didn't match, please re-enter")
+            else:
+                del pass2_
+                break
+        config['access_token_privy'] = privy.hide(access_token.encode('utf-8'), pass_, server=False)
+        del pass_
+        with open(config_file, "w") as f:
+            json.dump(config, f)
+
+    print("Successfully authenticated, starting %r..." % (APP_NAME,))
+
+    cache_folder = os.path.join(appdirs.user_cache_dir(APP_NAME), "file_cache")
     with contextlib.suppress(FileExistsError):
         os.makedirs(cache_folder)
 

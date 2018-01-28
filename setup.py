@@ -33,6 +33,7 @@ setup(
         "appdirs>=1.4,<2",
         "userspacefs",
         "safefs",
+        "block_tracing",
     ],
     entry_points={
         'console_scripts': [

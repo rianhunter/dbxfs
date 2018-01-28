@@ -29,6 +29,8 @@ import dropbox
 
 import userspacefs
 
+from block_tracing import block_tracing
+
 from dbxfs.dbfs import FileSystem as DropboxFileSystem
 from dbxfs.memory_cache_fs import FileSystem as CachingFileSystem
 from dbxfs.disable_quick_look import FileSystem as DisableQuickLookFileSystem
@@ -37,6 +39,9 @@ from dbxfs.safefs_glue import safefs_wrap_create_fs
 log = logging.getLogger(__name__)
 
 def main(argv=None):
+    # Protect access token and potentially encryption keys
+    block_tracing()
+
     if argv is None:
         argv = sys.argv
 

@@ -17,6 +17,7 @@
 
 import collections
 import contextlib
+import subprocess
 
 from userspacefs.path_common import Path
 
@@ -189,7 +190,9 @@ def safefs_wrap_create_fs(create_fs, encrypted_folders):
         # another one, then fail
         folders = set()
         parents = set()
-        for enc_folder in encrypted_folders:
+        for enc_folder_md in encrypted_folders:
+            enc_folder = enc_folder_md["path"]
+
             root = enc_folder_to_path(fs, enc_folder)
 
             # check if we already encrypting a child
@@ -205,9 +208,19 @@ def safefs_wrap_create_fs(create_fs, encrypted_folders):
 
             folders.add(root)
 
-        for enc_folder in encrypted_folders:
+        for enc_folder_md in encrypted_folders:
+            enc_folder = enc_folder_md["path"]
+
+            pass_ = None
+            password_command = enc_folder_md.get("password_command")
+            if password_command is not None:
+                print("Running %r to retrieve password for %r" % (' '.join(password_command), enc_folder))
+                with subprocess.Popen(password_command, stdout=subprocess.PIPE) as proc:
+                    pass_ = proc.stdout.read()
+            else:
+                print("Setup for encrypted %r..." % (enc_folder,))
+
             root = enc_folder_to_path(fs, enc_folder)
-            print("Setup for encrypted %r..." % (enc_folder,))
-            keys.append((enc_folder, console_init_safefs(fs, root)))
+            keys.append((enc_folder, console_init_safefs(fs, root, pass_=pass_)))
 
     return EncryptedFSFactory(create_fs, keys)

@@ -51,6 +51,9 @@ def yes_no_input(message=None):
         answer = input("%s[y/N]" % (message + ' ' if message is not None else ''))
     return answer.lower().startswith('y')
 
+def parse_encrypted_folder_arg(string):
+    return dict(path=string)
+
 def main(argv=None):
     # Protect access token and potentially encryption keys
     block_tracing()
@@ -61,7 +64,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser()
     userspacefs.add_cli_arguments(parser)
     parser.add_argument("-c", "--config-file")
-    parser.add_argument("-e", "--encrypted-folder", dest='encrypted_folders', action='append')
+    parser.add_argument("-e", "--encrypted-folder", dest='encrypted_folders', type=parse_encrypted_folder_arg, default=[], action='append')
     args = parser.parse_args(argv[1:])
 
     config_dir = appdirs.user_config_dir(APP_NAME)
@@ -85,6 +88,15 @@ def main(argv=None):
             return -1
 
     access_token = None
+
+    access_token_command = config.get("access_token_command", None)
+    if access_token_command is not None:
+        print("Running %r for access token" % (' '.join(access_token_command),))
+        try:
+            access_token = subprocess.check_output(access_token_command).decode("utf-8")
+        except TypeError:
+            print("Bad access token command: %r, " % (access_token_command,))
+            return -1
 
     if access_token is None:
         access_token_privy = config.get("access_token_privy", None)
@@ -152,7 +164,9 @@ def main(argv=None):
             fs = DisableQuickLookFileSystem(fs)
         return fs
 
-    create_fs = safefs_wrap_create_fs(create_fs, args.encrypted_folders)
+    encrypted_folders = config.get("encrypted_folders", []) + args.encrypted_folders
+
+    create_fs = safefs_wrap_create_fs(create_fs, encrypted_folders)
 
     return userspacefs.simple_main("dbxfs", create_fs, args)
 

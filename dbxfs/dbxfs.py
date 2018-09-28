@@ -280,6 +280,79 @@ class _ReadStream(io.RawIOBase):
             # Set path to none to signal closed
             self._path = None
 
+from dropbox.dropbox import RouteResult, RouteErrorResult
+from dropbox import stone_serializers, files
+ApiError = dropbox.exceptions.ApiError
+
+def dbrequest(client, namespace, route, f, arg):
+    host = route.attrs['host'] or 'api'
+    route_name = namespace + '/' + route.name
+    if route.version > 1:
+        route_name += '_v{}'.format(route.version)
+    route_style = route.attrs['style'] or 'rpc'
+
+    res = client.request_json_string_with_retry(host,
+                                                route_name,
+                                                route_style,
+                                                arg,
+                                                f)
+
+    decoded_obj_result = json.loads(res.obj_result)
+    if isinstance(res, RouteResult):
+        returned_data_type = route.result_type
+        obj = decoded_obj_result
+    elif isinstance(res, RouteErrorResult):
+        returned_data_type = route.error_type
+        obj = decoded_obj_result['error']
+        user_message = decoded_obj_result.get('user_message')
+        user_message_text = user_message and user_message.get('text')
+        user_message_locale = user_message and user_message.get('locale')
+    else:
+        raise AssertionError('Expected RouteResult or RouteErrorResult, '
+                             'but res is %s' % type(res))
+
+    deserialized_result = stone_serializers.json_compat_obj_decode(
+        returned_data_type, obj, strict=False)
+
+    if isinstance(res, RouteErrorResult):
+        raise ApiError(res.request_id,
+                       deserialized_result,
+                       user_message_text,
+                       user_message_locale)
+    elif route_style == client._ROUTE_STYLE_DOWNLOAD:
+        return (deserialized_result, res.http_resp)
+    else:
+        return deserialized_result
+
+def mode_to_json(mode):
+    if mode.is_add():
+        jmode = 'add'
+    elif mode.is_overwrite():
+        jmode = 'overwrite'
+    else:
+        assert mode.is_update()
+        jmode = {
+            '.tag': 'update',
+            'update': mode.get_update(),
+        }
+    return jmode
+
+# NB: have to hack this in because official API client
+#     hasn't been updated to support strict_conflict
+def new_files_upload(client, f, path,
+                     mode=dropbox.files.WriteMode.add,
+                     autorename=False,
+                     strict_conflict=False):
+
+    arg = json.dumps(dict(
+        path=str(path),
+        mode=mode_to_json(mode),
+        autorename=autorename,
+        strict_conflict=strict_conflict,
+    ))
+
+    return dbrequest(client, 'files', files.upload, f, arg)
+
 BUF_SIZE = 150 * 1024 * 1024
 class _WriteStream(object):
     def __init__(self, fs, path, write_mode, autorename):
@@ -474,11 +547,8 @@ class FileSystem(object):
                         raise
             else:
                 try:
-                    # NB: This is a poor implementation of CREAT|EXCL, if an existing
-                    #     empty file exists at the target, no conflict will occur
-                    #     (this happens no matter what data we upload, so might as
-                    #      well upload an empty file)
-                    md = self._clientv2.files_upload(b'', str(path))
+                    md = new_files_upload(self._clientv2, b'', str(path),
+                                          strict_conflict=True)
                 except dropbox.exceptions.ApiError as e:
                     if e.error.get_path().reason.is_conflict():
                         raise OSError(errno.EEXIST, os.strerror(errno.EEXIST)) from e

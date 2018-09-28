@@ -221,6 +221,9 @@ def safefs_wrap_create_fs(create_fs, encrypted_folders):
                 print("Setup for encrypted %r..." % (enc_folder,))
 
             root = enc_folder_to_path(fs, enc_folder)
-            keys.append((enc_folder, console_init_safefs(fs, root, pass_=pass_)))
+            key = console_init_safefs(fs, root, pass_=pass_)
+            if key is None:
+                continue
+            keys.append((enc_folder, key))
 
     return EncryptedFSFactory(create_fs, keys)

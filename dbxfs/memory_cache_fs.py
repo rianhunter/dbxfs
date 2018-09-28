@@ -37,7 +37,7 @@ import weakref
 
 from userspacefs.util_dumpster import utctimestamp, PositionIO, null_context, quick_container
 
-from dbxfs.dbfs import md_to_stat as dbmd_to_stat
+from dbxfs.dbxfs import md_to_stat as dbmd_to_stat
 
 import dropbox
 

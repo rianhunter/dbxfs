@@ -35,7 +35,7 @@ import userspacefs
 
 from block_tracing import block_tracing
 
-from dbxfs.dbfs import FileSystem as DropboxFileSystem
+from dbxfs.dbxfs import FileSystem as DropboxFileSystem
 from dbxfs.memory_cache_fs import FileSystem as CachingFileSystem
 from dbxfs.disable_quick_look import FileSystem as DisableQuickLookFileSystem
 from dbxfs.safefs_glue import safefs_wrap_create_fs

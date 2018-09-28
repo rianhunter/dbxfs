@@ -38,7 +38,14 @@ from block_tracing import block_tracing
 from dbxfs.dbxfs import FileSystem as DropboxFileSystem
 from dbxfs.memory_cache_fs import FileSystem as CachingFileSystem
 from dbxfs.disable_quick_look import FileSystem as DisableQuickLookFileSystem
-from dbxfs.safefs_glue import safefs_wrap_create_fs
+
+try:
+    from dbxfs.safefs_glue import safefs_wrap_create_fs
+except ImportError:
+    def safefs_wrap_create_fs(create_fs, ef):
+        if ef:
+            log.warn("safefs not installed, can't transparently decrypt encrypted folders")
+        return create_fs
 
 log = logging.getLogger(__name__)
 

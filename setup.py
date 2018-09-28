@@ -32,10 +32,12 @@ setup(
         "dropbox>=3.38",
         "appdirs>=1.4,<2",
         "userspacefs",
-        "safefs",
         "block_tracing",
         "privy",
     ],
+    extras_require={
+        'safefs': ["safefs"],
+    },
     entry_points={
         'console_scripts': [
             "dbxfs=dbxfs.main:main",

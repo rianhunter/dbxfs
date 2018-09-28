@@ -720,8 +720,7 @@ class FileSystem(object):
 def main(argv):
     # run some basic tests on this class
 
-    with open(os.path.expanduser("~/.dbxfs")) as f:
-        token = json.load(f)['access_token']
+    token = getpass.getpass("Access Token: ")
 
     fs = FileSystem(token)
 
@@ -806,4 +805,5 @@ def main(argv):
         stop()
 
 if __name__ == "__main__":
+    import getpass
     sys.exit(main(sys.argv))

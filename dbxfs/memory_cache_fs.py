@@ -736,18 +736,19 @@ class CachedFile(object):
         self._upload_now = None
         self._upload_next = None
 
-        threading.Thread(target=self._upload_thread).start()
+        self._thread = threading.Thread(target=self._upload_thread)
+        self._thread.start()
 
     def _upload_thread(self):
         while True:
             with self._upload_cond:
                 while self._upload_next is None:
+                    if self._file is None:
+                        # File has been closed, abandon ship!
+                        return
                     self._upload_cond.wait()
-                if self._file is None:
-                    # File has been closed, abandon ship!
-                    self._upload_next.close()
-                    return
-                self._file = SQLiteFrontFile(self._file)
+                if self._file is not None:
+                    self._file = SQLiteFrontFile(self._file)
                 self._upload_now = self._upload_next
                 self._upload_next = None
                 self._upload_cond.notify_all()
@@ -826,10 +827,15 @@ class CachedFile(object):
     def stat(self):
         return self._file.stat()
 
-    def _queue_sync(self):
+    def _queue_sync(self, final=False):
         if self._file.is_dirty():
             assert self._upload_next is None or self._upload_next is self._file
             self._upload_next = self._file
+
+        if final:
+            self._file = None
+
+        if self._file is None or self._file.is_dirty():
             self._upload_cond.notify_all()
 
         return (self._upload_now
@@ -858,10 +864,9 @@ class CachedFile(object):
 
     def close(self):
         with self._upload_cond:
-            assert self._upload_next is None or self._upload_next is self._file
-            self._upload_next = self._file
-            self._file = None
-            self._upload_cond.notify_all()
+            self._queue_sync(final=True)
+        if threading.current_thread() is not self._thread:
+            self._thread.join()
 
 LiveFileMetadata = collections.namedtuple('LiveFileMetadata',
                                           ["cached_file", "open_files"])

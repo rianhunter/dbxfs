@@ -966,6 +966,7 @@ class _File(PositionIO):
                 live_md.open_files.remove(self)
                 if (not live_md.open_files and
                     (not isinstance(live_md.cached_file, CachedFile) or
+                     # keep file around as long as its syncing
                      not live_md.cached_file.queue_sync())):
                     toclose = live_md.cached_file
                     popped = self._fs._open_files_by_id.pop(self._id)
@@ -1132,6 +1133,7 @@ class FileSystem(object):
                 return
 
             if (not live_md.open_files and
+                # keep file around as long as its syncing
                 not live_md.cached_file.queue_sync()):
                 toclose = live_md.cached_file
                 popped = self._open_files_by_id.pop(md.id)

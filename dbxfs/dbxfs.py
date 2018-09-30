@@ -386,8 +386,13 @@ class _WriteStream(object):
     def finish(self, path, mode='add', autorename=False):
         if mode == 'add':
             mode = dropbox.files.WriteMode.add
-        else:
+        elif mode == 'overwrite':
             mode = dropbox.files.WriteMode.overwrite
+        else:
+            assert (isinstance(mode, tuple) and
+                    mode[0] == 'update' and
+                    mode[1][:4] == 'rev:')
+            mode = dropbox.files.WriteMode.update(mode[1][4:])
 
         if isinstance(path, Path):
             path = str(path)

@@ -642,6 +642,9 @@ class FileSystem(object):
         md = self._stat_create(path, mode, directory)
         return self.x_open_by_id(md.id, mode)
 
+    def x_stat_by_id(self, id_):
+        return self._get_md(id_)
+
     def x_open_by_id(self, id_, mode=os.O_RDONLY):
         # NB: In general write mode is broken since writes don't propagate across
         #     file objects. Until Dropbox API provides Range-PUT there is no

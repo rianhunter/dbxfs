@@ -762,7 +762,7 @@ class CachedFile(object):
                     log.exception("Error creating local cached version")
             md = None
             try:
-                towrite = self._fs._fs.x_write_stream(self._id, "overwrite")
+                towrite = self._fs._fs.x_write_stream()
                 try:
                     while True:
                         buf = self._upload_now.read(2 ** 16)
@@ -780,7 +780,8 @@ class CachedFile(object):
                                     log.exception("Error while closing temporary file")
                                 to_save = None
                 finally:
-                    md = towrite.close()
+                    md = towrite.finish(self._id, "overwrite")
+                    towrite.close()
 
                 if md.id != self._id:
                     md = None

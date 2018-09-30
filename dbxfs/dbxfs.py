@@ -423,23 +423,35 @@ class _WriteStream(object):
 
                 cursor = dropbox.files.UploadSessionCursor(self._session_id,
                                                            self._offset)
-                return new_files_upload_session_finish(
-                    self._fs._clientv2,
-                    bytes(self._buf.getbuffer()), cursor,
-                    dict(
-                        path=path,
-                        mode=mode,
-                        autorename=autorename,
-                        strict_conflict=strict_conflict
+                try:
+                    return new_files_upload_session_finish(
+                        self._fs._clientv2,
+                        bytes(self._buf.getbuffer()), cursor,
+                        dict(
+                            path=path,
+                            mode=mode,
+                            autorename=autorename,
+                            strict_conflict=strict_conflict
+                        )
                     )
-                )
+                except ApiError as e:
+                    if (e.error.is_path() and
+                        e.error.get_path().is_conflict()):
+                        raise OSError(errno.EEXIST, os.strerror(errno.EEXIST)) from e
+                    raise
             else:
                 assert len(self._buf.getbuffer()) < BUF_SIZE
-                return new_files_upload(self._fs._clientv2,
-                                        bytes(self._buf.getbuffer()), path,
-                                        mode=mode,
-                                        autorename=autorename,
-                                        strict_conflict=strict_conflict)
+                try:
+                    return new_files_upload(self._fs._clientv2,
+                                            bytes(self._buf.getbuffer()), path,
+                                            mode=mode,
+                                            autorename=autorename,
+                                            strict_conflict=strict_conflict)
+                except ApiError as e:
+                    if (e.error.is_path() and
+                        e.error.get_path().reason.is_conflict()):
+                        raise OSError(errno.EEXIST, os.strerror(errno.EEXIST)) from e
+                    raise
 
     def close(self):
         # Ideally we would eagerly clean up the session_id, but API

@@ -353,6 +353,23 @@ def new_files_upload(client, f, path,
 
     return dbrequest(client, 'files', files.upload, f, arg)
 
+def new_files_upload_session_finish(client,
+                                    buf, cursor,
+                                    ci):
+    arg = json.dumps(dict(
+        cursor=dict(
+            session_id=cursor.session_id,
+            offset=cursor.offset,
+        ),
+        commit=dict(
+            path=ci['path'],
+            mode=mode_to_json(ci['mode']),
+            autorename=ci['autorename'],
+            strict_conflict=ci['strict_conflict'],
+        ),
+    ))
+    return dbrequest(client, 'files', files.upload_session_finish, buf, arg)
+
 BUF_SIZE = 150 * 1024 * 1024
 class _WriteStream(object):
     def __init__(self, fs):
@@ -383,7 +400,7 @@ class _WriteStream(object):
             while len(self._buf.getbuffer()) >= BUF_SIZE:
                 self._flush()
 
-    def finish(self, path, mode='add', autorename=False):
+    def finish(self, path, mode='add', autorename=False, strict_conflict=False):
         if mode == 'add':
             mode = dropbox.files.WriteMode.add
         elif mode == 'overwrite':
@@ -404,15 +421,25 @@ class _WriteStream(object):
                 while len(self._buf.getbuffer()) >= BUF_SIZE:
                     self._flush()
 
-            if self._session_id is None:
+                cursor = dropbox.files.UploadSessionCursor(self._session_id,
+                                                           self._offset)
+                return new_files_upload_session_finish(
+                    self._fs._clientv2,
+                    bytes(self._buf.getbuffer()), cursor,
+                    dict(
+                        path=path,
+                        mode=mode,
+                        autorename=autorename,
+                        strict_conflict=strict_conflict
+                    )
+                )
+            else:
                 assert len(self._buf.getbuffer()) < BUF_SIZE
-                return self._fs._clientv2.files_upload(bytes(self._buf.getbuffer()), path,
-                                                       mode=mode,
-                                                       autorename=autorename)
-
-            cursor = dropbox.files.UploadSessionCursor(self._session_id, self._offset)
-            ci = dropbox.files.CommitInfo(path, mode=mode, autorename=autorename)
-            return self._fs._clientv2.files_upload_session_finish(bytes(self._buf.getbuffer()), cursor, ci)
+                return new_files_upload(self._fs._clientv2,
+                                        bytes(self._buf.getbuffer()), path,
+                                        mode=mode,
+                                        autorename=autorename,
+                                        strict_conflict=strict_conflict)
 
     def close(self):
         # Ideally we would eagerly clean up the session_id, but API

@@ -33,6 +33,7 @@ import traceback
 import shutil
 import sqlite3
 import sys
+import time
 import weakref
 
 from userspacefs.util_dumpster import utctimestamp, PositionIO, null_context, quick_container
@@ -770,84 +771,89 @@ class CachedFile(object):
 
     def _upload_thread(self):
         while True:
-            with self._upload_cond:
-                while self._upload_next is None:
-                    if self._file is None:
-                        # File has been closed, abandon ship!
-                        return
-                    self._upload_cond.wait()
-                if self._file is not None:
-                    self._file = SQLiteFrontFile(self._file)
-                self._upload_now = self._upload_next
-                self._upload_next = None
-                self._upload_cond.notify_all()
-
-            md = None
-            self._upload_now.seek(0)
-            towrite = self._fs._fs.x_write_stream()
             try:
-                shutil.copyfileobj(self._upload_now, towrite)
-                base_stat = self._base_stat
-                while True:
-                    try:
-                        md = towrite.finish(self._id,
-                                            mode=("update", base_stat.rev),
-                                            strict_conflict=True)
-                    except FileExistsError: # This just means conflict
+                with self._upload_cond:
+                    while self._upload_now is None and self._upload_next is None:
+                        if self._file is None:
+                            # File has been closed, abandon ship!
+                            return
+                        self._upload_cond.wait()
+                    if self._upload_next is not None:
+                        self._upload_now = self._upload_next
+                        self._upload_next = None
+                        self._upload_cond.notify_all()
+                        if self._file is not None:
+                            self._file = SQLiteFrontFile(self._file)
+
+                md = None
+                self._upload_now.seek(0)
+                towrite = self._fs._fs.x_write_stream()
+                try:
+                    shutil.copyfileobj(self._upload_now, towrite)
+                    base_stat = self._base_stat
+                    while True:
                         try:
-                            e_stat = self._fs._fs.x_stat_by_id(self._id)
-                        except FileNotFoundError:
-                            # file was deleted, black hole this change
-                            pass
-                        else:
-                            # Another client edited this ID,
-                            # We overwrite the file as this is
-                            # what POSIX allows. Concurrency control
-                            # is left to a higher level.
-                            base_stat = e_stat
-                            continue
-                    break
-            finally:
-                towrite.close()
+                            md = towrite.finish(self._id,
+                                                mode=("update", base_stat.rev),
+                                                strict_conflict=True)
+                        except FileExistsError: # This just means conflict
+                            try:
+                                e_stat = self._fs._fs.x_stat_by_id(self._id)
+                            except FileNotFoundError:
+                                # file was deleted, black hole this change
+                                pass
+                            else:
+                                # Another client edited this ID,
+                                # We overwrite the file as this is
+                                # what POSIX allows. Concurrency control
+                                # is left to a higher level.
+                                base_stat = e_stat
+                                continue
+                        break
+                finally:
+                    towrite.close()
 
-            if md is not None:
-                if md.id != self._id:
-                    md = None
-                    raise Exception("Bad assumption on how overwrite works :(")
+                if md is not None:
+                    if md.id != self._id:
+                        md = None
+                        raise Exception("Bad assumption on how overwrite works :(")
 
-                new_stat = dbmd_to_stat(md)
+                    new_stat = dbmd_to_stat(md)
 
-                if self._fs._cache_folder is not None:
-                    to_save = None
-                    try:
-                        to_save = tempfile.NamedTemporaryFile(dir=self._fs._cache_folder)
-                        self._upload_now.seek(0)
-                        shutil.copyfileobj(self._upload_now, to_save)
-                        # TODO: replace self._upload_now parent's backing file with
-                        #       StreamingFile() of local cached version
-                        fn = '%s.bin' % (new_stat.rev,)
-                        p = os.path.join(self._fs._cache_folder, fn)
-                        # Unlink existing file since new one is definitely complete
+                    if self._fs._cache_folder is not None:
+                        to_save = None
                         try:
-                            os.unlink(p)
-                        except FileNotFoundError:
-                            pass
+                            to_save = tempfile.NamedTemporaryFile(dir=self._fs._cache_folder)
+                            self._upload_now.seek(0)
+                            shutil.copyfileobj(self._upload_now, to_save)
+                            # TODO: replace self._upload_now parent's backing file with
+                            #       StreamingFile() of local cached version
+                            fn = '%s.bin' % (new_stat.rev,)
+                            p = os.path.join(self._fs._cache_folder, fn)
+                            # Unlink existing file since new one is definitely complete
+                            try:
+                                os.unlink(p)
+                            except FileNotFoundError:
+                                pass
+                            except Exception:
+                                log.exception("Error unlinking existing cache file")
+                            os.link(to_save.name, p)
                         except Exception:
-                            log.exception("Error unlinking existing cache file")
-                        os.link(to_save.name, p)
-                    except Exception:
-                        log.exception("Error while linking cached file")
-                    finally:
-                        if to_save is not None:
-                            to_save.close()
+                            log.exception("Error while linking cached file")
+                        finally:
+                            if to_save is not None:
+                                to_save.close()
 
-                self._base_stat = new_stat
+                    self._base_stat = new_stat
 
-            with self._upload_cond:
-                self._upload_now = None
-                self._upload_cond.notify_all()
+                with self._upload_cond:
+                    self._upload_now = None
+                    self._upload_cond.notify_all()
 
-            self._fs._submit_write(self._id, md)
+                self._fs._submit_write(self._id, md)
+            except Exception:
+                log.exception("Error uploading file, sleeping...")
+                time.sleep(100)
 
     def pread(self, size, offset):
         return self._file.pread(size, offset)

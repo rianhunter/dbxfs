@@ -395,7 +395,7 @@ class _WriteStream(object):
             # Only flush to upload session if we've flushed before
             # otherwise we'll cut straight to upload()
             if self._session_id is not None:
-                while self._buf.getbuffer():
+                while len(self._buf.getbuffer()) >= BUF_SIZE:
                     self._flush()
 
             # NB: ideally we would upload directly to ID but
@@ -415,7 +415,7 @@ class _WriteStream(object):
 
             cursor = dropbox.files.UploadSessionCursor(self._session_id, self._offset)
             ci = dropbox.files.CommitInfo(path, mode=self._write_mode, autorename=self._autorename)
-            return self._fs._clientv2.files_upload_session_finish(b'', cursor, ci)
+            return self._fs._clientv2.files_upload_session_finish(bytes(self._buf.getbuffer()), cursor, ci)
 
 Change = collections.namedtuple('Change', ['action', 'path'])
 

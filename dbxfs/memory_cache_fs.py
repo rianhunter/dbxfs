@@ -794,6 +794,7 @@ class CachedFile(object):
                     while True:
                         try:
                             md = towrite.finish(self._id,
+                                                mtime=self._upload_now.stat().mtime,
                                                 mode=("update", base_stat.rev),
                                                 strict_conflict=True)
                         except FileExistsError: # This just means conflict

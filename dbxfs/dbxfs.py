@@ -337,36 +337,44 @@ def mode_to_json(mode):
         }
     return jmode
 
+def convert_to_dbx_timestamp(dt):
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
 # NB: have to hack this in because official API client
 #     hasn't been updated to support strict_conflict
 def new_files_upload(client, f, path,
                      mode=dropbox.files.WriteMode.add,
                      autorename=False,
-                     strict_conflict=False):
-
-    arg = json.dumps(dict(
+                     strict_conflict=False,
+                     client_modified=None):
+    arg = dict(
         path=str(path),
         mode=mode_to_json(mode),
         autorename=autorename,
         strict_conflict=strict_conflict,
-    ))
-
+    )
+    if client_modified is not None:
+        arg['client_modified'] = convert_to_dbx_timestamp(client_modified)
+    arg = json.dumps(arg)
     return dbrequest(client, 'files', files.upload, f, arg)
 
 def new_files_upload_session_finish(client,
                                     buf, cursor,
                                     ci):
+    commit = dict(
+        path=ci['path'],
+        mode=mode_to_json(ci['mode']),
+        autorename=ci['autorename'],
+        strict_conflict=ci['strict_conflict'],
+    )
+    if 'client_modified' in ci:
+        commit['client_modified'] = convert_to_dbx_timestamp(ci['client_modified'])
     arg = json.dumps(dict(
         cursor=dict(
             session_id=cursor.session_id,
             offset=cursor.offset,
         ),
-        commit=dict(
-            path=ci['path'],
-            mode=mode_to_json(ci['mode']),
-            autorename=ci['autorename'],
-            strict_conflict=ci['strict_conflict'],
-        ),
+        commit=commit,
     ))
     return dbrequest(client, 'files', files.upload_session_finish, buf, arg)
 
@@ -400,7 +408,8 @@ class _WriteStream(object):
             while len(self._buf.getbuffer()) >= BUF_SIZE:
                 self._flush()
 
-    def finish(self, path, mode='add', autorename=False, strict_conflict=False):
+    def finish(self, path, mode='add', autorename=False, strict_conflict=False,
+               mtime=None):
         if mode == 'add':
             mode = dropbox.files.WriteMode.add
         elif mode == 'overwrite':
@@ -424,15 +433,18 @@ class _WriteStream(object):
                 cursor = dropbox.files.UploadSessionCursor(self._session_id,
                                                            self._offset)
                 try:
+                    arg = dict(
+                        path=path,
+                        mode=mode,
+                        autorename=autorename,
+                        strict_conflict=strict_conflict
+                    )
+                    if mtime is not None:
+                        arg['client_modified'] = mtime
                     return new_files_upload_session_finish(
                         self._fs._clientv2,
                         bytes(self._buf.getbuffer()), cursor,
-                        dict(
-                            path=path,
-                            mode=mode,
-                            autorename=autorename,
-                            strict_conflict=strict_conflict
-                        )
+                        arg,
                     )
                 except ApiError as e:
                     if (e.error.is_path() and
@@ -446,7 +458,8 @@ class _WriteStream(object):
                                             bytes(self._buf.getbuffer()), path,
                                             mode=mode,
                                             autorename=autorename,
-                                            strict_conflict=strict_conflict)
+                                            strict_conflict=strict_conflict,
+                                            client_modified=mtime)
                 except ApiError as e:
                     if (e.error.is_path() and
                         e.error.get_path().reason.is_conflict()):

@@ -408,7 +408,7 @@ class _WriteStream(object):
             while len(self._buf.getbuffer()) >= BUF_SIZE:
                 self._flush()
 
-    def finish(self, path, mode='add', autorename=False, strict_conflict=False,
+    def finish(self, path, mode='add', strict_conflict=False,
                mtime=None):
         if mode == 'add':
             mode = dropbox.files.WriteMode.add
@@ -436,7 +436,6 @@ class _WriteStream(object):
                     arg = dict(
                         path=path,
                         mode=mode,
-                        autorename=autorename,
                         strict_conflict=strict_conflict
                     )
                     if mtime is not None:
@@ -457,7 +456,6 @@ class _WriteStream(object):
                     return new_files_upload(self._fs._clientv2,
                                             bytes(self._buf.getbuffer()), path,
                                             mode=mode,
-                                            autorename=autorename,
                                             strict_conflict=strict_conflict,
                                             client_modified=mtime)
                 except ApiError as e:

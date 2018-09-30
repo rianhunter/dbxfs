@@ -725,11 +725,40 @@ class SQLiteFrontFile(PositionIO):
                 # NB: extend with zeros to block data in backfile
                 self._pwrite(cursor, b'\0' * (offset - cur_size), cur_size)
 
+class CachedDirectory(object):
+    def __init__(self, fs, stat):
+        self._fs = fs
+        self._stat = stat
+        assert self._stat.type == 'directory'
+        self._file = self._fs._fs.x_open_by_id(stat.id)
+
+        self.open_files = set()
+
+    def stat(self):
+        return self._stat
+
+    def queue_sync(self):
+        return None
+
+    def sync(self):
+        pass
+
+    def is_dirty(self):
+        return False
+
+    def close(self):
+        pass
+
+    def sync(self):
+        pass
+
 class CachedFile(object):
     def __init__(self, fs, stat):
         self._fs = fs
         self._id = stat.id
         self._stat = stat
+
+        assert stat.type == "file"
         self._file = SQLiteFrontFile(StreamingFile(fs, stat))
 
         self._upload_cond = threading.Condition()
@@ -885,7 +914,7 @@ class _File(PositionIO):
                 if stat.type == "file":
                     cached_file = CachedFile(fs, stat)
                 else:
-                    cached_file = self._fs._fs.x_open_by_id(stat.id)
+                    cached_file = CachedDirectory(fs, stat)
 
                 live_md = self._fs._open_files_by_id[stat.id] = \
                           LiveFileMetadata(cached_file=cached_file,
@@ -908,9 +937,6 @@ class _File(PositionIO):
         with self._lock.shared_context():
             if self._live_md is None:
                 raise OSError(errno.EBADF, os.strerror(errno.EBADF))
-            # NB: handle directory handles
-            if not isinstance(self._live_md.cached_file, CachedFile):
-                return self._stat
             return self._live_md.cached_file.stat()
 
     def sync(self):
@@ -918,9 +944,7 @@ class _File(PositionIO):
             if self._live_md is None:
                 raise OSError(errno.EBADF, os.strerror(errno.EBADF))
 
-            # NB: handle directory handles
-            if isinstance(self._live_md.cached_file, CachedFile):
-                return self._live_md.cached_file.sync()
+            return self._live_md.cached_file.sync()
 
     def pread(self, size, offset):
         if not self.readable():
@@ -966,9 +990,8 @@ class _File(PositionIO):
             with self._fs._file_cache_lock:
                 live_md.open_files.remove(self)
                 if (not live_md.open_files and
-                    (not isinstance(live_md.cached_file, CachedFile) or
-                     # keep file around as long as its syncing
-                     not live_md.cached_file.queue_sync())):
+                    # keep file around as long as its syncing
+                    not live_md.cached_file.queue_sync()):
                     toclose = live_md.cached_file
                     popped = self._fs._open_files_by_id.pop(self._id)
                     assert popped is live_md
@@ -1310,9 +1333,7 @@ class FileSystem(object):
                 except KeyError:
                     pass
                 else:
-                    # NB: could be a directory otherwise
-                    if isinstance(md.cached_file, CachedFile):
-                        return md.cached_file.stat()
+                    return md.cached_file.stat()
 
         return stat
 
@@ -1320,7 +1341,10 @@ class FileSystem(object):
         return fobj.stat()
 
     def create_watch(self, cb, handle, *n, **kw):
-        return self._fs.create_watch(cb, handle._live_md.cached_file, *n, **kw)
+        # This isinstance is arguably okay because handles are opaque objects
+        # returned from open()
+        assert isinstance(handle._live_md.cached_file, CachedDirectory)
+        return self._fs.create_watch(cb, handle._live_md.cached_file._file, *n, **kw)
 
     def fsync(self, fobj):
         return fobj.sync()

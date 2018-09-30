@@ -756,7 +756,7 @@ class CachedFile(object):
     def __init__(self, fs, stat):
         self._fs = fs
         self._id = stat.id
-        self._stat = stat
+        self._base_stat = stat
 
         assert stat.type == "file"
         self._file = SQLiteFrontFile(StreamingFile(fs, stat))
@@ -787,43 +787,67 @@ class CachedFile(object):
             towrite = self._fs._fs.x_write_stream()
             try:
                 shutil.copyfileobj(self._upload_now, towrite)
+                base_stat = self._base_stat
+                while True:
+                    try:
+                        md = towrite.finish(self._id,
+                                            mode=("update", base_stat.rev),
+                                            strict_conflict=True)
+                    except FileExistsError: # This just means conflict
+                        try:
+                            e_stat = self._fs._fs.x_stat_by_id(self._id)
+                        except FileNotFoundError:
+                            # file was deleted, black hole this change
+                            pass
+                        else:
+                            # Another client edited this ID,
+                            # We overwrite the file as this is
+                            # what POSIX allows. Concurrency control
+                            # is left to a higher level.
+                            base_stat = e_stat
+                            continue
+                    break
             finally:
-                md = towrite.finish(self._id, "overwrite")
                 towrite.close()
 
-            if md.id != self._id:
-                md = None
-                raise Exception("Bad assumption on how overwrite works :(")
+            if md is not None:
+                if md.id != self._id:
+                    md = None
+                    raise Exception("Bad assumption on how overwrite works :(")
 
-            if self._fs._cache_folder is not None:
-                to_save = None
-                try:
-                    to_save = tempfile.NamedTemporaryFile(dir=self._fs._cache_folder)
-                    self._upload_now.seek(0)
-                    shutil.copyfileobj(self._upload_now, to_save)
-                    # TODO: replace self._upload_now parent's backing file with
-                    #       StreamingFile() of local cached version
-                    fn = '%s.bin' % (dbmd_to_stat(md).rev,)
-                    p = os.path.join(self._fs._cache_folder, fn)
-                    # Unlink existing file since new one is definitely complete
+                new_stat = dbmd_to_stat(md)
+
+                if self._fs._cache_folder is not None:
+                    to_save = None
                     try:
-                        os.unlink(p)
-                    except FileNotFoundError:
-                        pass
+                        to_save = tempfile.NamedTemporaryFile(dir=self._fs._cache_folder)
+                        self._upload_now.seek(0)
+                        shutil.copyfileobj(self._upload_now, to_save)
+                        # TODO: replace self._upload_now parent's backing file with
+                        #       StreamingFile() of local cached version
+                        fn = '%s.bin' % (new_stat.rev,)
+                        p = os.path.join(self._fs._cache_folder, fn)
+                        # Unlink existing file since new one is definitely complete
+                        try:
+                            os.unlink(p)
+                        except FileNotFoundError:
+                            pass
+                        except Exception:
+                            log.exception("Error unlinking existing cache file")
+                        os.link(to_save.name, p)
                     except Exception:
-                        log.exception("Error unlinking existing cache file")
-                    os.link(to_save.name, p)
-                except Exception:
-                    log.exception("Error while linking cached file")
-                finally:
-                    if to_save is not None:
-                        to_save.close()
+                        log.exception("Error while linking cached file")
+                    finally:
+                        if to_save is not None:
+                            to_save.close()
+
+                self._base_stat = new_stat
 
             with self._upload_cond:
                 self._upload_now = None
                 self._upload_cond.notify_all()
 
-            self._fs._submit_write(md)
+            self._fs._submit_write(self._id, md)
 
     def pread(self, size, offset):
         return self._file.pread(size, offset)
@@ -1128,14 +1152,15 @@ class FileSystem(object):
             conn = self._local.conn = self._create_db_conn()
         return conn
 
-    def _submit_write(self, md):
-        self._handle_changes([md])
+    def _submit_write(self, id_, md):
+        if md is not None:
+            self._handle_changes([md])
 
         # Check if file needs to be closed
         toclose = None
         with self._file_cache_lock:
             try:
-                live_md = self._open_files_by_id[md.id]
+                live_md = self._open_files_by_id[id_]
             except KeyError:
                 # NB: file wasn't open
                 return
@@ -1144,7 +1169,7 @@ class FileSystem(object):
                 # keep file around as long as its syncing
                 not live_md.cached_file.queue_sync()):
                 toclose = live_md.cached_file
-                popped = self._open_files_by_id.pop(md.id)
+                popped = self._open_files_by_id.pop(id_)
                 assert popped is live_md
 
         if toclose is not None:

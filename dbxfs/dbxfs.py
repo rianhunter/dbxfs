@@ -370,14 +370,14 @@ class _WriteStream(object):
         self._autorename = autorename
 
     def _flush(self):
-        to_up = self._buf.getbuffer()[:BUF_SIZE]
+        to_up = bytes(self._buf.getbuffer()[:BUF_SIZE])
 
         if self._session_id is None:
             # start session
             session_result = self._fs._clientv2.files_upload_session_start(to_up)
             self._session_id = session_result.session_id
         else:
-            self._fs._clientv2.files_upload_session_append(bytes(to_up), self._session_id, self._offset)
+            self._fs._clientv2.files_upload_session_append(to_up, self._session_id, self._offset)
 
         self._offset += len(to_up)
 

@@ -782,58 +782,42 @@ class CachedFile(object):
                 self._upload_next = None
                 self._upload_cond.notify_all()
 
-            # XXX: handle errors
-            to_save = None
+            md = None
+            self._upload_now.seek(0)
+            towrite = self._fs._fs.x_write_stream()
+            try:
+                shutil.copyfileobj(self._upload_now, towrite)
+            finally:
+                md = towrite.finish(self._id, "overwrite")
+                towrite.close()
+
+            if md.id != self._id:
+                md = None
+                raise Exception("Bad assumption on how overwrite works :(")
+
             if self._fs._cache_folder is not None:
+                to_save = None
                 try:
                     to_save = tempfile.NamedTemporaryFile(dir=self._fs._cache_folder)
-                except Exception:
-                    log.exception("Error creating local cached version")
-            md = None
-            try:
-                towrite = self._fs._fs.x_write_stream()
-                try:
-                    while True:
-                        buf = self._upload_now.read(2 ** 16)
-                        if not buf: break
-                        towrite.write(buf)
-                        if to_save is not None:
-                            try:
-                                to_save.write(buf)
-                            except Exception:
-                                log.exception("Error saving file write to cache")
-                                # TODO: distinguish between transient/permanent error
-                                try:
-                                    to_save.close()
-                                except Exception:
-                                    log.exception("Error while closing temporary file")
-                                to_save = None
-                finally:
-                    md = towrite.finish(self._id, "overwrite")
-                    towrite.close()
-
-                if md.id != self._id:
-                    md = None
-                    raise Exception("Bad assumption on how overwrite works :(")
-            finally:
-                if to_save is not None:
-                    try:
-                        if md is not None:
-                            fn = '%s.bin' % (dbmd_to_stat(md).rev,)
-                            p = os.path.join(self._fs._cache_folder, fn)
-                            # Unlink existing file since new one is definitely complete
-                            try:
-                                os.unlink(p)
-                            except FileNotFoundError:
-                                pass
-                            except Exception:
-                                log.exception("Error unlinking existing cache file")
-                            os.link(to_save.name, p)
-                    except Exception:
-                        log.exception("Error while linking cached file")
-                    to_save.close()
+                    self._upload_now.seek(0)
+                    shutil.copyfileobj(self._upload_now, to_save)
                     # TODO: replace self._upload_now parent's backing file with
                     #       StreamingFile() of local cached version
+                    fn = '%s.bin' % (dbmd_to_stat(md).rev,)
+                    p = os.path.join(self._fs._cache_folder, fn)
+                    # Unlink existing file since new one is definitely complete
+                    try:
+                        os.unlink(p)
+                    except FileNotFoundError:
+                        pass
+                    except Exception:
+                        log.exception("Error unlinking existing cache file")
+                    os.link(to_save.name, p)
+                except Exception:
+                    log.exception("Error while linking cached file")
+                finally:
+                    if to_save is not None:
+                        to_save.close()
 
             with self._upload_cond:
                 self._upload_now = None

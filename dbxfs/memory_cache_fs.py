@@ -814,9 +814,8 @@ class CachedFile(object):
                     towrite.close()
 
                 if md is not None:
-                    if md.id != self._id:
-                        md = None
-                        raise Exception("Bad assumption on how overwrite works :(")
+                    assert md.id == self._id, \
+                        "Bad assumption on how overwrite works :("
 
                     new_stat = dbmd_to_stat(md)
 
@@ -851,6 +850,9 @@ class CachedFile(object):
                     self._upload_cond.notify_all()
 
                 self._fs._submit_write(self._id, md)
+            except AssertionError:
+                log.exception("Assertion failed, dying...")
+                os._exit(0)
             except Exception:
                 log.exception("Error uploading file, sleeping...")
                 time.sleep(100)

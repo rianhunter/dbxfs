@@ -349,6 +349,7 @@ class StreamingFile(object):
         self.thread = None
         self.stop_signal = None
         self.cached_file = None
+        self.eio = False
 
     def stat(self):
         return self._stat
@@ -365,36 +366,50 @@ class StreamingFile(object):
     def _reset(self):
         # start thread to stream file in
         def stream_file(is_temp, amt):
-            # XXX: Handle errors
-            with contextlib.closing(self.fs.x_read_stream(self._stat.rev)) as fsource:
-                # Skip bytes if we already have them
-                toread = amt
-                while toread:
-                    toread -= len(fsource.read(min(toread, DOWNLOAD_UNIT)))
-                while True:
-                    buf = fsource.read(DOWNLOAD_UNIT)
-                    if not buf: break
+            while not self.stop_signal.is_set():
+                try:
+                    with contextlib.closing(self.fs.x_read_stream(self._stat.rev)) as fsource:
+                        # Skip bytes if we already have them
+                        toread = amt
+                        while toread:
+                            toread -= len(fsource.read(min(toread, DOWNLOAD_UNIT)))
+                        while True:
+                            buf = fsource.read(DOWNLOAD_UNIT)
+                            if not buf: break
 
-                    if self.stop_signal.is_set():
-                        log.debug("File download stopped early!")
-                        return
+                            if self.stop_signal.is_set():
+                                log.debug("File download stopped early!")
+                                return
 
-                    self.cached_file.write(buf)
-                    self.cached_file.flush()
+                            self.cached_file.write(buf)
+                            self.cached_file.flush()
+                            with self.cond:
+                                self.stored += len(buf)
+                                self.cond.notify_all()
+
+                            amt += len(buf)
+
+                        with self.cond:
+                            self.eof = self.stored
+                            self.cond.notify_all()
+
+                        if not is_temp:
+                            # now that we have a new file, prune cache
+                            # in case the cache has exceeded its limit
+                            self._real_fs._prune_event.set()
+
+                        log.debug("Done downloading %r", self._stat.rev)
+                    break
+                except AssertionError:
+                    log.exception("Assertion failed, dying...")
+                    os._exit(0)
+                except Exception:
+                    log.exception("Error downloading file, sleeping...")
                     with self.cond:
-                        self.stored += len(buf)
+                        self.eio = True
                         self.cond.notify_all()
-
-                with self.cond:
-                    self.eof = self.stored
-                    self.cond.notify_all()
-
-                if not is_temp:
-                    # now that we have a new file, prune cache
-                    # in case the cache has exceeded its limit
-                    self._real_fs._prune_event.set()
-
-                log.debug("Done downloading %r", self._stat.rev)
+                    self.stop_signal.wait(100)
+                    self.eio = False
 
         is_temp = self.cache_folder is None
         if is_temp:
@@ -422,17 +437,30 @@ class StreamingFile(object):
 
     def _wait_for_range(self, offset, size):
         with self.cond:
-            while (self.stored < offset + size and self.eof is None):
+            while True:
+                if self.stored >= offset + size or self.eof is not None:
+                    return
+
+                if self.eio:
+                    raise OSError(errno.EIO, os.strerror(errno.EIO))
+
                 self.cond.wait()
 
     def _should_wait(self, offset, size):
         with self.cond:
+            # we already have the data, so we can "wait"
+            if self.stored >= offset + size or self.eof is not None:
+                return True
+
+            if self.eio:
+                return False
+
             # if this is currently being downloaded, then just wait
             if (offset + size <= self.stored + DOWNLOAD_UNIT or
                 offset == self.stored):
                 return True
 
-            return not (self.stored < offset + size and self.eof is None)
+            return False
 
     def pread(self, size, offset):
         ctx = self.reset_lock.shared_context()
@@ -459,6 +487,10 @@ class StreamingFile(object):
                     try:
                         with contextlib.closing(self.fs.x_open_by_rev(self._stat.rev)) as fsource:
                             return self.fs.pread(fsource, size, offset)
+                    except AssertionError:
+                        raise
+                    except Exception as e:
+                        raise OSError(errno.EIO, os.strerror(errno.EIO)) from e
                     finally:
                         log.debug("Done bypassing file cache %r", (offset, size))
 

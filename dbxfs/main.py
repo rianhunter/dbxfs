@@ -72,9 +72,14 @@ def main(argv=None):
     userspacefs.add_cli_arguments(parser)
     parser.add_argument("-c", "--config-file")
     parser.add_argument("-e", "--encrypted-folder", dest='encrypted_folders', type=parse_encrypted_folder_arg, default=[], action='append')
+    parser.add_argument("mount_point", nargs='?')
     args = parser.parse_args(argv[1:])
 
     config_dir = appdirs.user_config_dir(APP_NAME)
+
+    if args.mount_point is None:
+        parser.print_usage()
+        return 1
 
     os.makedirs(config_dir, exist_ok=True)
 
@@ -177,7 +182,7 @@ def main(argv=None):
 
     create_fs = safefs_wrap_create_fs(create_fs, encrypted_folders)
 
-    return userspacefs.simple_main("dbxfs", create_fs, args)
+    return userspacefs.simple_main(args.mount_point, "dbxfs", create_fs, args)
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv))

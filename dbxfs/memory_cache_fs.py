@@ -1130,38 +1130,45 @@ class FileSystem(object):
         PRUNE_PERIOD = 30 * 60
 
         while not self._close_prune_thread:
-            # compute total free space on disk
-            vfs_stat = os.statvfs(self._cache_folder)
-            free_space = vfs_stat.f_bsize * vfs_stat.f_bavail;
+            try:
+                # compute total free space on disk
+                vfs_stat = os.statvfs(self._cache_folder)
+                free_space = vfs_stat.f_bsize * vfs_stat.f_bavail;
 
-            # compute total space taken by cache
-            cache_entries = []
-            for name in os.listdir(self._cache_folder):
-                cache_entries.append((name, os.lstat(os.path.join(self._cache_folder, name))))
+                # compute total space taken by cache
+                cache_entries = []
+                for name in os.listdir(self._cache_folder):
+                    cache_entries.append((name, os.lstat(os.path.join(self._cache_folder, name))))
 
-            cache_size = sum(st.st_size for (_, st) in cache_entries)
+                cache_size = sum(st.st_size for (_, st) in cache_entries)
 
-            # sort by ascending atime, descending size
-            cache_entries.sort(key=lambda name_st_pair: (name_st_pair[1].st_atime,
-                                                         -name_st_pair[1].st_size))
+                # sort by ascending atime, descending size
+                cache_entries.sort(key=lambda name_st_pair: (name_st_pair[1].st_atime,
+                                                             -name_st_pair[1].st_size))
 
-            # P: `cache / (cache + free_space)`
-            # N: configurable value from [0, 1]
+                # P: `cache / (cache + free_space)`
+                # N: configurable value from [0, 1]
 
-            N = 0.10
+                N = 0.10
 
-            # delete oldest accessed files, largest files until P<=N
-            potential_free_space = cache_size + free_space
-            for (name, st) in cache_entries:
-                if cache_size / potential_free_space <= N:
-                    break
+                # delete oldest accessed files, largest files until P<=N
+                potential_free_space = cache_size + free_space
+                for (name, st) in cache_entries:
+                    if cache_size / potential_free_space <= N:
+                        break
 
-                os.unlink(os.path.join(self._cache_folder, name))
+                    os.unlink(os.path.join(self._cache_folder, name))
 
-                cache_size -= st.st_size
+                    cache_size -= st.st_size
 
-            self._prune_event.wait(PRUNE_PERIOD)
-            self._prune_event.clear()
+                self._prune_event.wait(PRUNE_PERIOD)
+                self._prune_event.clear()
+            except AssertionError:
+                log.exception("Assertion failed, dying...")
+                os._exit(0)
+            except Exception:
+                log.exception("Error pruning cache, sleeping...")
+                self._prune_event.wait(100)
 
     def _init_db(self):
         conn = self._create_db_conn()

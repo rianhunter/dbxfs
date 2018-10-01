@@ -52,10 +52,10 @@ log = logging.getLogger(__name__)
 APP_NAME = "dbxfs"
 
 def yes_no_input(message=None):
-    answer = input("%s[y/N]" % (message + ' ' if message is not None else ''))
+    answer = input("%s[y/N] " % (message + ' ' if message is not None else ''))
     while answer.lower().strip() not in ("y", "n", "yes", "no", ""):
         print("Please answer yes or no!")
-        answer = input("%s[y/N]" % (message + ' ' if message is not None else ''))
+        answer = input("%s[y/N] " % (message + ' ' if message is not None else ''))
     return answer.lower().startswith('y')
 
 def parse_encrypted_folder_arg(string):

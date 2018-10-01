@@ -76,6 +76,8 @@ def main(argv=None):
 
     config_dir = appdirs.user_config_dir(APP_NAME)
 
+    os.makedirs(config_dir, exist_ok=True)
+
     if args.config_file is not None:
         config_file = args.config_file
     else:

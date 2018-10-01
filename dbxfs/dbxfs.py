@@ -136,6 +136,8 @@ class DropboxAPIError(Exception):
 class HTTPError(Exception):
     pass
 
+HTTP_TIMEOUT=30
+
 def download_connection(access_token, path, start=None, length=None):
     target_host_port = ("content.dropboxapi.com", 443)
 
@@ -147,10 +149,10 @@ def download_connection(access_token, path, start=None, length=None):
     proxy = os.getenv("HTTPS_PROXY")
     if proxy is not None:
         o = urllib.parse.urlparse(proxy)
-        conn = http.client.HTTPSConnection(o.hostname, o.port, context=ssl_context)
+        conn = http.client.HTTPSConnection(o.hostname, o.port, timeout=HTTP_TIMEOUT, context=ssl_context)
         conn.set_tunnel(*target_host_port)
     else:
-        conn = http.client.HTTPSConnection(*target_host_port, context=ssl_context)
+        conn = http.client.HTTPSConnection(*target_host_port, timeout=HTTP_TIMEOUT, context=ssl_context)
 
     args = {"path" : path}
 

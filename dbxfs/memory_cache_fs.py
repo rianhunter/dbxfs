@@ -773,6 +773,15 @@ class CachedDirectory(object):
     def sync(self):
         pass
 
+    def pwrite(self, *n, **kw):
+        raise OSError(errno.EBADF, os.strerror(errno.EBADF))
+
+    def pread(self, *n, **kw):
+        raise OSError(errno.EBADF, os.strerror(errno.EBADF))
+
+    def ptruncate(self, *n, **kw):
+        raise OSError(errno.EBADF, os.strerror(errno.EBADF))
+
     def is_dirty(self):
         return False
 

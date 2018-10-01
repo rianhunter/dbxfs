@@ -1041,6 +1041,9 @@ class _File(PositionIO):
         return self.stat().size
 
     def ptruncate(self, offset):
+        if not self.writeable():
+            raise OSError(errno.EBADF, os.strerror(errno.EBADF))
+
         with self._lock.shared_context():
             return self._live_md.cached_file.ptruncate(offset)
 

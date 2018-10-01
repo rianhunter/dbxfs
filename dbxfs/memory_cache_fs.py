@@ -368,11 +368,8 @@ class StreamingFile(object):
         def stream_file(is_temp, amt):
             while not self.stop_signal.is_set():
                 try:
-                    with contextlib.closing(self.fs.x_read_stream(self._stat.rev)) as fsource:
-                        # Skip bytes if we already have them
-                        toread = amt
-                        while toread:
-                            toread -= len(fsource.read(min(toread, DOWNLOAD_UNIT)))
+                    # Use offset to skip bytes if we already have them
+                    with contextlib.closing(self.fs.x_read_stream(self._stat.rev, offset=amt)) as fsource:
                         while True:
                             buf = fsource.read(DOWNLOAD_UNIT)
                             if not buf: break

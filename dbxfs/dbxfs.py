@@ -253,20 +253,30 @@ class _File(PositionIO):
         return self._fs._get_md(self._path)
 
 class _ReadStream(io.RawIOBase):
-    def __init__(self, fs, path):
+    def __init__(self, fs, path, offset=None):
         self._fs = fs
         self._path = path
         self._offset = 0
         self._lock = threading.Lock()
         self._read_conn = None
+        if offset is None:
+            offset = 0
+        self._start_offset = offset
 
     def readinto(self, buf):
         with self._lock:
             if self._path is None:
                 raise ValueError("closed!")
             if self._read_conn is None:
-                (_, self._read_conn) = download_connection(self._fs._access_token,
-                                                           self._path)
+                try:
+                    (_, self._read_conn) = download_connection(self._fs._access_token,
+                                                               self._path,
+                                                               start=self._start_offset)
+                except HTTPError as e:
+                    if e.args[0] == 416:
+                        return 0
+                    raise
+
             toret = self._read_conn.readinto(buf)
             self._offset += toret
             return toret
@@ -673,8 +683,8 @@ class FileSystem(object):
     def x_write_stream(self):
         return _WriteStream(self)
 
-    def x_read_stream(self, path):
-        return _ReadStream(self, str(path))
+    def x_read_stream(self, path, offset=None):
+        return _ReadStream(self, str(path), offset=offset)
 
     def open_directory(self, path):
         return _Directory(self, str(path))

@@ -794,6 +794,7 @@ class CachedFile(object):
         self._upload_cond = threading.Condition()
         self._upload_now = None
         self._upload_next = None
+        self._eio = False
 
         self._thread = threading.Thread(target=self._upload_thread)
         self._thread.start()
@@ -885,7 +886,12 @@ class CachedFile(object):
                 os._exit(0)
             except Exception:
                 log.exception("Error uploading file, sleeping...")
+                with self._upload_cond:
+                    self._eio = True
+                    self._upload_cond.notify_all()
                 time.sleep(100)
+                with self._upload_cond:
+                    self._eio = False
 
     def pread(self, size, offset):
         return self._file.pread(size, offset)
@@ -929,8 +935,12 @@ class CachedFile(object):
                 return
 
             # wait for upload
-            while self._upload_now is uploading or self._upload_next is uploading:
+            while not self._eio and (self._upload_now is uploading or
+                                     self._upload_next is uploading):
                 self._upload_cond.wait()
+
+            if self._eio:
+                raise OSError(errno.EIO, os.strerror(errno.EIO))
 
     def is_dirty(self):
         with self._upload_cond:

@@ -72,10 +72,15 @@ def main(argv=None):
     userspacefs.add_cli_arguments(parser)
     parser.add_argument("-c", "--config-file")
     parser.add_argument("-e", "--encrypted-folder", dest='encrypted_folders', type=parse_encrypted_folder_arg, default=[], action='append')
+    parser.add_argument("--print-user-config-dir", action='store_true')
     parser.add_argument("mount_point", nargs='?')
     args = parser.parse_args(argv[1:])
 
     config_dir = appdirs.user_config_dir(APP_NAME)
+
+    if args.print_user_config_dir:
+        print(config_dir)
+        return 0
 
     if args.mount_point is None:
         parser.print_usage()

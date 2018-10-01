@@ -689,12 +689,14 @@ class FileSystem(object):
     def create_watch(self, cb, dir_handle, completion_filter, watch_tree):
         # TODO: we don't support added, moved_from, or moved_to events
 
-        if not isinstance(dir_handle, _File):
-            raise OSError(errno.EINVAL, os.strerror(errno.EINVAL))
+        # NB: _File just means it was opened with open()
+        # (this includes directories)
+        # This assert is okay because dir_handle is arguably okay because
+        # handles are opaque objects returned from open()
+        assert isinstance(dir_handle, _File)
 
-        if (str(dir_handle._path) != "/" and
-            not str(dir_handle._path).startswith("id:")):
-            raise OSError(errno.EINVAL, os.strerror(errno.EINVAL))
+        assert (str(dir_handle._path) == "/" or
+                str(dir_handle._path).startswith("id:"))
 
         id_ = dir_handle._path
         dirpath = [None]

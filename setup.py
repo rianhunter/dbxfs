@@ -34,6 +34,7 @@ setup(
         "userspacefs",
         "block_tracing",
         "privy",
+        "keyring>=15.1,<16",
     ],
     extras_require={
         'safefs': ["safefs"],

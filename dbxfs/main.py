@@ -22,6 +22,7 @@ import getpass
 import json
 import logging
 import os
+import random
 import subprocess
 import sys
 
@@ -32,6 +33,8 @@ import dropbox
 import privy
 
 import userspacefs
+
+import keyring
 
 from block_tracing import block_tracing
 
@@ -107,6 +110,7 @@ def main(argv=None):
             return -1
 
     access_token = None
+    save_access_token = False
 
     access_token_command = config.get("access_token_command", None)
     if access_token_command is not None:
@@ -117,6 +121,16 @@ def main(argv=None):
             print("Bad access token command: %r, " % (access_token_command,))
             return -1
 
+    if access_token is None:
+        keyring_user = config.get("keyring_user", None)
+
+        if keyring_user is not None:
+            try:
+                access_token = keyring.get_password(APP_NAME, keyring_user)
+            except keyring.KeyringError as e:
+                print("Failed to get access token from keyring: %r" % (e.args[0],))
+
+    from_privy = False
     if access_token is None:
         access_token_privy = config.get("access_token_privy", None)
         if access_token_privy is not None:
@@ -130,8 +144,9 @@ def main(argv=None):
                         continue
                 break
             del passwd
+            save_access_token = True
+            from_privy = True
 
-    save_access_token = False
     while True:
         if access_token is None:
             print("We need an access token. "
@@ -156,20 +171,34 @@ def main(argv=None):
             break
 
     if save_access_token and yes_no_input("We're all connected. Do you want to save this access token for future runs?"):
-        print("We need a passphrase to encrypt your access token before we can save it.")
-        print("Warning: Your access token passphrase must contain enough randomness to be resistent to hacking. You can read this for more info: https://blogs.dropbox.com/tech/2012/04/zxcvbn-realistic-password-strength-estimation/")
-        while True:
-            pass_ = getpass.getpass("Enter new access token passphrase: ")
-            pass2_ = getpass.getpass("Enter new access token passphrase (again): ")
-            if pass_ != pass2_:
-                print("Passphrases didn't match, please re-enter")
+        keyring_user = ''.join([random.choice("asdfghjklzxcvbnmqwertyuiop")
+                                for _ in range(24)])
+        try:
+            keyring.set_password(APP_NAME, keyring_user, access_token)
+        except KeyringError as e:
+            if not from_privy:
+                print("We need a passphrase to encrypt your access token before we can save it.")
+                print("Warning: Your access token passphrase must contain enough randomness to be resistent to hacking. You can read this for more info: https://blogs.dropbox.com/tech/2012/04/zxcvbn-realistic-password-strength-estimation/")
+                while True:
+                    pass_ = getpass.getpass("Enter new access token passphrase: ")
+                    pass2_ = getpass.getpass("Enter new access token passphrase (again): ")
+                    if pass_ != pass2_:
+                        print("Passphrases didn't match, please re-enter")
+                    else:
+                        del pass2_
+                        break
+                config.pop('keyring_user', None)
+                config['access_token_privy'] = privy.hide(access_token.encode('utf-8'), pass_, server=False)
+                del pass_
+                with open(config_file, "w") as f:
+                    json.dump(config, f)
             else:
-                del pass2_
-                break
-        config['access_token_privy'] = privy.hide(access_token.encode('utf-8'), pass_, server=False)
-        del pass_
-        with open(config_file, "w") as f:
-            json.dump(config, f)
+                print("Failed to save access token to system keyring: %s" % (e.args[0],))
+        else:
+            config.pop('access_token_privy', None)
+            config['keyring_user'] = keyring_user
+            with open(config_file, "w") as f:
+                json.dump(config, f)
 
     print("Successfully authenticated, starting %r..." % (APP_NAME,))
 

@@ -36,11 +36,14 @@ import userspacefs
 
 import keyring
 
+import sentry_sdk
+
 from block_tracing import block_tracing
 
 from dbxfs.dbxfs import FileSystem as DropboxFileSystem
 from dbxfs.memory_cache_fs import FileSystem as CachingFileSystem
 from dbxfs.disable_quick_look import FileSystem as DisableQuickLookFileSystem
+from dbxfs.wrap_errors import FileSystem as WrapErrorsFileSystem
 
 try:
     from dbxfs.safefs_glue import safefs_wrap_create_fs
@@ -113,6 +116,7 @@ def main(argv=None):
 
     access_token = None
     save_access_token = False
+    save_config = False
 
     access_token_command = config.get("access_token_command", None)
     if access_token_command is not None:
@@ -224,17 +228,33 @@ def main(argv=None):
                 config.pop('keyring_user', None)
                 config['access_token_privy'] = privy.hide(access_token.encode('utf-8'), pass_, server=False)
                 del pass_
-                with open(config_file, "w") as f:
-                    json.dump(config, f)
+                save_config = True
             else:
                 print("Failed to save access token to system keyring: %s" % (e.args[0],))
         else:
             config.pop('access_token_privy', None)
             config['keyring_user'] = keyring_user
-            with open(config_file, "w") as f:
-                json.dump(config, f)
+            save_config = True
 
-    print("Successfully authenticated, starting %r..." % (APP_NAME,))
+    if not config.get("asked_send_error_reports", False):
+        if yes_no_input("Would you like to help us improve %s by providing anonymous error reports?" % (APP_NAME,)):
+            config['send_error_reports'] = True
+        config['asked_send_error_reports'] = True
+        save_config = True
+
+    if save_config:
+        with open(config_file, "w") as f:
+            json.dump(config, f)
+
+    print("Starting %s..." % (APP_NAME,))
+
+    wrap_fs_errors = True
+    if config.get('send_error_reports', False):
+        try:
+            sentry_sdk.init("https://b4b13ebd300849bd92260507a594e618@sentry.io/1293235")
+            wrap_fs_errors = True
+        except Exception:
+            log.warning("Failed to initialize sentry", exc_info=True)
 
     cache_folder = os.path.join(appdirs.user_cache_dir(APP_NAME), "file_cache")
     with contextlib.suppress(FileExistsError):
@@ -244,6 +264,9 @@ def main(argv=None):
         fs = CachingFileSystem(DropboxFileSystem(access_token), cache_folder=cache_folder)
         if sys.platform == 'darwin':
             fs = DisableQuickLookFileSystem(fs)
+
+        if wrap_fs_errors:
+            fs = WrapErrorsFileSystem(fs)
         return fs
 
     encrypted_folders = config.get("encrypted_folders", []) + args.encrypted_folders

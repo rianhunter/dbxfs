@@ -405,9 +405,6 @@ class StreamingFile(object):
 
                         log.debug("Done downloading %r", self._stat.rev)
                     break
-                except AssertionError:
-                    log.exception("Assertion failed, dying...")
-                    os._exit(0)
                 except Exception:
                     log.exception("Error downloading file, sleeping...")
                     with self.cond:
@@ -883,10 +880,12 @@ class CachedFile(object):
                             except FileNotFoundError:
                                 pass
                             except Exception:
-                                log.exception("Error unlinking existing cache file")
+                                log.warning("Error unlinking existing cache file",
+                                            exc_info=True)
                             os.link(to_save.name, p)
                         except Exception:
-                            log.exception("Error while linking cached file")
+                            log.warning("Error while linking cached file",
+                                        exc_info=True)
                         finally:
                             if to_save is not None:
                                 to_save.close()
@@ -898,9 +897,6 @@ class CachedFile(object):
                     self._upload_cond.notify_all()
 
                 self._fs._submit_write(self._id, md)
-            except AssertionError:
-                log.exception("Assertion failed, dying...")
-                os._exit(0)
             except Exception:
                 log.exception("Error uploading file, sleeping...")
                 with self._upload_cond:
@@ -1133,7 +1129,7 @@ class FileSystem(object):
             try:
                 self._statvfs = self._fs.statvfs()
             except Exception:
-                log.exception("Error while calling statvfs")
+                log.warning("Error while calling statvfs", exc_info=True)
             self._statvfs_event.wait()
             self._statvfs_event.clear()
 
@@ -1186,9 +1182,6 @@ class FileSystem(object):
 
                 self._prune_event.wait(PRUNE_PERIOD)
                 self._prune_event.clear()
-            except AssertionError:
-                log.exception("Assertion failed, dying...")
-                os._exit(0)
             except Exception:
                 log.exception("Error pruning cache, sleeping...")
                 self._prune_event.wait(100)

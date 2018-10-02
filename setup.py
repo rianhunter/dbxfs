@@ -35,6 +35,7 @@ setup(
         "block_tracing",
         "privy",
         "keyring>=15.1,<16",
+        "sentry_sdk>=0.3,<1",
     ],
     extras_require={
         'safefs': ["safefs"],

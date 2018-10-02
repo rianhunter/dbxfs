@@ -1415,26 +1415,30 @@ class FileSystem(object):
         self._handle_changes([md])
 
     def rename_noreplace(self, oldpath, newpath):
-        stat_ = self._fs.x_rename_stat(oldpath, newpath)
-        md_delete = dropbox.files.DeletedMetadata(name=oldpath.name,
-                                                  path_lower=str(oldpath.normed()))
-        if stat_.type == "directory":
-            md = dropbox.files.FolderMetadata(name=newpath.name,
-                                              path_lower=str(newpath.normed()),
-                                              id=stat_.id)
-        else:
-            assert stat_.rev.startswith("rev:")
-            md = dropbox.files.FileMetadata(name=newpath.name,
-                                            path_lower=str(newpath.normed()),
-                                            id=stat_.id,
-                                            client_modified=stat_.mtime,
-                                            server_modified=stat_.ctime,
-                                            rev=stat_.rev[len("rev:"):],
-                                            size=stat_.size)
-        # NB: this is best effort, for directories _handle_changes() expects
-        #     all deletes/adds for descendant files as well. that would
-        #     not be efficiently implemented here.
-        self._handle_changes([md_delete, md])
+        self._fs.rename_noreplace(oldpath, newpath)
+        old_path_norm = str(oldpath.normed())
+        new_path_norm = str(newpath.normed())
+
+        # Invalidate cache entries for old path tree, and new path
+        conn = self._get_db_conn()
+        with trans(conn, self._db_lock, is_exclusive=True), contextlib.closing(conn.cursor()) as cursor:
+            # Clear new path's, new path's parent's, and old path's parent's entries
+            cursor.executemany("DELETE FROM md_cache_entries WHERE path_key = ?",
+                               [(new_path_norm,), (str(newpath.parent.normed()),),
+                                (str(oldpath.parent.normed()),)])
+
+            # Clear new path
+            cursor.execute("DELETE FROM md_cache WHERE path_key = ?",
+                           (new_path_norm,))
+
+            # Clear all old children's entries
+            cursor.execute("DELETE FROM md_cache_entries "
+                           "WHERE path_key = ? or path_key like ? || '/%'",
+                           (old_path_norm, old_path_norm,))
+
+            # Clear all old children
+            cursor.execute("DELETE FROM md_cache WHERE path_key = ? or path_key like ? || '/%'",
+                           (old_path_norm, old_path_norm,))
 
     def statvfs(self):
         if self._statvfs is None:

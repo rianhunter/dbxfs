@@ -33,6 +33,8 @@ import sys
 import urllib
 import urllib.request
 
+import email.utils as eut
+
 import dropbox
 
 from userspacefs.path_common import Path
@@ -73,9 +75,7 @@ class _Directory(object):
         assert ret is None
 
     def __it(self):
-        # XXX: Hack: we "snapshot" this directory by not returning entries
-        #      newer than the moment this iterator was started
-        start = datetime.datetime.utcnow()
+        start = None
         self._cursor = None
         stop = False
         while not stop:
@@ -83,6 +83,9 @@ class _Directory(object):
                 path_ = "" if self._path == "/" else self._path
                 try:
                     res = self._fs._clientv2.files_list_folder(path_)
+                    # XXX: Hack: we "snapshot" this directory by not returning entries
+                    #      newer than the moment this iterator was started
+                    start = self._fs._get_response_datetime()
                 except dropbox.exceptions.ApiError as e:
                     if e.error.is_path():
                         if e.error.get_path().is_not_found():
@@ -545,10 +548,25 @@ class FileSystem(object):
         self._closed = False
 
         # share this session (i.e. connection pool) across threads
-        self._db_session = dropbox.create_session()
+        self._db_session = self._create_session()
 
         # kick off delta thread
         threading.Thread(target=delta_thread, args=(self,), daemon=True).start()
+
+    def _create_session(self):
+        session = dropbox.create_session()
+
+        old_session_post = session.post
+        def new_session_post(*n, **kw):
+            r = old_session_post(*n, **kw)
+            self._local.r = r
+            return r
+        session.post = new_session_post
+
+        return session
+
+    def _get_response_datetime(self):
+        return datetime.datetime(*eut.parsedate(self._local.r.headers['Date'])[:6])
 
     def _add_watch(self, watch_fn):
         with self._watches_lock:

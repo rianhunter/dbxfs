@@ -136,7 +136,7 @@ def main(argv=None):
         if access_token_privy is not None:
             passwd = None
             while True:
-                passwd = getpass.getpass("Enter access token passphrase (not your Dropbox password): ")
+                passwd = getpass.getpass("Enter access token passphrase (not your Dropbox password) (Ctrl-C to quit): ")
                 try:
                     access_token = privy.peek(access_token_privy, passwd).decode('utf-8')
                 except ValueError:
@@ -153,7 +153,7 @@ def main(argv=None):
                   "Go to https://dropbox.com/developers/apps to "
                   "create an app and generate a personal access token.")
 
-            access_token = getpass.getpass("Enter Access token: ")
+            access_token = getpass.getpass("Enter Access token (Ctrl-C to quit): ")
             if not access_token:
                 print("Access tokens cannot be empty")
                 access_token = None

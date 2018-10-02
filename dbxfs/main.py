@@ -53,6 +53,8 @@ except ImportError:
 log = logging.getLogger(__name__)
 
 APP_NAME = "dbxfs"
+APP_KEY = "iftkeq2y4qj0nbt"
+APP_SECRET = "y245xn4rg4lf0it"
 
 def yes_no_input(message=None):
     answer = input("%s[y/N] " % (message + ' ' if message is not None else ''))
@@ -147,18 +149,49 @@ def main(argv=None):
             save_access_token = True
             from_privy = True
 
+
+
+    try_directly = False
     while True:
         if access_token is None:
-            print("We need an access token. "
-                  "Go to https://dropbox.com/developers/apps to "
+            save_access_token = True
+
+        if (access_token is None and
+            try_directly and
+            yes_no_input("Want to try entering the access token directly?")):
+            print("Go to https://dropbox.com/developers/apps to "
                   "create an app and generate a personal access token.")
 
-            access_token = getpass.getpass("Enter Access token (Ctrl-C to quit): ")
-            if not access_token:
-                print("Access tokens cannot be empty")
-                access_token = None
+            while True:
+                access_token = getpass.getpass("Enter Access token (Ctrl-C to quit): ")
+                if not access_token:
+                    print("Access tokens cannot be empty")
+                    continue
+                break
+
+        if access_token is None:
+            auth_flow = dropbox.DropboxOAuth2FlowNoRedirect(APP_KEY, APP_SECRET)
+            authorize_url = auth_flow.start()
+            print("We need an access token. Perform the following steps:")
+            print("1. Go to " + authorize_url)
+            print("2. Click \"Allow\" (you may have to log in first)")
+            print("3. Copy the authorization code.")
+
+            while True:
+                auth_code = input("Enter authoritization code (Ctrl-C to quit): ")
+                if not auth_code:
+                    print("Authorization code cannot be empty")
+                    continue
+                break
+
+            try:
+                oauth_result = auth_flow.finish(auth_code)
+            except Exception as e:
+                printf("Authorization code was invalid!")
+                try_directly = True
                 continue
-            save_access_token = True
+
+            access_token = oauth_result.access_token
 
         # test out access token
         try:
@@ -167,10 +200,11 @@ def main(argv=None):
                 dropbox.exceptions.AuthError) as e:
             print("Error using access token: %s" % (e.message,))
             access_token = None
+            try_directly = True
         else:
             break
 
-    if save_access_token and yes_no_input("We're all connected. Do you want to save this access token for future runs?"):
+    if save_access_token and yes_no_input("We're all connected. Do you want to save your credentials for future runs?"):
         keyring_user = ''.join([random.choice("asdfghjklzxcvbnmqwertyuiop")
                                 for _ in range(24)])
         try:

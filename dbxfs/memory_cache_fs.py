@@ -1354,8 +1354,13 @@ class FileSystem(object):
 
             stat_num = _get_stat_num(cursor)
 
-        if (((create_mode & os.O_CREAT) and (create_mode & os.O_EXCL)) or
-            ((create_mode & os.O_CREAT) and stat is DELETED) or
+        # If cache says file exists and this is exclusive create,
+        # then fail fast. (FUSE effectively works this way too)
+        if ((create_mode & os.O_CREAT) and (create_mode & os.O_EXCL) and
+            stat is not DELETED and stat is not None):
+            raise OSError(errno.EEXIST, os.strerror(errno.EEXIST)) from e
+
+        if (((create_mode & os.O_CREAT) and stat is DELETED) or
             stat is None):
             try:
                 new_stat = self._fs.x_stat_create(path, create_mode, directory)

@@ -1255,53 +1255,27 @@ class FileSystem(object):
                 return
 
             for change in changes:
-                # NB: the metadata we currently have could be newer than this change
-                #     the file will temporarily revert while we catch up to the newer state
-                # TODO: don't process stale data, need 'server_modified' on all metadata
-                #       entries from the dropbox api
+                # NB: the metadata we currently have could be newer than this change,
+                #     so we invalidate cache instead of updating it with stale entry
+                # TODO: we need a millisecond-precise 'server_modified' on all metadata
+                #       entries from the dropbox api (including
+                #       DeletedMetadata and FolderMetadata)
 
                 path_key = change.path_lower
                 normed_path = self.create_path(*([] if change.path_lower == "/" else change.path_lower[1:].split("/")))
                 name = change.name
                 parent_path_key = str(normed_path.parent)
-                if isinstance(change, dropbox.files.DeletedMetadata):
-                    # remove from the directory tree cache
-                    cursor.execute("DELETE FROM md_cache_entries WHERE path_key = ? and file_name_norm(name) = ?",
-                                   (parent_path_key, self._fs.file_name_norm(name)))
-                    if cursor.rowcount:
-                        # insert directory empty marker if there are no more
-                        # files under this directory
-                        conn.execute("""
-                        INSERT INTO md_cache_entries (path_key, name)
-                        SELECT ?, ? WHERE
-                        (SELECT EXISTS(SELECT * FROM md_cache_entries WHERE
-                                       path_key = ?)) = 0
-                        """,
-                        (parent_path_key, EMPTY_DIR_ENT, parent_path_key))
 
-                    # set deleted in the metadata cache
-                    cursor.execute("UPDATE md_cache SET md = NULL WHERE path_key = ?",
-                                   (path_key,))
-                else:
-                    # add to directory tree cache if parent is in cache
-                    cursor.execute("""
-                    INSERT OR REPLACE INTO md_cache_entries (path_key, name)
-                    SELECT ?, ? WHERE
-                    (SELECT EXISTS(SELECT * FROM md_cache_entries WHERE path_key = ?))
-                    """, (parent_path_key, name, parent_path_key))
+                # Clear all directory entries,
+                # also parent folder entries (since we don't know if
+                # this file is currently deleted or not)
+                parent_path_key = str(normed_path.parent)
+                cursor.executemany("DELETE FROM md_cache_entries WHERE path_key = ?",
+                                   [(parent_path_key,), (path_key,)])
 
-                    if cursor.rowcount:
-                        # delete directory empty marker if it existed
-                        cursor.execute("DELETE FROM md_cache_entries WHERE path_key = ? and name = ?", (parent_path_key, EMPTY_DIR_ENT))
-
-                        # since we have the directory in cache, we should cache this entry
-                        cursor.execute("INSERT OR REPLACE INTO md_cache (path_key, md) "
-                                       "VALUES (?, ?)",
-                                       (path_key, stat_to_json(dbmd_to_stat(change))))
-                    else:
-                        # update the metadata we have on this file
-                        cursor.execute("UPDATE md_cache SET md = ? WHERE path_key = ?",
-                                       (stat_to_json(dbmd_to_stat(change)), path_key))
+                # Remove from md cache
+                cursor.execute("DELETE FROM md_cache WHERE path_key = ?",
+                               (path_key,))
 
     def create_path(self, *args):
         return self._fs.create_path(*args)

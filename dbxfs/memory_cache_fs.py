@@ -924,7 +924,10 @@ class CachedFile(object):
             return self._file.ptruncate(offset)
 
     def stat(self):
-        return self._file.stat()
+        st = self._file.stat()
+        # WriteStream.finish() has second granularity,
+        # so keep mtime consistent when it comes back
+        return st._replace(mtime=st.mtime.replace(microsecond=0))
 
     def _queue_sync(self, final=False):
         if self._file.is_dirty():

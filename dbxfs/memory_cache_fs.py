@@ -246,6 +246,8 @@ class _Directory(object):
                                    "VALUES (?, attr_merge((SELECT md FROM md_cache WHERE path_key = ?), ?))",
                                    ((sub_path_key, sub_path_key, md_str)
                                     for (sub_path_key, md_str) in cache_updates))
+                for (path_key, _) in cache_updates:
+                    fs._inc_counter(cursor, path_key)
 
             self._it = iter(to_iter)
 
@@ -1196,6 +1198,12 @@ class FileSystem(object):
         , name TEXT NOT NULL
         );
 
+
+        CREATE TABLE IF NOT EXISTS md_cache_counter
+        ( path_key TEXT NOT NULL
+        , counter integer NOT NULL
+        );
+
         CREATE UNIQUE INDEX IF NOT EXISTS md_cache_entries_unique
         on md_cache_entries (path_key, file_name_norm(name));
         """)
@@ -1243,6 +1251,13 @@ class FileSystem(object):
             assert not toclose.is_dirty()
             toclose.close()
 
+    def _inc_counter(self, cursor, path_key):
+        cursor.execute("insert or replace into md_cache_counter "
+                       "(path_key, counter) values "
+                       "(?, coalesce((select counter from md_cache_counter "
+                       "             where path_key = ?), -1) + 1)",
+                       (path_key, path_key))
+
     def _handle_changes(self, changes):
         self._statvfs_event.set()
         conn = self._get_db_conn()
@@ -1252,6 +1267,7 @@ class FileSystem(object):
             if changes == "reset":
                 cursor.execute("DELETE FROM md_cache");
                 cursor.execute("DELETE FROM md_cache_entries");
+                cursor.execute("update md_cache_counter set counter = counter + 1");
                 return
 
             for change in changes:
@@ -1277,6 +1293,10 @@ class FileSystem(object):
                 cursor.execute("DELETE FROM md_cache WHERE path_key = ?",
                                (path_key,))
 
+                # Update counter if one existed
+                cursor.execute("update md_cache_counter set counter = counter + 1 "
+                               "where path_key = ?", (path_key,))
+
     def create_path(self, *args):
         return self._fs.create_path(*args)
 
@@ -1295,28 +1315,28 @@ class FileSystem(object):
         return self._fs.stat_has_attr(attr)
 
     def stat(self, path, create_mode=0, directory=False):
-        pre_stat = None
-        # NB: EXCL forces us to hit FS synchronously, since cache
-        #     always has a chance of being out of date
-        if (create_mode & os.O_CREAT) and (create_mode & os.O_EXCL):
-            pre_stat = self._fs.x_stat_create(path, create_mode, directory)
+        DELETED = object()
+
+        path_key = str(path.normed())
+        parent_path_key = str(path.parent.normed())
+
+        def _get_stat_num(cursor):
+            cursor.execute("SELECT counter from md_cache_counter where path_key = ?",
+                           (path_key,))
+            row = cursor.fetchone()
+            if row is None:
+                stat_num = -1
+            else:
+                (stat_num,) = row
+            return stat_num
 
         conn = self._get_db_conn()
-        # We use BEGIN IMMEDIATE here because SQLite's deferred transactions
-        # will immediately throw a BUSY error if two threads concurrently attempt to
-        # upgrade from READ->WRITE.
-        # TODO: Start transaction with DEFERRED and restart with IMMEDIATE
-        #       if a write is necessary
-        with trans(conn, self._db_lock, is_exclusive=True), contextlib.closing(conn.cursor()) as cursor:
-            path_key = str(path.normed())
-            parent_path_key = str(path.parent.normed())
 
-            store_existence = False
-
+        with trans(conn, self._db_lock), contextlib.closing(conn.cursor()) as cursor:
             cursor.execute("SELECT md FROM md_cache WHERE path_key = ? limit 1",
                            (path_key,))
             row = cursor.fetchone()
-            if pre_stat is None and row is None:
+            if row is None:
                 # if it didn't exist in the md_cache, check if the
                 # parent exists in md_cache_entries, if so then this
                 # file doesn't exist
@@ -1325,55 +1345,48 @@ class FileSystem(object):
                 """, (parent_path_key,)).fetchone()
 
                 if parent_has_been_iterated:
-                    stat = None
+                    stat = DELETED
                 else:
-                    # NB: Potentially slow!
-                    # TODO: do mvcc before storing back in md_cache
-                    try:
-                        stat = self._fs.x_stat_create(path, create_mode, directory)
-                    except FileNotFoundError:
-                        stat = None
-
-                    # Make it explicit that following call of fs.stat_create()
-                    # will not trigger
-                    assert not (stat is None and (create_mode & os.O_CREAT))
-
-                    store_existence = True
-            elif pre_stat is not None and row is None:
-                stat = pre_stat
-                store_existence = True
+                    stat = None
             else:
                 (md,) = row
-                stat =  None if md is None else json_to_stat(md)
+                stat = DELETED if md is None else json_to_stat(md)
 
-                # Only update cache if pre_stat is newer
-                if (pre_stat is not None and
-                    (stat is None or pre_stat.ctime > stat.ctime)):
-                    stat = pre_stat
-                    store_existence = True
+            stat_num = _get_stat_num(cursor)
 
-            if stat is None and (create_mode & os.O_CREAT):
-                stat = self._fs.x_stat_create(path, create_mode, directory)
-                store_existence = True
+        if (((create_mode & os.O_CREAT) and (create_mode & os.O_EXCL)) or
+            ((create_mode & os.O_CREAT) and stat is DELETED) or
+            stat is None):
+            try:
+                new_stat = self._fs.x_stat_create(path, create_mode, directory)
+            except FileNotFoundError:
+                new_stat = DELETED
 
-            if store_existence:
-                md_str = None if stat is None else stat_to_json(stat)
-                cursor.execute("INSERT OR REPLACE INTO md_cache (path_key, md) values (?, ?)",
-                               (path_key, md_str))
-                # NB: store in parent directory if it is cached
-                cursor.execute("""
-                INSERT OR REPLACE INTO md_cache_entries (path_key, name)
-                SELECT ?, ? WHERE
-                (SELECT EXISTS(SELECT * FROM md_cache_entries WHERE path_key = ?))
-                """, (parent_path_key, path.name, parent_path_key))
-                if cursor.rowcount:
-                    # delete directory empty marker if it existed
-                    cursor.execute("DELETE FROM md_cache_entries WHERE path_key = ? and name = ?", (parent_path_key, EMPTY_DIR_ENT))
+            with trans(conn, self._db_lock, is_exclusive=True), contextlib.closing(conn.cursor()) as cursor:
+                # Only update metadata cache the path entry hasn't changed
+                if stat_num == _get_stat_num(cursor):
+                    md_str = None if new_stat is DELETED else stat_to_json(new_stat)
+                    cursor.execute("INSERT OR REPLACE INTO md_cache (path_key, md) values (?, ?)",
+                                   (path_key, md_str))
+                    # NB: store in parent directory if it is cached
+                    if new_stat is not DELETED:
+                        cursor.execute("""
+                        INSERT OR REPLACE INTO md_cache_entries (path_key, name)
+                        SELECT ?, ? WHERE
+                        (SELECT EXISTS(SELECT * FROM md_cache_entries WHERE path_key = ?))
+                        """, (parent_path_key, path.name, parent_path_key))
+                        if cursor.rowcount:
+                            # delete directory empty marker if it existed
+                            cursor.execute("DELETE FROM md_cache_entries WHERE path_key = ? and name = ?", (parent_path_key, EMPTY_DIR_ENT))
+                    else:
+                        cursor.execute("""
+                        delete from md_cache_entries where path_key = ? and file_name_norm(name) = ?
+                        """, (parent_path_key, self._fs.file_name_norm(path.name)))
+                    self._inc_counter(cursor, path_key)
 
-        if pre_stat is not None:
-            return pre_stat
+            stat = new_stat
 
-        if stat is None:
+        if stat is DELETED:
             raise OSError(errno.ENOENT, os.strerror(errno.ENOENT))
         else:
             # if the file is currently open, return the currently open stat instead
@@ -1430,6 +1443,9 @@ class FileSystem(object):
             # Clear new path
             cursor.execute("DELETE FROM md_cache WHERE path_key = ?",
                            (new_path_norm,))
+            cursor.execute("update md_cache_counter set counter = counter + 1 "
+                           "where path_key = ?",
+                           (new_path_norm,))
 
             # Clear all old children's entries
             cursor.execute("DELETE FROM md_cache_entries "
@@ -1438,6 +1454,9 @@ class FileSystem(object):
 
             # Clear all old children
             cursor.execute("DELETE FROM md_cache WHERE path_key = ? or path_key like ? || '/%'",
+                           (old_path_norm, old_path_norm,))
+            cursor.execute("update md_cache_counter set counter = counter + 1 "
+                           "where path_key = ? or path_key like ? || '/%'",
                            (old_path_norm, old_path_norm,))
 
     def statvfs(self):

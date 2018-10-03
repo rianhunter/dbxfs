@@ -150,7 +150,6 @@ def main(argv=None):
             except KeyringError as e:
                 print("Failed to get access token from keyring: %s" % (e,))
 
-    from_privy = False
     if access_token is None:
         access_token_privy = config.get("access_token_privy", None)
         if access_token_privy is not None:
@@ -164,10 +163,6 @@ def main(argv=None):
                         continue
                 break
             del passwd
-            save_access_token = True
-            from_privy = True
-
-
 
     try_directly = False
     while True:
@@ -228,23 +223,20 @@ def main(argv=None):
         try:
             keyring.set_password(APP_NAME, keyring_user, access_token)
         except (KeyringError, RuntimeError) as e:
-            if not from_privy:
-                print("We need a passphrase to encrypt your access token before we can save it.")
-                print("Warning: Your access token passphrase must contain enough randomness to be resistent to hacking. You can read this for more info: https://blogs.dropbox.com/tech/2012/04/zxcvbn-realistic-password-strength-estimation/")
-                while True:
-                    pass_ = getpass.getpass("Enter new access token passphrase: ")
-                    pass2_ = getpass.getpass("Enter new access token passphrase (again): ")
-                    if pass_ != pass2_:
-                        print("Passphrases didn't match, please re-enter")
-                    else:
-                        del pass2_
-                        break
-                config.pop('keyring_user', None)
-                config['access_token_privy'] = privy.hide(access_token.encode('utf-8'), pass_, server=False)
-                del pass_
-                save_config = True
-            else:
-                print("Failed to save access token to system keyring: %s" % (e,))
+            print("We need a passphrase to encrypt your access token before we can save it.")
+            print("Warning: Your access token passphrase must contain enough randomness to be resistent to hacking. You can read this for more info: https://blogs.dropbox.com/tech/2012/04/zxcvbn-realistic-password-strength-estimation/")
+            while True:
+                pass_ = getpass.getpass("Enter new access token passphrase: ")
+                pass2_ = getpass.getpass("Enter new access token passphrase (again): ")
+                if pass_ != pass2_:
+                    print("Passphrases didn't match, please re-enter")
+                else:
+                    del pass2_
+                    break
+            config.pop('keyring_user', None)
+            config['access_token_privy'] = privy.hide(access_token.encode('utf-8'), pass_, server=False)
+            del pass_
+            save_config = True
         else:
             config.pop('access_token_privy', None)
             config['keyring_user'] = keyring_user

@@ -61,11 +61,17 @@ APP_NAME = "dbxfs"
 APP_KEY = "iftkeq2y4qj0nbt"
 APP_SECRET = "y245xn4rg4lf0it"
 
-def yes_no_input(message=None):
-    answer = input("%s[y/N] " % (message + ' ' if message is not None else ''))
+def yes_no_input(message=None, default_yes=False):
+    if default_yes:
+        extra = "[Y/n]"
+    else:
+        extra = "[y/N]"
+    answer = input("%s%s " % (message + ' ' if message is not None else '', extra))
     while answer.lower().strip() not in ("y", "n", "yes", "no", ""):
         print("Please answer yes or no!")
-        answer = input("%s[y/N] " % (message + ' ' if message is not None else ''))
+        answer = input("%s%s " % (message + ' ' if message is not None else '', extra))
+    if not answer.lower().strip():
+        return default_yes
     return answer.lower().startswith('y')
 
 def parse_encrypted_folder_arg(string):
@@ -216,7 +222,7 @@ def main(argv=None):
         else:
             break
 
-    if save_access_token and yes_no_input("We're all connected. Do you want to save your credentials for future runs?"):
+    if save_access_token and yes_no_input("We're all connected. Do you want to save your credentials for future runs?", default_yes=True):
         keyring_user = ''.join([random.choice("asdfghjklzxcvbnmqwertyuiop")
                                 for _ in range(24)])
         try:
@@ -245,7 +251,7 @@ def main(argv=None):
             save_config = True
 
     if not config.get("asked_send_error_reports", False):
-        if yes_no_input("Would you like to help us improve %s by providing anonymous error reports?" % (APP_NAME,)):
+        if yes_no_input("Would you like to help us improve %s by providing anonymous error reports?" % (APP_NAME,), default_yes=True):
             config['send_error_reports'] = True
         config['asked_send_error_reports'] = True
         save_config = True

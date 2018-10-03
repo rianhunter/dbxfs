@@ -80,14 +80,19 @@ def main(argv=None):
     userspacefs.add_cli_arguments(parser)
     parser.add_argument("-c", "--config-file")
     parser.add_argument("-e", "--encrypted-folder", dest='encrypted_folders', type=parse_encrypted_folder_arg, default=[], action='append')
-    parser.add_argument("--print-user-config-dir", action='store_true')
+    parser.add_argument("--print-default-config-file", action='store_true')
     parser.add_argument("mount_point", nargs='?')
     args = parser.parse_args(argv[1:])
 
     config_dir = appdirs.user_config_dir(APP_NAME)
 
-    if args.print_user_config_dir:
-        print(config_dir)
+    if args.config_file is not None:
+        config_file = args.config_file
+    else:
+        config_file = os.path.join(config_dir, "config.json")
+
+    if args.print_default_config_file:
+        print(config_file)
         return 0
 
     if args.mount_point is None:
@@ -95,11 +100,6 @@ def main(argv=None):
         return 1
 
     os.makedirs(config_dir, exist_ok=True)
-
-    if args.config_file is not None:
-        config_file = args.config_file
-    else:
-        config_file = os.path.join(config_dir, "config.json")
 
     config = {}
     try:

@@ -252,7 +252,7 @@ def main(argv=None):
         with open(config_file, "w") as f:
             json.dump(config, f)
 
-    print("Starting %s..." % (APP_NAME,))
+    log.info("Starting %s...", APP_NAME)
 
     wrap_fs_errors = True
     if config.get('send_error_reports', False):

@@ -36,6 +36,7 @@ import privy
 import userspacefs
 
 import keyring
+from keyring.errors import KeyringError
 
 import sentry_sdk
 
@@ -140,8 +141,8 @@ def main(argv=None):
         if keyring_user is not None:
             try:
                 access_token = keyring.get_password(APP_NAME, keyring_user)
-            except keyring.KeyringError as e:
-                print("Failed to get access token from keyring: %r" % (e.args[0],))
+            except KeyringError as e:
+                print("Failed to get access token from keyring: %s" % (e,))
 
     from_privy = False
     if access_token is None:
@@ -198,7 +199,7 @@ def main(argv=None):
             try:
                 oauth_result = auth_flow.finish(auth_code)
             except Exception as e:
-                printf("Authorization code was invalid!")
+                print("Authorization code was invalid!")
                 try_directly = True
                 continue
 
@@ -220,7 +221,7 @@ def main(argv=None):
                                 for _ in range(24)])
         try:
             keyring.set_password(APP_NAME, keyring_user, access_token)
-        except KeyringError as e:
+        except (KeyringError, RuntimeError) as e:
             if not from_privy:
                 print("We need a passphrase to encrypt your access token before we can save it.")
                 print("Warning: Your access token passphrase must contain enough randomness to be resistent to hacking. You can read this for more info: https://blogs.dropbox.com/tech/2012/04/zxcvbn-realistic-password-strength-estimation/")
@@ -237,7 +238,7 @@ def main(argv=None):
                 del pass_
                 save_config = True
             else:
-                print("Failed to save access token to system keyring: %s" % (e.args[0],))
+                print("Failed to save access token to system keyring: %s" % (e,))
         else:
             config.pop('access_token_privy', None)
             config['keyring_user'] = keyring_user

@@ -265,7 +265,8 @@ def main(argv=None):
 
         try:
             sentry_sdk.init("https://b4b13ebd300849bd92260507a594e618@sentry.io/1293235",
-                            release='%s@%s' % (APP_NAME, version))
+                            release='%s@%s' % (APP_NAME, version),
+                            with_locals=False)
             wrap_fs_errors = True
         except Exception:
             log.warning("Failed to initialize sentry", exc_info=True)

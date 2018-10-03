@@ -19,6 +19,7 @@ import argparse
 import contextlib
 import errno
 import getpass
+import pkg_resources
 import json
 import logging
 import os
@@ -257,7 +258,14 @@ def main(argv=None):
     wrap_fs_errors = True
     if config.get('send_error_reports', False):
         try:
-            sentry_sdk.init("https://b4b13ebd300849bd92260507a594e618@sentry.io/1293235")
+            version = pkg_resources.require("dbxfs")[0].version
+        except Exception:
+            log.warning("Failed to get version", exc_info=True)
+            version = ''
+
+        try:
+            sentry_sdk.init("https://b4b13ebd300849bd92260507a594e618@sentry.io/1293235",
+                            release='%s@%s' % (APP_NAME, version))
             wrap_fs_errors = True
         except Exception:
             log.warning("Failed to initialize sentry", exc_info=True)

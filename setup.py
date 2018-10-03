@@ -25,7 +25,7 @@ setup(
     version='1.0.4',
     author="Rian Hunter",
     author_email="rian@alum.mit.edu",
-    description="A Dropbox backed file system",
+    description="User-space file system for Dropbox",
     long_description=long_description,
     long_description_content_type="text/markdown",
     url='https://github.com/rianhunter/dbxfs',

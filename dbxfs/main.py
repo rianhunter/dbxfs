@@ -286,6 +286,10 @@ def main(argv=None):
 
     create_fs = safefs_wrap_create_fs(create_fs, encrypted_folders)
 
+    if not os.path.exists(args.mount_point):
+        if yes_no_input("Mount point \"%s\" doesn't exist, do you want to create it?" % (args.mount_point,), default_yes=True):
+            os.makedirs(args.mount_point, exist_ok=True)
+
     return userspacefs.simple_main(args.mount_point, "dbxfs", create_fs, args)
 
 if __name__ == "__main__":

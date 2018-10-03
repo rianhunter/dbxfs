@@ -38,9 +38,9 @@ setup(
     install_requires=[
         "dropbox>=3.38",
         "appdirs>=1.4,<2",
-        "userspacefs",
-        "block_tracing",
-        "privy",
+        "userspacefs>=1.0.1,<2",
+        "block_tracing>=1.0,<2",
+        "privy>=6.0,<7",
         "keyring>=15.1,<16",
         "sentry_sdk>=0.3,<1",
     ],

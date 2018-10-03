@@ -111,6 +111,7 @@ def main(argv=None):
 
     if not args.smb_no_mount and args.mount_point is None:
         parser.print_usage()
+        print("%s: error: please provide the mount_point argument" % (os.path.basename(argv[0]),))
         return 1
 
     os.makedirs(config_dir, exist_ok=True)

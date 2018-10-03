@@ -5,7 +5,7 @@ filesystem. It differs from the official Dropbox client in two main
 ways:
 
 * Internet connectivity is required for access
-* No disk space is required for access
+* No disk space is required for access, but will cache if disk space is available
 
 dbxfs has been tested on Linux and macOS but it should run on any
 POSIX system that provides a FUSE-compatible library or has the

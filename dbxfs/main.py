@@ -126,7 +126,7 @@ def main(argv=None):
             with f:
                 config = json.load(f)
         except ValueError as e:
-            print("Config file %r is not valid json: %r" % (config_file, e.message))
+            print("Config file %r is not valid json: %s" % (config_file, e))
             return -1
 
     access_token = None
@@ -212,7 +212,7 @@ def main(argv=None):
             dropbox.Dropbox(access_token).users_get_current_account()
         except (dropbox.exceptions.BadInputError,
                 dropbox.exceptions.AuthError) as e:
-            print("Error using access token: %s" % (e.message,))
+            print("Error using access token: %s" % (e,))
             access_token = None
             try_directly = True
         else:

@@ -95,7 +95,7 @@ def main(argv=None):
         print(config_file)
         return 0
 
-    if args.mount_point is None:
+    if not args.smb_no_mount and args.mount_point is None:
         parser.print_usage()
         return 1
 

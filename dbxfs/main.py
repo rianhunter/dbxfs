@@ -78,9 +78,15 @@ def main(argv=None):
 
     parser = argparse.ArgumentParser()
     userspacefs.add_cli_arguments(parser)
-    parser.add_argument("-c", "--config-file")
-    parser.add_argument("-e", "--encrypted-folder", dest='encrypted_folders', type=parse_encrypted_folder_arg, default=[], action='append')
-    parser.add_argument("--print-default-config-file", action='store_true')
+    parser.add_argument("-c", "--config-file",
+                        help="config file path")
+    parser.add_argument("-e", "--encrypted-folder",
+                        dest='encrypted_folders',
+                        type=parse_encrypted_folder_arg,
+                        default=[], action='append',
+                        help="relative paths of encrypted folders, can be used multiple times. requires safefs")
+    parser.add_argument("--print-default-config-file", action='store_true',
+                        help="print default config file path to standard out and quit")
     parser.add_argument("mount_point", nargs='?')
     args = parser.parse_args(argv[1:])
 

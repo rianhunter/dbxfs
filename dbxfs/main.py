@@ -42,7 +42,7 @@ import sentry_sdk
 from block_tracing import block_tracing
 
 from dbxfs.dbxfs import FileSystem as DropboxFileSystem
-from dbxfs.memory_cache_fs import FileSystem as CachingFileSystem
+from dbxfs.cachingfs import FileSystem as CachingFileSystem
 from dbxfs.disable_quick_look import FileSystem as DisableQuickLookFileSystem
 from dbxfs.wrap_errors import FileSystem as WrapErrorsFileSystem
 

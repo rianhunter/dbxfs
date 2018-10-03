@@ -511,9 +511,11 @@ def delta_thread(dbfs):
             if isinstance(e, dropbox.files.ListFolderContinueError):
                 cursor = None
                 needs_reset = True
+            elif not isinstance(e, OSError):
+                log.exception("failure while doing list folder")
 
-            log.exception("failure while doing list folder")
             # TODO: this should be exponential backoff
+            log.info("List error, sleeping for 60 seconds")
             time.sleep(60)
             continue
 
@@ -535,8 +537,11 @@ def delta_thread(dbfs):
                     if dbfs._closed or res.changes:
                         break
                     if res.backoff is not None:
+                        log.info("List backoff, sleeping for %r seconds", res.backoff)
                         time.sleep(res.backoff)
-            except:
+            except OSError:
+                pass
+            except Exception:
                 log.exception("failure during longpoll")
 
 class FileSystem(object):

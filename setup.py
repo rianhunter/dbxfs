@@ -17,9 +17,16 @@
 
 from setuptools import setup
 
+with open("README.md", "r") as fh:
+    long_description = fh.read()
+
 setup(
     name="dbxfs",
+    author="Rian Hunter",
+    author_email="rian@alum.mit.edu",
     description="A Dropbox backed file system",
+    long_description=long_description,
+    long_description_content_type="text/markdown",
     url='https://github.com/rianhunter/dbxfs',
     license="GPL3",
     classifiers=[

@@ -74,7 +74,7 @@ def yes_no_input(message=None, default_yes=False):
 def parse_encrypted_folder_arg(string):
     return dict(path=string)
 
-def main(argv=None):
+def _main(argv=None):
     # Protect access token and potentially encryption keys
     block_tracing()
 
@@ -312,6 +312,12 @@ def main(argv=None):
         create_fs = safefs_wrap_create_fs(create_fs, encrypted_folders)
 
     return userspacefs.simple_main(mount_point, "dbxfs", create_fs, args)
+
+def main(argv=None):
+    try:
+        return _main(argv)
+    except KeyboardInterrupt:
+        return 1
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv))

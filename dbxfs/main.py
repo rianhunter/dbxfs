@@ -45,7 +45,6 @@ from block_tracing import block_tracing
 from dbxfs.dbxfs import FileSystem as DropboxFileSystem
 from dbxfs.cachingfs import FileSystem as CachingFileSystem
 from dbxfs.disable_quick_look import FileSystem as DisableQuickLookFileSystem
-from dbxfs.wrap_errors import FileSystem as WrapErrorsFileSystem
 
 try:
     from dbxfs.safefs_glue import safefs_wrap_create_fs
@@ -284,7 +283,6 @@ def _main(argv=None):
 
     log.info("Starting %s...", APP_NAME)
 
-    wrap_fs_errors = False
     if config.get('send_error_reports', False):
         try:
             version = pkg_resources.require("dbxfs")[0].version
@@ -296,7 +294,6 @@ def _main(argv=None):
             sentry_sdk.init("https://b4b13ebd300849bd92260507a594e618@sentry.io/1293235",
                             release='%s@%s' % (APP_NAME, version),
                             with_locals=False)
-            wrap_fs_errors = True
         except Exception:
             log.warning("Failed to initialize sentry", exc_info=True)
 
@@ -312,8 +309,6 @@ def _main(argv=None):
         if sys.platform == 'darwin':
             fs = DisableQuickLookFileSystem(fs)
 
-        if wrap_fs_errors:
-            fs = WrapErrorsFileSystem(fs)
         return fs
 
     if safefs_wrap_create_fs is not None:

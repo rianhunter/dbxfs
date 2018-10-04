@@ -205,7 +205,7 @@ def _main(argv=None):
             print("3. Copy the authorization code.")
 
             while True:
-                auth_code = input("Enter authoritization code (Ctrl-C to quit): ")
+                auth_code = input("Enter authorization code (Ctrl-C to quit): ")
                 if not auth_code:
                     print("Authorization code cannot be empty")
                     continue

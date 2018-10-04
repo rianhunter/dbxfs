@@ -111,7 +111,12 @@ class SubFileSystem(object):
         return fs.open_directory(path)
 
     def stat_has_attr(self, attr):
-        return fs.stat_has_attr(attr)
+        # stat_has_attr needs to know if stat call could return attr
+        # it's okay if it doesn't
+        val = self._fs.stat_has_attr(attr)
+        for fs in self._subfs.values():
+            val = val or self._fs.stat_has_attr(attr)
+        return val
 
     def stat(self, path):
         (fs, path) = self._transform_path(path)

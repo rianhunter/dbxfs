@@ -50,10 +50,7 @@ from dbxfs.wrap_errors import FileSystem as WrapErrorsFileSystem
 try:
     from dbxfs.safefs_glue import safefs_wrap_create_fs
 except ImportError:
-    def safefs_wrap_create_fs(create_fs, ef):
-        if ef:
-            log.warn("safefs not installed, can't transparently decrypt encrypted folders")
-        return create_fs
+    safefs_wrap_create_fs = None
 
 log = logging.getLogger(__name__)
 
@@ -128,6 +125,11 @@ def main(argv=None):
         except ValueError as e:
             print("Config file %r is not valid json: %s" % (config_file, e))
             return -1
+
+    encrypted_folders = config.get("encrypted_folders", []) + args.encrypted_folders
+    if safefs_wrap_create_fs is None and encrypted_folders:
+        print("safefs not installed, can't transparently decrypt encrypted folders")
+        return 1
 
     access_token = None
     save_access_token = False
@@ -284,9 +286,8 @@ def main(argv=None):
             fs = WrapErrorsFileSystem(fs)
         return fs
 
-    encrypted_folders = config.get("encrypted_folders", []) + args.encrypted_folders
-
-    create_fs = safefs_wrap_create_fs(create_fs, encrypted_folders)
+    if safefs_wrap_create_fs is not None:
+        create_fs = safefs_wrap_create_fs(create_fs, encrypted_folders)
 
     if not os.path.exists(args.mount_point):
         if yes_no_input("Mount point \"%s\" doesn't exist, do you want to create it?" % (args.mount_point,), default_yes=True):

@@ -236,7 +236,8 @@ class _Directory(object):
 
             with trans(conn, fs._db_lock, is_exclusive=True), contextlib.closing(conn.cursor()) as cursor:
                 new_dir_num = fs._get_entries_num(cursor, path_key)
-                if (stat_num == fs._get_stat_num(cursor, path_key) and
+                new_stat_num = fs._get_stat_num(cursor, path_key)
+                if (stat_num == new_stat_num and
                     dir_num == new_dir_num):
                     # Cache the names we downloaded
                     cursor.executemany("INSERT INTO md_cache_entries "
@@ -249,14 +250,17 @@ class _Directory(object):
                                    "             where path_key = ?), -1) + 1)",
                                    (path_key, path_key))
 
-                # Cache the metadata we've received
-                if dir_num == new_dir_num:
+                    # Cache the metadata we've received
                     cursor.executemany("REPLACE INTO md_cache (path_key, md) "
                                        "VALUES (?, attr_merge((SELECT md FROM md_cache WHERE path_key = ?), ?))",
                                        ((sub_path_key, sub_path_key, md_str)
                                         for (sub_path_key, md_str) in cache_updates))
                     for (path_key, _) in cache_updates:
                         fs._inc_counter(cursor, path_key)
+
+                    self._refreshed = True
+                else:
+                    self._refreshed = False
 
         self._it = iter(to_iter)
 
@@ -1143,6 +1147,12 @@ class FileSystem(object):
                     for entry in dir_:
                         if self._refresh_thread_stop:
                             break
+                    # If we failed to refresh, re-queue it if we can
+                    if not dir_._refreshed:
+                        try:
+                            self._refresh_queue.put_nowait(to_refresh)
+                        except queue.Full:
+                            pass
             except OSError:
                 pass
             except Exception:

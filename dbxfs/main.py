@@ -276,7 +276,7 @@ def main(argv=None):
 
     log.info("Starting %s...", APP_NAME)
 
-    wrap_fs_errors = True
+    wrap_fs_errors = False
     if config.get('send_error_reports', False):
         try:
             version = pkg_resources.require("dbxfs")[0].version

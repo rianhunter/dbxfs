@@ -220,7 +220,8 @@ def main(argv=None):
         try:
             dropbox.Dropbox(access_token).users_get_current_account()
         except (dropbox.exceptions.BadInputError,
-                dropbox.exceptions.AuthError) as e:
+                dropbox.exceptions.AuthError,
+                ValueError) as e:
             print("Error using access token: %s" % (e,))
             access_token = None
             try_directly = True

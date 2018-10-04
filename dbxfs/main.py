@@ -106,11 +106,6 @@ def main(argv=None):
         print(config_file)
         return 0
 
-    if not args.smb_no_mount and args.mount_point is None:
-        parser.print_usage()
-        print("%s: error: please provide the mount_point argument" % (os.path.basename(argv[0]),))
-        return 1
-
     os.makedirs(config_dir, exist_ok=True)
 
     config = {}
@@ -125,6 +120,15 @@ def main(argv=None):
         except ValueError as e:
             print("Config file %r is not valid json: %s" % (config_file, e))
             return -1
+
+    mount_point = args.mount_point
+    if mount_point is None:
+        mount_point = config.get("mount_point")
+
+    if not args.smb_no_mount and mount_point is None:
+        parser.print_usage()
+        print("%s: error: please provide the mount_point argument" % (os.path.basename(argv[0]),))
+        return 1
 
     encrypted_folders = config.get("encrypted_folders", []) + args.encrypted_folders
     if safefs_wrap_create_fs is None and encrypted_folders:
@@ -251,6 +255,14 @@ def main(argv=None):
         config['asked_send_error_reports'] = True
         save_config = True
 
+    if not os.path.exists(mount_point):
+        if yes_no_input("Mount point \"%s\" doesn't exist, do you want to create it?" % (mount_point,), default_yes=True):
+            os.makedirs(mount_point, exist_ok=True)
+
+    if save_access_token and yes_no_input("Do you want \"%s\" to be the default mount point?" % (mount_point,), default_yes=True):
+        config['mount_point'] = mount_point
+        save_config = True
+
     if save_config:
         with open(config_file, "w") as f:
             json.dump(config, f)
@@ -289,11 +301,7 @@ def main(argv=None):
     if safefs_wrap_create_fs is not None:
         create_fs = safefs_wrap_create_fs(create_fs, encrypted_folders)
 
-    if not os.path.exists(args.mount_point):
-        if yes_no_input("Mount point \"%s\" doesn't exist, do you want to create it?" % (args.mount_point,), default_yes=True):
-            os.makedirs(args.mount_point, exist_ok=True)
-
-    return userspacefs.simple_main(args.mount_point, "dbxfs", create_fs, args)
+    return userspacefs.simple_main(mount_point, "dbxfs", create_fs, args)
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv))

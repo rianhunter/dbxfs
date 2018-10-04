@@ -122,12 +122,14 @@ def register_deterministic_function(conn, name, num_params, func):
     # This is a hack, oh well this is how I roll
     # TODO: submit patch to pysqlite to do this natively
 
+    # NB: the sqlite3 library should already be loaded
+    #     but we specify noload just in case
     if sys.platform == "darwin":
         RTLD_NOLOAD = 0x10
     elif sys.platform.startswith("linux"):
         RTLD_NOLOAD = 0x04
     else:
-        raise Exception("Platform not supported!")
+        RTLD_NOLOAD = 0
 
     pysqlite_dll = ctypes.PyDLL(_sqlite3.__file__, ctypes.RTLD_GLOBAL | RTLD_NOLOAD)
 

@@ -225,6 +225,9 @@ def main(argv=None):
             print("Error using access token: %s" % (e,))
             access_token = None
             try_directly = True
+        except OSError:
+            if not yes_no_input("Error connecting to Dropbox, Try again?"):
+                return 1
         else:
             break
 

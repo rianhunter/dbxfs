@@ -144,6 +144,9 @@ def main(argv=None):
         print("Running %r for access token" % (' '.join(access_token_command),))
         try:
             access_token = subprocess.check_output(access_token_command).decode("utf-8")
+        except UnicodeDecodeError:
+            print("Access token command output is not utf-8 encoded")
+            return -1
         except TypeError:
             print("Bad access token command: %r, " % (access_token_command,))
             return -1

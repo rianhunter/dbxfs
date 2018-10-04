@@ -27,6 +27,7 @@ import itertools
 import json
 import logging
 import os
+import queue
 import tempfile
 import threading
 import traceback
@@ -1126,6 +1127,27 @@ class FileSystem(object):
         self._statvfs = None
         threading.Thread(target=self._statvfs_caching_thread, daemon=True).start()
 
+        self._refresh_thread_stop = False
+        self._refresh_queue = queue.Queue(100)
+        self._refresh_thread = threading.Thread(target=self._refresh_thread_start)
+        self._refresh_thread.start()
+
+    def _refresh_thread_start(self):
+        while not self._refresh_thread_stop:
+            to_refresh = self._refresh_queue.get()
+            if to_refresh is None:
+                continue
+
+            try:
+                with contextlib.closing(self.open_directory(to_refresh)) as dir_:
+                    for entry in dir_:
+                        if self._refresh_thread_stop:
+                            break
+            except OSError:
+                pass
+            except Exception:
+                log.exception("Failed to traverse directory %r", to_refresh)
+
     def _statvfs_caching_thread(self):
         while not self._close_prune_thread:
             try:
@@ -1141,6 +1163,9 @@ class FileSystem(object):
         self._conn.close()
         if self._watch_stop is not None:
             self._watch_stop()
+        self._refresh_thread_stop = True
+        self._refresh_queue.put(None)
+        self._refresh_thread.join()
         self._fs.close()
 
     def _prune_thread(self):
@@ -1289,14 +1314,24 @@ class FileSystem(object):
                 path_key = change.path_lower
                 normed_path = self.create_path(*([] if change.path_lower == "/" else change.path_lower[1:].split("/")))
                 name = change.name
-                parent_path_key = str(normed_path.parent)
+                parent_path = normed_path.parent
+                parent_path_key = str(parent_path)
 
                 # Clear all directory entries,
                 # also parent folder entries (since we don't know if
                 # this file is currently deleted or not)
-                parent_path_key = str(normed_path.parent)
-                cursor.executemany("DELETE FROM md_cache_entries WHERE path_key = ?",
-                                   [(parent_path_key,), (path_key,)])
+                for (path, path_key_) in [
+                        (normed_path, path_key),
+                        (parent_path, parent_path_key)
+                ]:
+                    cursor.execute("DELETE FROM md_cache_entries WHERE path_key = ?",
+                                   (path_key_,))
+                    # if the directory had entries, queue up refresh
+                    if cursor.rowcount:
+                        try:
+                            self._refresh_queue.put_nowait(path)
+                        except queue.Full:
+                            pass
 
                 # Update entries counter if they exist
                 cursor.executemany("update md_cache_entries_counter set counter = counter + 1 "
@@ -1489,6 +1524,8 @@ class FileSystem(object):
         # Invalidate cache entries for old path tree, and new path
         conn = self._get_db_conn()
         with trans(conn, self._db_lock, is_exclusive=True), contextlib.closing(conn.cursor()) as cursor:
+            # TODO: send renamed directories to _refresh_thread
+
             # Clear new path's, new path's parent's, and old path's parent's entries
             cursor.executemany("DELETE FROM md_cache_entries WHERE path_key = ?",
                                [(new_path_norm,), (str(newpath.parent.normed()),),

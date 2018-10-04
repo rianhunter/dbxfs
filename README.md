@@ -33,17 +33,23 @@ on Fedora install `fuse`.
 You can see the full list of command line options by passing `-h` to
 the `dbxfs` command.
 
-# Advanced Access Token Storage
+## Advanced Access Token Storage
 
 By default dbxfs stores your access token in the system keyring or an
 encrypted file but you may want to store it in a `gpg` encrypted file
-or something else. To do that you must edit the dbxfs config
-file. First you need to find the default config file location:
+or something else. To do that you must first obtain an access token.
+You can obtain an access token by creating a personal app on the
+[Dropbox developers app console](https://dropbox.com/developers/apps).
+
+Once you have obtained an app token, encrypt it with the program of
+your choice and store the result somewhere. After that, you must edit
+the dbxfs config file. You can find the location of the config file by
+running the following command:
 
     $ dbxfs --print-default-config-file
 
-It is a JSON encoded file. Add the following JSON key to the top-level
-JSON object in that file:
+The config file is a JSON encoded file. Add the following JSON key to
+the top-level JSON object in that file:
 
     "access_token_command": ["gpg", "--decrypt", "/path/to/access/token/file.gpg"]
 

@@ -293,8 +293,11 @@ def main(argv=None):
             log.warning("Failed to initialize sentry", exc_info=True)
 
     cache_folder = os.path.join(appdirs.user_cache_dir(APP_NAME), "file_cache")
-    with contextlib.suppress(FileExistsError):
-        os.makedirs(cache_folder)
+    try:
+        os.makedirs(cache_folder, exist_ok=True)
+    except OSError:
+        log.warning("Failed to create cache folder, running without file cache")
+        cache_folder = None
 
     def create_fs():
         fs = CachingFileSystem(DropboxFileSystem(access_token), cache_folder=cache_folder)

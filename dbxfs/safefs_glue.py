@@ -217,6 +217,11 @@ def safefs_wrap_create_fs(create_fs, encrypted_folders):
                 print("Running %r to retrieve password for %r" % (' '.join(password_command), enc_folder))
                 with subprocess.Popen(password_command, stdout=subprocess.PIPE) as proc:
                     pass_ = proc.stdout.read()
+                    if proc.wait():
+                        raise Exception("Password command for %s failed: %s" % (
+                            enc_folder,
+                            ' '.join(password_command),
+                        ))
             else:
                 print("Setup for encrypted %r..." % (enc_folder,))
 

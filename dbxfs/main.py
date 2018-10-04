@@ -106,7 +106,11 @@ def _main(argv=None):
         print(config_file)
         return 0
 
-    os.makedirs(config_dir, exist_ok=True)
+    try:
+        os.makedirs(config_dir, exist_ok=True)
+    except OSError as e:
+        print("Unable to create configuration directory: %s" % (e,))
+        return -1
 
     config = {}
     try:
@@ -264,7 +268,11 @@ def _main(argv=None):
 
     if not os.path.exists(mount_point):
         if yes_no_input("Mount point \"%s\" doesn't exist, do you want to create it?" % (mount_point,), default_yes=True):
-            os.makedirs(mount_point, exist_ok=True)
+            try:
+                os.makedirs(mount_point, exist_ok=True)
+            except OSError as e:
+                print("Unable to create mount point: %s" % (e,))
+                return -1
 
     if save_access_token and yes_no_input("Do you want \"%s\" to be the default mount point?" % (mount_point,), default_yes=True):
         config['mount_point'] = mount_point

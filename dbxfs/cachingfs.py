@@ -1110,7 +1110,16 @@ class FileSystem(object):
 
         # NB: at least one conn must be held open if this is an
         #     in-memory DB
-        self._conn = self._init_db()
+        self._conn_thread_stop = threading.Event()
+        self._conn_thread_started = threading.Event()
+        def conn_thread_start():
+            conn = self._init_db()
+            self._conn_thread_started.set()
+            self._conn_thread_stop.wait()
+            conn.close()
+        self._conn_thread = threading.Thread(target=conn_thread_start)
+        self._conn_thread.start()
+        self._conn_thread_started.wait()
 
         self._file_cache_lock = threading.Lock()
         self._open_files_by_id = {}
@@ -1174,7 +1183,8 @@ class FileSystem(object):
     def close(self):
         self._close_prune_thread = True
         self._prune_event.set()
-        self._conn.close()
+        self._conn_thread_stop.set()
+        self._conn_thread.join()
         if self._watch_stop is not None:
             self._watch_stop()
         self._refresh_thread_stop = True

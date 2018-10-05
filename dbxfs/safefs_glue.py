@@ -36,6 +36,10 @@ class ChrootFileSystem(object):
     def __getattr__(self, n):
         return getattr(self._fs, n)
 
+    def close(self):
+        # Don't close self._fs, since the SubFileSystem closes the root
+        pass
+
 class WrappedFile(object):
     def __init__(self, fs, handle):
         self._fs = fs
@@ -82,6 +86,11 @@ class SubFileSystem(object):
 
         if hasattr(self._subfs, 'x_f_set_file_times'):
             self.x_f_set_file_times = x_f_set_file_times
+
+    def close(self):
+        for subfs in self._subfs.values():
+            subfs.close()
+        self._fs.close()
 
     def create_path(self, *args):
         return Path(args, fn_norm=self._fs.file_name_norm)

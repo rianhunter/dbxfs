@@ -7,7 +7,7 @@ ways:
 * Internet connectivity is required for access
 * No disk space is required for access, but will cache if disk space is available
 
-dbxfs has been tested on Linux and macOS but it should run on any
+dbxfs has been tested on OpenBSD, Linux, and macOS but it should run on any
 POSIX system that provides a FUSE-compatible library or has the
 ability to mount SMB shares. Windows support is coming very soon. It
 runs on non-x86 architectures like ARM. It doesn't require a specific
@@ -21,7 +21,7 @@ Disclaimer: dbxfs is not affiliated with Dropbox, Inc.
 
 ## (Optional) Install FUSE
 
-macOS users can skip this. If you are on Linux, you must install your
+non-Linux users can skip this. If you are on Linux, you must install your
 OS's FUSE library. On Debian/Ubuntu, install the `libfuse2` package,
 on Fedora install `fuse`.
 

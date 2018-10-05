@@ -262,7 +262,7 @@ class _Directory(object):
                 else:
                     self._refreshed = False
 
-                assert stat_num == new_stat_num or dir_num != new_dir_nume, (
+                assert stat_num == new_stat_num or dir_num != new_dir_num, (
                     "If stat for directoy was invalidated, entries must be as well"
                 )
 
@@ -1443,7 +1443,7 @@ class FileSystem(object):
         # then fail fast. (FUSE effectively works this way too)
         if ((create_mode & os.O_CREAT) and (create_mode & os.O_EXCL) and
             stat is not DELETED and stat is not None):
-            raise OSError(errno.EEXIST, os.strerror(errno.EEXIST)) from e
+            raise OSError(errno.EEXIST, os.strerror(errno.EEXIST))
 
         if (((create_mode & os.O_CREAT) and stat is DELETED) or
             stat is None):

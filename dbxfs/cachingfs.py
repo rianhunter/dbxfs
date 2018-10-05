@@ -262,7 +262,7 @@ class _Directory(object):
                 else:
                     self._refreshed = False
 
-                assert stat_num == new_stat_num or dir_num != new_dir_nume, (
+                assert stat_num == new_stat_num or dir_num != new_dir_num, (
                     "If stat for directoy was invalidated, entries must be as well"
                 )
 

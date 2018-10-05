@@ -17,6 +17,8 @@
 
 import collections
 import contextlib
+import errno
+import os
 import subprocess
 
 from userspacefs.path_common import Path

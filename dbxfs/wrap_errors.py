@@ -78,3 +78,6 @@ class FileSystem(WrapMethodMixin):
 
     def ftruncate(self, handle, offset):
         return _cw(self._sub.ftruncate, handle._wrapped(), offset)
+
+    def close(self):
+        self._sub.close()

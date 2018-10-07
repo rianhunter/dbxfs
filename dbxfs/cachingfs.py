@@ -266,8 +266,9 @@ class _Directory(object):
                         "If stat for directoy was invalidated, entries must be as well"
                     )
                 except AssertionError:
+                    log.exception("Assertion error")
                     fs._reset_metadata_db(cursor)
-                    raise
+                    self._refreshed = False
 
         self._it = iter(to_iter)
 

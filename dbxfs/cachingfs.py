@@ -261,9 +261,13 @@ class _Directory(object):
                 else:
                     self._refreshed = False
 
-                assert stat_num == new_stat_num or dir_num != new_dir_num, (
-                    "If stat for directoy was invalidated, entries must be as well"
-                )
+                try:
+                    assert stat_num == new_stat_num or dir_num != new_dir_num, (
+                        "If stat for directoy was invalidated, entries must be as well"
+                    )
+                except AssertionError:
+                    fs._reset_metadata_db(cursor)
+                    raise
 
         self._it = iter(to_iter)
 
@@ -1344,6 +1348,12 @@ class FileSystem(object):
                        "where path_key = ?",
                        (path_key,))
 
+    def _reset_metadata_db(self, cursor):
+        cursor.execute("DELETE FROM md_cache");
+        cursor.execute("DELETE FROM md_cache_entries");
+        cursor.execute("update md_cache_counter set counter = counter + 1");
+        cursor.execute("update md_cache_entries_counter set counter = counter + 1");
+
     def _handle_changes(self, changes):
         self._statvfs_event.set()
         conn = self._get_db_conn()
@@ -1351,10 +1361,7 @@ class FileSystem(object):
             cursor = conn.cursor()
 
             if changes == "reset":
-                cursor.execute("DELETE FROM md_cache");
-                cursor.execute("DELETE FROM md_cache_entries");
-                cursor.execute("update md_cache_counter set counter = counter + 1");
-                cursor.execute("update md_cache_entries_counter set counter = counter + 1");
+                self._reset_metadata_db(cursor)
                 return
 
             for change in changes:

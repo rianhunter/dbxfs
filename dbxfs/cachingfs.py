@@ -246,7 +246,7 @@ class _Directory(object):
 
                     cursor.execute("insert or replace into md_cache_entries_counter "
                                    "(path_key, counter) values "
-                                   "(?, coalesce((select counter from md_cache_counter "
+                                   "(?, coalesce((select counter from md_cache_entries_counter "
                                    "             where path_key = ?), -1) + 1)",
                                    (path_key, path_key))
 

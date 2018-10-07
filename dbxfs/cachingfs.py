@@ -229,7 +229,7 @@ class _Directory(object):
                     entries_names.append(entry.name)
                     to_iter.append(entry)
                     cache_updates.append((str((path / entry.name).normed()),
-                                          stat_to_json(entry)))
+                                          entry))
 
             if not entries_names:
                 entries_names.append(EMPTY_DIR_ENT)
@@ -251,12 +251,11 @@ class _Directory(object):
                                    (path_key, path_key))
 
                     # Cache the metadata we've received
-                    cursor.executemany("REPLACE INTO md_cache (path_key, md) "
-                                       "VALUES (?, attr_merge((SELECT md FROM md_cache WHERE path_key = ?), ?))",
-                                       ((sub_path_key, sub_path_key, md_str)
-                                        for (sub_path_key, md_str) in cache_updates))
-                    for (path_key, _) in cache_updates:
-                        fs._inc_counter(cursor, path_key)
+                    # NB: we know none of the child entries has been changed since we
+                    #     check dir num (updates to children always increment parent dir num)
+                    #     so we can safely update them.
+                    for (sub_path_key, stat) in cache_updates:
+                        fs._update_md(cursor, sub_path_key, stat)
 
                     self._refreshed = True
                 else:
@@ -1308,12 +1307,27 @@ class FileSystem(object):
             assert not toclose.is_dirty()
             toclose.close()
 
-    def _inc_counter(self, cursor, path_key):
+    def _update_md(self, cursor, path_key, stat):
+        if stat is None:
+            md_str = None
+        else:
+            md_str = stat_to_json(stat)
+
+        cursor.execute("REPLACE INTO md_cache (path_key, md) "
+                       "VALUES (?, attr_merge((SELECT md FROM md_cache WHERE path_key = ?), ?))",
+                       (path_key, path_key, md_str))
         cursor.execute("insert or replace into md_cache_counter "
                        "(path_key, counter) values "
                        "(?, coalesce((select counter from md_cache_counter "
                        "             where path_key = ?), -1) + 1)",
                        (path_key, path_key))
+
+        # Delete dir entries
+        cursor.execute("delete from md_cache_entries where path_key = ?",
+                       (path_key,))
+        cursor.execute("update md_cache_entries_counter set counter = counter + 1 "
+                       "where path_key = ?",
+                       (path_key,))
 
     def _handle_changes(self, changes):
         self._statvfs_event.set()
@@ -1455,10 +1469,7 @@ class FileSystem(object):
             with trans(conn, self._db_lock, is_exclusive=True), contextlib.closing(conn.cursor()) as cursor:
                 # Only update metadata cache the path entry hasn't changed
                 if stat_num == self._get_stat_num(cursor, path_key):
-                    md_str = None if new_stat is None else stat_to_json(new_stat)
-                    cursor.execute("INSERT OR REPLACE INTO md_cache (path_key, md) values (?, ?)",
-                                   (path_key, md_str))
-                    self._inc_counter(cursor, path_key)
+                    self._update_md(cursor, path_key, new_stat)
 
                 if (parent_stat_num == self._get_stat_num(cursor, parent_path_key) and
                     dir_num == self._get_entries_num(cursor, parent_path_key)):

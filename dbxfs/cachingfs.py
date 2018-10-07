@@ -1450,12 +1450,12 @@ class FileSystem(object):
             try:
                 new_stat = self._fs.x_stat_create(path, create_mode, directory)
             except FileNotFoundError:
-                new_stat = DELETED
+                new_stat = None
 
             with trans(conn, self._db_lock, is_exclusive=True), contextlib.closing(conn.cursor()) as cursor:
                 # Only update metadata cache the path entry hasn't changed
                 if stat_num == self._get_stat_num(cursor, path_key):
-                    md_str = None if new_stat is DELETED else stat_to_json(new_stat)
+                    md_str = None if new_stat is None else stat_to_json(new_stat)
                     cursor.execute("INSERT OR REPLACE INTO md_cache (path_key, md) values (?, ?)",
                                    (path_key, md_str))
                     self._inc_counter(cursor, path_key)
@@ -1468,7 +1468,7 @@ class FileSystem(object):
 
                     if parent_has_been_iterated:
                         # NB: store in parent directory if it is cached
-                        if new_stat is not DELETED:
+                        if new_stat is not None:
                             cursor.execute("""
                             INSERT OR REPLACE INTO md_cache_entries (path_key, name)
                             SELECT ?, ? WHERE
@@ -1498,8 +1498,10 @@ class FileSystem(object):
                                        (parent_path_key,))
 
             stat = new_stat
+        elif stat is DELETED:
+            stat = None
 
-        if stat is DELETED:
+        if stat is None:
             raise OSError(errno.ENOENT, os.strerror(errno.ENOENT))
         else:
             # if the file is currently open, return the currently open stat instead

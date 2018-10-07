@@ -1311,6 +1311,21 @@ class FileSystem(object):
         if stat is None:
             md_str = None
         else:
+            # if the child is a directory, and we know it hasn't
+            # changed (caller guarantee), then do nothing.  this
+            # avoids unnecessarily recursively dropping
+            # md_cache_entries
+            if stat.type == 'directory':
+                cursor.execute("SELECT md FROM md_cache WHERE path_key = ? limit 1",
+                               (path_key,))
+                row = cursor.fetchone()
+                if row is not None:
+                    (md,) = row
+                    if (md is not None and
+                        # TODO: doesn't matter for dbxfs child fs, but in the future
+                        #       check mtime/size as well
+                        getattr(json_to_stat(md), 'type', None) == 'directory'):
+                        return
             md_str = stat_to_json(stat)
 
         cursor.execute("REPLACE INTO md_cache (path_key, md) "

@@ -1494,8 +1494,11 @@ class FileSystem(object):
                 if stat_num == self._get_stat_num(cursor, path_key):
                     self._update_md(cursor, path_key, new_stat)
 
-                if (parent_stat_num == self._get_stat_num(cursor, parent_path_key) and
-                    dir_num == self._get_entries_num(cursor, parent_path_key)):
+                new_parent_stat_num = self._get_stat_num(cursor, parent_path_key)
+                new_dir_num = self._get_entries_num(cursor, parent_path_key)
+
+                if (parent_stat_num == new_parent_stat_num and
+                    dir_num == new_dir_num):
                     (parent_has_been_iterated,) = cursor.execute("""
                     SELECT EXISTS(SELECT * FROM md_cache_entries WHERE path_key = ?)
                     """, (parent_path_key,)).fetchone()
@@ -1530,6 +1533,14 @@ class FileSystem(object):
                                        "set counter = counter + 1 where "
                                        "path_key = ?",
                                        (parent_path_key,))
+
+                try:
+                    assert parent_stat_num == new_parent_stat_num or dir_num != new_dir_num, (
+                        "If stat for directoy was invalidated, entries must be as well"
+                    )
+                except AssertionError:
+                    log.exception("Assertion error")
+                    self._reset_metadata_db(cursor)
 
             stat = new_stat
         elif stat is DELETED:

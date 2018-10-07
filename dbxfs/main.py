@@ -26,6 +26,7 @@ import os
 import random
 import subprocess
 import sys
+import urllib.request
 
 import appdirs
 
@@ -93,6 +94,20 @@ def _main(argv=None):
                         help="print default config file path to standard out and quit")
     parser.add_argument("mount_point", nargs='?')
     args = parser.parse_args(argv[1:])
+
+    try:
+        version = pkg_resources.require("dbxfs")[0].version
+    except Exception:
+        log.warning("Failed to get version", exc_info=True)
+        version = ''
+
+    if version:
+        try:
+            with urllib.request.urlopen("https://pypi.org/pypi/dbxfs/json") as f:
+                if json.load(f)['info']['version'] != version:
+                    print("\033[0;31m\033[1mWarning: dbxfs is out of date, upgrade with 'pip3 install --upgrade dbxfs'\033[0;0m")
+        except Exception:
+            log.warning("Failed to get most recent version", exc_info=True)
 
     config_dir = appdirs.user_config_dir(APP_NAME)
 
@@ -276,12 +291,6 @@ def _main(argv=None):
     log.info("Starting %s...", APP_NAME)
 
     if config.get('send_error_reports', False):
-        try:
-            version = pkg_resources.require("dbxfs")[0].version
-        except Exception:
-            log.warning("Failed to get version", exc_info=True)
-            version = ''
-
         try:
             sentry_sdk.init("https://b4b13ebd300849bd92260507a594e618@sentry.io/1293235",
                             release='%s@%s' % (APP_NAME, version),

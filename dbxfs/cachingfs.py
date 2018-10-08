@@ -1456,10 +1456,11 @@ class FileSystem(object):
 
             with trans(conn, self._db_lock, is_exclusive=True), contextlib.closing(conn.cursor()) as cursor:
                 # Only update metadata cache the path entry hasn't changed
-                if stat_num == self._get_stat_num(cursor, path_key):
+                # and it's parent hasn't changed
+                if (parent_stat_num == self._get_stat_num(cursor, parent_path_key) and
+                    stat_num == self._get_stat_num(cursor, path_key)):
                     self._update_md(cursor, path_key, new_stat)
 
-                if (parent_stat_num == self._get_stat_num(cursor, parent_path_key)):
                     (parent_has_been_iterated,) = cursor.execute("""
                     SELECT EXISTS(SELECT * FROM md_cache_entries WHERE path_key = ?)
                     """, (parent_path_key,)).fetchone()

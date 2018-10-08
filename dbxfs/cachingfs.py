@@ -1496,14 +1496,6 @@ class FileSystem(object):
                                        "path_key = ?",
                                        (parent_path_key,))
 
-                try:
-                    assert parent_stat_num == new_parent_stat_num or dir_num != new_dir_num, (
-                        "If stat for directoy was invalidated, entries must be as well"
-                    )
-                except AssertionError:
-                    log.exception("Assertion error")
-                    self._reset_metadata_db(cursor)
-
             stat = new_stat
         elif stat is DELETED:
             stat = None

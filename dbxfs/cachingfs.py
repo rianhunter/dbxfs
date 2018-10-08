@@ -241,11 +241,10 @@ class _Directory(object):
                                        "(path_key, name) VALUES (?, ?)",
                                        ((path_key, name) for name in entries_names))
 
-                    cursor.execute("insert or replace into md_cache_counter "
-                                   "(path_key, counter) values "
-                                   "(?, coalesce((select counter from md_cache_counter "
-                                   "             where path_key = ?), -1) + 1)",
-                                   (path_key, path_key))
+                    cursor.execute("update md_cache_counter "
+                                   "set counter = counter + 1 "
+                                   "where path_key = ?",
+                                   (path_key,))
 
                     # Cache the metadata we've received
                     # NB: we know none of the child entries has been changed since we
@@ -1323,11 +1322,10 @@ class FileSystem(object):
         cursor.execute("delete from md_cache_entries where path_key = ?",
                        (path_key,))
 
-        cursor.execute("insert or replace into md_cache_counter "
-                       "(path_key, counter) values "
-                       "(?, coalesce((select counter from md_cache_counter "
-                       "             where path_key = ?), -1) + 1)",
-                       (path_key, path_key))
+        cursor.execute("update md_cache_counter "
+                       "set counter = counter + 1 "
+                       "where path_key = ?",
+                       (path_key,))
 
     def _reset_metadata_db(self, cursor):
         cursor.execute("DELETE FROM md_cache");
@@ -1404,6 +1402,9 @@ class FileSystem(object):
                        (path_key,))
         row = cursor.fetchone()
         if row is None:
+            cursor.execute("insert into md_cache_counter "
+                           "(path_key, counter) values (?, -1)",
+                           (path_key,))
             stat_num = -1
         else:
             (stat_num,) = row

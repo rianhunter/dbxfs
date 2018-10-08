@@ -218,7 +218,6 @@ class _Directory(object):
                 to_iter.append(md_plus_name(name, stat_))
 
             stat_num = fs._get_stat_num(cursor, path_key)
-            dir_num = fs._get_entries_num(cursor, path_key)
 
         # if entries was empty, then fill it
         if not to_iter and not is_empty:
@@ -235,18 +234,16 @@ class _Directory(object):
                 entries_names.append(EMPTY_DIR_ENT)
 
             with trans(conn, fs._db_lock, is_exclusive=True), contextlib.closing(conn.cursor()) as cursor:
-                new_dir_num = fs._get_entries_num(cursor, path_key)
                 new_stat_num = fs._get_stat_num(cursor, path_key)
-                if (stat_num == new_stat_num and
-                    dir_num == new_dir_num):
+                if stat_num == new_stat_num:
                     # Cache the names we downloaded
                     cursor.executemany("INSERT INTO md_cache_entries "
                                        "(path_key, name) VALUES (?, ?)",
                                        ((path_key, name) for name in entries_names))
 
-                    cursor.execute("insert or replace into md_cache_entries_counter "
+                    cursor.execute("insert or replace into md_cache_counter "
                                    "(path_key, counter) values "
-                                   "(?, coalesce((select counter from md_cache_entries_counter "
+                                   "(?, coalesce((select counter from md_cache_counter "
                                    "             where path_key = ?), -1) + 1)",
                                    (path_key, path_key))
 
@@ -259,15 +256,6 @@ class _Directory(object):
 
                     self._refreshed = True
                 else:
-                    self._refreshed = False
-
-                try:
-                    assert stat_num == new_stat_num or dir_num != new_dir_num, (
-                        "If stat for directoy was invalidated, entries must be as well"
-                    )
-                except AssertionError:
-                    log.exception("Assertion error")
-                    fs._reset_metadata_db(cursor)
                     self._refreshed = False
 
         self._it = iter(to_iter)
@@ -1260,11 +1248,6 @@ class FileSystem(object):
         , counter integer NOT NULL
         );
 
-        CREATE TABLE IF NOT EXISTS md_cache_entries_counter
-        ( path_key TEXT PRIMARY KEY
-        , counter integer NOT NULL
-        );
-
         CREATE UNIQUE INDEX IF NOT EXISTS md_cache_entries_unique
         on md_cache_entries (path_key, file_name_norm(name));
         """)
@@ -1336,24 +1319,20 @@ class FileSystem(object):
         cursor.execute("REPLACE INTO md_cache (path_key, md) "
                        "VALUES (?, attr_merge((SELECT md FROM md_cache WHERE path_key = ?), ?))",
                        (path_key, path_key, md_str))
+        # Delete dir entries
+        cursor.execute("delete from md_cache_entries where path_key = ?",
+                       (path_key,))
+
         cursor.execute("insert or replace into md_cache_counter "
                        "(path_key, counter) values "
                        "(?, coalesce((select counter from md_cache_counter "
                        "             where path_key = ?), -1) + 1)",
                        (path_key, path_key))
 
-        # Delete dir entries
-        cursor.execute("delete from md_cache_entries where path_key = ?",
-                       (path_key,))
-        cursor.execute("update md_cache_entries_counter set counter = counter + 1 "
-                       "where path_key = ?",
-                       (path_key,))
-
     def _reset_metadata_db(self, cursor):
         cursor.execute("DELETE FROM md_cache");
         cursor.execute("DELETE FROM md_cache_entries");
         cursor.execute("update md_cache_counter set counter = counter + 1");
-        cursor.execute("update md_cache_entries_counter set counter = counter + 1");
 
     def _handle_changes(self, changes):
         self._statvfs_event.set()
@@ -1394,18 +1373,14 @@ class FileSystem(object):
                         except queue.Full:
                             pass
 
-                # Update entries counter if they exist
-                cursor.executemany("update md_cache_entries_counter set counter = counter + 1 "
-                                   "where path_key = ?",
-                                   [(parent_path_key,), (path_key,)])
-
                 # Remove from md cache
                 cursor.execute("DELETE FROM md_cache WHERE path_key = ?",
                                (path_key,))
 
-                # Update counter if one existed
-                cursor.execute("update md_cache_counter set counter = counter + 1 "
-                               "where path_key = ?", (path_key,))
+                # Update counters if they existed
+                cursor.executemany("update md_cache_counter set counter = counter + 1 "
+                                   "where path_key = ?",
+                                   [(path_key,), (parent_path_key,)])
 
     def create_path(self, *args):
         return self._fs.create_path(*args)
@@ -1426,16 +1401,6 @@ class FileSystem(object):
 
     def _get_stat_num(self, cursor, path_key):
         cursor.execute("SELECT counter from md_cache_counter where path_key = ?",
-                       (path_key,))
-        row = cursor.fetchone()
-        if row is None:
-            stat_num = -1
-        else:
-            (stat_num,) = row
-        return stat_num
-
-    def _get_entries_num(self, cursor, path_key):
-        cursor.execute("SELECT counter from md_cache_entries_counter where path_key = ?",
                        (path_key,))
         row = cursor.fetchone()
         if row is None:
@@ -1473,7 +1438,6 @@ class FileSystem(object):
                 stat = DELETED if md is None else json_to_stat(md)
 
             parent_stat_num = self._get_stat_num(cursor, parent_path_key)
-            dir_num = self._get_entries_num(cursor, parent_path_key)
             stat_num = self._get_stat_num(cursor, path_key)
 
         # If cache says file exists and this is exclusive create,
@@ -1494,11 +1458,7 @@ class FileSystem(object):
                 if stat_num == self._get_stat_num(cursor, path_key):
                     self._update_md(cursor, path_key, new_stat)
 
-                new_parent_stat_num = self._get_stat_num(cursor, parent_path_key)
-                new_dir_num = self._get_entries_num(cursor, parent_path_key)
-
-                if (parent_stat_num == new_parent_stat_num and
-                    dir_num == new_dir_num):
+                if (parent_stat_num == self._get_stat_num(cursor, parent_path_key)):
                     (parent_has_been_iterated,) = cursor.execute("""
                     SELECT EXISTS(SELECT * FROM md_cache_entries WHERE path_key = ?)
                     """, (parent_path_key,)).fetchone()
@@ -1529,7 +1489,7 @@ class FileSystem(object):
                                 """,
                                              (parent_path_key, EMPTY_DIR_ENT, parent_path_key))
 
-                        cursor.execute("update md_cache_entries_counter "
+                        cursor.execute("update md_cache_counter "
                                        "set counter = counter + 1 where "
                                        "path_key = ?",
                                        (parent_path_key,))
@@ -1602,26 +1562,19 @@ class FileSystem(object):
                                [(new_path_norm,), (str(newpath.parent.normed()),),
                                 (str(oldpath.parent.normed()),)])
 
-            cursor.executemany("update md_cache_entries_counter set counter = counter + 1 "
-                               "where path_key = ?",
-                               [(new_path_norm,), (str(newpath.parent.normed()),),
-                                (str(oldpath.parent.normed()),)])
-
             # Clear new path
             cursor.execute("DELETE FROM md_cache WHERE path_key = ?",
                            (new_path_norm,))
-            cursor.execute("update md_cache_counter set counter = counter + 1 "
-                           "where path_key = ?",
-                           (new_path_norm,))
+
+            cursor.executemany("update md_cache_counter set counter = counter + 1 "
+                               "where path_key = ?",
+                               [(new_path_norm,), (str(newpath.parent.normed()),),
+                                (str(oldpath.parent.normed()),)])
 
             # Clear all old children's entries
             cursor.execute("DELETE FROM md_cache_entries "
                            "WHERE path_key = ? or path_key like ? || '/%'",
                            (old_path_norm, old_path_norm,))
-
-            cursor.execute("update md_cache_entries_counter set counter = counter + 1 "
-                           "where path_key = ? or path_key like ? || '/%'",
-                           (old_path_norm, old_path_norm))
 
             # Clear all old children
             cursor.execute("DELETE FROM md_cache WHERE path_key = ? or path_key like ? || '/%'",

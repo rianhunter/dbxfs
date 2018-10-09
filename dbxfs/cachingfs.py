@@ -190,18 +190,22 @@ def trans(conn, lock, is_exclusive=False):
             conn.commit()
             conn.isolation_level = iso
 
+MUST_MUTATE = object()
+
 EMPTY_DIR_ENT = "/empty/"
 
 class WeakrefableConnection(sqlite3.Connection):
     pass
 
 class _Directory(object):
-    def __init__(self, fs, path):
+    def _get_to_iter(self, mutate, fs, path):
+        refreshed = True
+
         conn = fs._get_db_conn()
 
         path_key = str(path.normed())
 
-        with trans(conn, fs._db_lock), contextlib.closing(conn.cursor()) as cursor:
+        with trans(conn, fs._db_lock, is_exclusive=mutate), contextlib.closing(conn.cursor()) as cursor:
             cursor.execute("SELECT name, (SELECT md FROM md_cache WHERE path_key = norm_join(md_cache_entries.path_key, md_cache_entries.name)) FROM md_cache_entries WHERE path_key = ?",
                            (path_key,))
 
@@ -217,10 +221,14 @@ class _Directory(object):
                 stat_ = json_to_stat(md_str)
                 to_iter.append(md_plus_name(name, stat_))
 
-            stat_num = fs._get_stat_num(cursor, path_key)
+            if mutate:
+                stat_num = fs._get_stat_num(cursor, path_key)
 
         # if entries was empty, then fill it
         if not to_iter and not is_empty:
+            if not mutate:
+                return MUST_MUTATE
+
             entries_names = []
             cache_updates = []
             with contextlib.closing(fs._fs.open_directory(path)) as dir_:
@@ -252,12 +260,21 @@ class _Directory(object):
                     #     so we can safely update them.
                     for (sub_path_key, stat) in cache_updates:
                         fs._update_md(cursor, sub_path_key, stat)
-
-                    self._refreshed = True
                 else:
-                    self._refreshed = False
+                    refreshed = False
 
-        self._it = iter(to_iter)
+        return (to_iter, refreshed)
+
+    def __init__(self, fs, path):
+        mutate = False
+        while True:
+            res = self._get_to_iter(mutate, fs, path)
+            if res is MUST_MUTATE:
+                mutate = True
+                continue
+            (to_iter, self._refreshed) = res
+            self._it = iter(to_iter)
+            return
 
     def read(self):
         try:
@@ -1410,7 +1427,7 @@ class FileSystem(object):
             (stat_num,) = row
         return stat_num
 
-    def stat(self, path, create_mode=0, directory=False):
+    def _stat_repeat(self, mutate, path, create_mode, directory):
         DELETED = object()
 
         path_key = str(path.normed())
@@ -1418,7 +1435,7 @@ class FileSystem(object):
 
         conn = self._get_db_conn()
 
-        with trans(conn, self._db_lock), contextlib.closing(conn.cursor()) as cursor:
+        with trans(conn, self._db_lock, is_exclusive=mutate), contextlib.closing(conn.cursor()) as cursor:
             cursor.execute("SELECT md FROM md_cache WHERE path_key = ? limit 1",
                            (path_key,))
             row = cursor.fetchone()
@@ -1438,8 +1455,9 @@ class FileSystem(object):
                 (md,) = row
                 stat = DELETED if md is None else json_to_stat(md)
 
-            parent_stat_num = self._get_stat_num(cursor, parent_path_key)
-            stat_num = self._get_stat_num(cursor, path_key)
+            if mutate:
+                parent_stat_num = self._get_stat_num(cursor, parent_path_key)
+                stat_num = self._get_stat_num(cursor, path_key)
 
         # If cache says file exists and this is exclusive create,
         # then fail fast. (FUSE effectively works this way too)
@@ -1449,6 +1467,9 @@ class FileSystem(object):
 
         if (((create_mode & os.O_CREAT) and stat is DELETED) or
             stat is None):
+            if not mutate:
+                return MUST_MUTATE
+
             try:
                 new_stat = self._fs.x_stat_create(path, create_mode, directory)
             except FileNotFoundError:
@@ -1513,6 +1534,16 @@ class FileSystem(object):
                     return md.cached_file.stat()
 
         return stat
+
+    def stat(self, path, create_mode=0, directory=False):
+        mutate = False
+
+        while True:
+            res = self._stat_repeat(mutate, path, create_mode, directory)
+            if res is MUST_MUTATE:
+                mutate = True
+                continue
+            return res
 
     def fstat(self, fobj):
         return fobj.stat()

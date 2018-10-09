@@ -29,6 +29,8 @@ on Fedora install `fuse`.
 
     $ pip3 install dbxfs
     $ dbxfs <mount_point>
+    
+On Arch Linux and derivatives, you can find it in the AUR as [`python-dbxfs`](https://aur.archlinux.org/packages/python-dbxfs)
 
 You can see the full list of command line options by passing `-h` to
 the `dbxfs` command.

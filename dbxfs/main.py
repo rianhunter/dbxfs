@@ -55,6 +55,8 @@ except ImportError:
 log = logging.getLogger(__name__)
 
 APP_NAME = "dbxfs"
+
+# This exposure is intentional
 APP_KEY = "iftkeq2y4qj0nbt"
 APP_SECRET = "y245xn4rg4lf0it"
 

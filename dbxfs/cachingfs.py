@@ -365,6 +365,8 @@ DOWNLOAD_UNIT = 2 ** 16
 # File downloads start on first call to pread()
 class StreamingFile(object):
     def __init__(self, fs, stat):
+        assert stat.rev is not None
+
         self._real_fs = fs
         self.cache_folder = fs._cache_folder
         self.fs = fs._fs
@@ -1330,6 +1332,7 @@ class FileSystem(object):
                         #       check mtime/size as well
                         getattr(json_to_stat(md), 'type', None) == 'directory'):
                         return
+            assert stat.type != "file" or stat.rev is not None
             md_str = stat_to_json(stat)
 
         cursor.execute("REPLACE INTO md_cache (path_key, md) "

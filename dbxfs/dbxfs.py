@@ -714,6 +714,7 @@ class FileSystem(object):
         return _WriteStream(self)
 
     def x_read_stream(self, path, offset=None):
+        assert path is not None
         return _ReadStream(self, str(path), offset=offset)
 
     def open_directory(self, path):

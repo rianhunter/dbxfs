@@ -78,6 +78,10 @@ def parse_encrypted_folder_arg(string):
     return dict(path=string)
 
 def _main(argv=None):
+    if sys.version_info < (3, 5):
+        print("Your version of Python is too old, 3.5+ is required: %d.%d.%d" % sys.version_info[:3])
+        return -1
+
     # Protect access token and potentially encryption keys
     block_tracing()
 

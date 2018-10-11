@@ -1314,6 +1314,16 @@ class FileSystem(object):
             assert not toclose.is_dirty()
             toclose.close()
 
+    def _check_md_cache_entry(self, cursor, path_key):
+        cursor.execute("SELECT md FROM md_cache WHERE path_key = ? limit 1",
+                       (path_key,))
+        row = cursor.fetchone()
+        if row is not None:
+            (md,) = row
+            if md is not None:
+                st = json_to_stat(md)
+                assert st.type != "file" or st.rev is not None
+
     def _update_md(self, cursor, path_key, stat):
         if stat is None:
             md_str = None
@@ -1336,9 +1346,15 @@ class FileSystem(object):
             assert stat.type != "file" or stat.rev is not None
             md_str = stat_to_json(stat)
 
+        # This is just for debugging
+        self._check_md_cache_entry(cursor, path_key)
+
         cursor.execute("REPLACE INTO md_cache (path_key, md) "
                        "VALUES (?, attr_merge((SELECT md FROM md_cache WHERE path_key = ?), ?))",
                        (path_key, path_key, md_str))
+
+        self._check_md_cache_entry(cursor, path_key)
+
         # Delete dir entries
         cursor.execute("delete from md_cache_entries where path_key = ?",
                        (path_key,))

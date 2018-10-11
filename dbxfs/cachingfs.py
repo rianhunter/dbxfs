@@ -830,6 +830,8 @@ class CachedFile(object):
         self._upload_now = None
         self._upload_next = None
         self._eio = False
+        self._sync_tag = 0
+        self._complete_tag = 0
 
         self._thread = threading.Thread(target=self._upload_thread)
         self._thread.start()
@@ -847,6 +849,7 @@ class CachedFile(object):
                         self._upload_now = self._upload_next
                         self._upload_next = None
                         self._upload_cond.notify_all()
+                        sync_tag = self._sync_tag
                         if self._file is not None:
                             self._file = SQLiteFrontFile(self._file)
 
@@ -914,6 +917,7 @@ class CachedFile(object):
                     self._base_stat = new_stat
 
                 with self._upload_cond:
+                    self._complete_tag = sync_tag
                     self._upload_now = None
                     self._upload_cond.notify_all()
 
@@ -923,9 +927,7 @@ class CachedFile(object):
                 with self._upload_cond:
                     self._eio = True
                     self._upload_cond.notify_all()
-                time.sleep(100)
-                with self._upload_cond:
-                    self._eio = False
+                    self._upload_cond.wait(100)
 
     def pread(self, size, offset):
         return self._file.pread(size, offset)
@@ -950,12 +952,13 @@ class CachedFile(object):
         if self._file.is_dirty():
             assert self._upload_next is None or self._upload_next is self._file
             self._upload_next = self._file
+            self._sync_tag += 1
 
         if final:
             self._file = None
 
-        if self._file is None or self._file.is_dirty():
-            self._upload_cond.notify_all()
+        self._eio = False
+        self._upload_cond.notify_all()
 
         return (self._upload_now
                 if self._upload_next is None else
@@ -967,13 +970,11 @@ class CachedFile(object):
 
     def sync(self):
         with self._upload_cond:
-            uploading = self._queue_sync()
-            if uploading is None:
-                return
+            self._queue_sync()
+            sync_tag = self._sync_tag
 
             # wait for upload
-            while not self._eio and (self._upload_now is uploading or
-                                     self._upload_next is uploading):
+            while not self._eio and self._complete_tag < sync_tag:
                 self._upload_cond.wait()
 
             if self._eio:

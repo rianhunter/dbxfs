@@ -832,6 +832,7 @@ class CachedFile(object):
         self._eio = False
         self._sync_tag = 0
         self._complete_tag = 0
+        self._closed = False
 
         self._thread = threading.Thread(target=self._upload_thread)
         self._thread.start()
@@ -841,8 +842,9 @@ class CachedFile(object):
             try:
                 with self._upload_cond:
                     while self._upload_now is None and self._upload_next is None:
-                        if self._file is None:
+                        if self._closed:
                             # File has been closed, abandon ship!
+                            self._file.close()
                             return
                         self._upload_cond.wait()
                     if self._upload_next is not None:
@@ -850,8 +852,7 @@ class CachedFile(object):
                         self._upload_next = None
                         self._upload_cond.notify_all()
                         sync_tag = self._sync_tag
-                        if self._file is not None:
-                            self._file = SQLiteFrontFile(self._file)
+                        self._file = SQLiteFrontFile(self._file)
 
                 md = None
                 self._upload_now.seek(0)
@@ -955,12 +956,12 @@ class CachedFile(object):
             self._sync_tag += 1
 
         if final:
-            self._file = None
+            self._closed = True
 
         eio = self._eio
         self._eio = False
 
-        if eio or self._file is None or self._file.is_dirty():
+        if eio or self._closed or self._file.is_dirty():
             self._upload_cond.notify_all()
 
         return (self._upload_now

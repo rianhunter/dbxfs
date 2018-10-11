@@ -957,8 +957,11 @@ class CachedFile(object):
         if final:
             self._file = None
 
+        eio = self._eio
         self._eio = False
-        self._upload_cond.notify_all()
+
+        if eio or self._file is None or self._file.is_dirty():
+            self._upload_cond.notify_all()
 
         return (self._upload_now
                 if self._upload_next is None else

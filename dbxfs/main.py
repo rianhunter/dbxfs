@@ -20,6 +20,7 @@ import contextlib
 import errno
 import getpass
 import pkg_resources
+import io
 import json
 import logging
 import os
@@ -55,6 +56,8 @@ except ImportError:
 log = logging.getLogger(__name__)
 
 APP_NAME = "dbxfs"
+
+# This exposure is intentional
 APP_KEY = "iftkeq2y4qj0nbt"
 APP_SECRET = "y245xn4rg4lf0it"
 
@@ -75,6 +78,10 @@ def parse_encrypted_folder_arg(string):
     return dict(path=string)
 
 def _main(argv=None):
+    if sys.version_info < (3, 5):
+        print("Your version of Python is too old, 3.5+ is required: %d.%d.%d" % sys.version_info[:3])
+        return -1
+
     # Protect access token and potentially encryption keys
     block_tracing()
 
@@ -104,7 +111,7 @@ def _main(argv=None):
     if version:
         try:
             with urllib.request.urlopen("https://pypi.org/pypi/dbxfs/json") as f:
-                if json.load(f)['info']['version'] != version:
+                if json.load(io.TextIOWrapper(f))['info']['version'] != version:
                     print("\033[0;31m\033[1mWarning: dbxfs is out of date, upgrade with 'pip3 install --upgrade dbxfs'\033[0;0m")
         except Exception:
             log.warning("Failed to get most recent version", exc_info=True)

@@ -668,10 +668,17 @@ class FileSystem(object):
                         try:
                             md = self._clientv2.files_upload(b'', str(path))
                         except dropbox.exceptions.ApiError as e:
-                            if e.error.get_path().reason.is_conflict():
-                                continue
-                            else:
-                                raise
+                            if e.error.is_path():
+                                if e.error.get_path().reason.is_conflict():
+                                    continue
+                                if (e.error.get_path().reason.is_disallowed_name() or
+                                    e.error.get_path().reason.is_malformed_path()):
+                                    raise OSError(errno.EINVAL, os.strerror(errno.EINVAL)) from e
+                                if e.error.get_path().reason.is_no_write_permission():
+                                    raise OSError(errno.EACCES, os.strerror(errno.EACCES)) from e
+                                if e.error.get_path().reason.is_insufficient_space():
+                                    raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC)) from e
+                            raise
                 else:
                     if (not isinstance(md, dropbox.files.FolderMetadata) and
                         (mode & os.O_TRUNC)):
@@ -707,6 +714,7 @@ class FileSystem(object):
         return _WriteStream(self)
 
     def x_read_stream(self, path, offset=None):
+        assert path is not None
         return _ReadStream(self, str(path), offset=offset)
 
     def open_directory(self, path):

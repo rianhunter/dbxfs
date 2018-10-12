@@ -365,6 +365,8 @@ DOWNLOAD_UNIT = 2 ** 16
 # File downloads start on first call to pread()
 class StreamingFile(object):
     def __init__(self, fs, stat):
+        assert stat.rev is not None
+
         self._real_fs = fs
         self.cache_folder = fs._cache_folder
         self.fs = fs._fs
@@ -828,6 +830,9 @@ class CachedFile(object):
         self._upload_now = None
         self._upload_next = None
         self._eio = False
+        self._sync_tag = 0
+        self._complete_tag = 0
+        self._closed = False
 
         self._thread = threading.Thread(target=self._upload_thread)
         self._thread.start()
@@ -837,16 +842,17 @@ class CachedFile(object):
             try:
                 with self._upload_cond:
                     while self._upload_now is None and self._upload_next is None:
-                        if self._file is None:
+                        if self._closed:
                             # File has been closed, abandon ship!
+                            self._file.close()
                             return
                         self._upload_cond.wait()
                     if self._upload_next is not None:
                         self._upload_now = self._upload_next
                         self._upload_next = None
                         self._upload_cond.notify_all()
-                        if self._file is not None:
-                            self._file = SQLiteFrontFile(self._file)
+                        sync_tag = self._sync_tag
+                        self._file = SQLiteFrontFile(self._file)
 
                 md = None
                 self._upload_now.seek(0)
@@ -912,6 +918,7 @@ class CachedFile(object):
                     self._base_stat = new_stat
 
                 with self._upload_cond:
+                    self._complete_tag = sync_tag
                     self._upload_now = None
                     self._upload_cond.notify_all()
 
@@ -921,9 +928,7 @@ class CachedFile(object):
                 with self._upload_cond:
                     self._eio = True
                     self._upload_cond.notify_all()
-                time.sleep(100)
-                with self._upload_cond:
-                    self._eio = False
+                    self._upload_cond.wait(100)
 
     def pread(self, size, offset):
         return self._file.pread(size, offset)
@@ -948,11 +953,15 @@ class CachedFile(object):
         if self._file.is_dirty():
             assert self._upload_next is None or self._upload_next is self._file
             self._upload_next = self._file
+            self._sync_tag += 1
 
         if final:
-            self._file = None
+            self._closed = True
 
-        if self._file is None or self._file.is_dirty():
+        eio = self._eio
+        self._eio = False
+
+        if eio or self._closed or self._file.is_dirty():
             self._upload_cond.notify_all()
 
         return (self._upload_now
@@ -965,13 +974,11 @@ class CachedFile(object):
 
     def sync(self):
         with self._upload_cond:
-            uploading = self._queue_sync()
-            if uploading is None:
-                return
+            self._queue_sync()
+            sync_tag = self._sync_tag
 
             # wait for upload
-            while not self._eio and (self._upload_now is uploading or
-                                     self._upload_next is uploading):
+            while not self._eio and self._complete_tag < sync_tag:
                 self._upload_cond.wait()
 
             if self._eio:
@@ -1311,6 +1318,16 @@ class FileSystem(object):
             assert not toclose.is_dirty()
             toclose.close()
 
+    def _check_md_cache_entry(self, cursor, path_key):
+        cursor.execute("SELECT md FROM md_cache WHERE path_key = ? limit 1",
+                       (path_key,))
+        row = cursor.fetchone()
+        if row is not None:
+            (md,) = row
+            if md is not None:
+                st = json_to_stat(md)
+                assert st.type != "file" or st.rev is not None
+
     def _update_md(self, cursor, path_key, stat):
         if stat is None:
             md_str = None
@@ -1330,11 +1347,18 @@ class FileSystem(object):
                         #       check mtime/size as well
                         getattr(json_to_stat(md), 'type', None) == 'directory'):
                         return
+            assert stat.type != "file" or stat.rev is not None
             md_str = stat_to_json(stat)
+
+        # This is just for debugging
+        self._check_md_cache_entry(cursor, path_key)
 
         cursor.execute("REPLACE INTO md_cache (path_key, md) "
                        "VALUES (?, attr_merge((SELECT md FROM md_cache WHERE path_key = ?), ?))",
                        (path_key, path_key, md_str))
+
+        self._check_md_cache_entry(cursor, path_key)
+
         # Delete dir entries
         cursor.execute("delete from md_cache_entries where path_key = ?",
                        (path_key,))

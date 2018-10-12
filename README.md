@@ -32,6 +32,8 @@ on Fedora install `fuse`.
     
 On Arch Linux and derivatives, you can find it in the AUR as [`python-dbxfs`](https://aur.archlinux.org/packages/python-dbxfs)
 
+On Mac, `umount` can be used to unmount, however on Linux `fusermount -u` must be used. See this libfuse [issue](https://github.com/libfuse/libfuse/issues/246).
+
 You can see the full list of command line options by passing `-h` to
 the `dbxfs` command.
 

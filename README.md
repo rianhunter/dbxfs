@@ -32,6 +32,9 @@ on Fedora install `fuse`.
     
 On Arch Linux and derivatives, you can find it in the AUR as [`python-dbxfs`](https://aur.archlinux.org/packages/python-dbxfs)
 
+To unmount your Dropbox folder on Linux systems, you can use
+`fusermount -u <mount_point>`, on all other systems use `umount`.
+
 You can see the full list of command line options by passing `-h` to
 the `dbxfs` command.
 

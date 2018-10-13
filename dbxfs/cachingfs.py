@@ -37,7 +37,7 @@ import sys
 import time
 import weakref
 
-from userspacefs.util_dumpster import utctimestamp, PositionIO, null_context, quick_container
+from userspacefs.util_dumpster import utctimestamp, PositionIO, null_context, quick_container, IterableDirectory
 
 from dbxfs.dbxfs import md_to_stat as dbmd_to_stat
 
@@ -205,7 +205,7 @@ EMPTY_DIR_ENT = "/empty/"
 class WeakrefableConnection(sqlite3.Connection):
     pass
 
-class _Directory(object):
+class _Directory(IterableDirectory):
     def _get_to_iter(self, mutate, fs, path):
         refreshed = True
 
@@ -283,18 +283,6 @@ class _Directory(object):
             (to_iter, self._refreshed) = res
             self._it = iter(to_iter)
             return
-
-    def read(self):
-        try:
-            return next(self._it)
-        except StopIteration:
-            return None
-
-    def readmany(self, size=None):
-        if size is None:
-            return list(self)
-        else:
-            return list(itertools.islice(self, size))
 
     def close(self):
         pass

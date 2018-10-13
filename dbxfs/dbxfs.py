@@ -22,7 +22,6 @@ import datetime
 import errno
 import http
 import io
-import itertools
 import json
 import logging
 import os
@@ -38,7 +37,7 @@ import email.utils as eut
 import dropbox
 
 from userspacefs.path_common import Path
-from userspacefs.util_dumpster import PositionIO, quick_container
+from userspacefs.util_dumpster import PositionIO, quick_container, IterableDirectory
 
 log = logging.getLogger(__name__)
 
@@ -64,7 +63,7 @@ def md_to_stat(md):
     return _StatObject(name, type, size, mtime, md.id, ctime=ctime, rev=rev,
                        attrs=STAT_ATTRS)
 
-class _Directory(object):
+class _Directory(IterableDirectory):
     def __init__(self, fs, path):
         self._fs = fs
         self._path = path
@@ -110,18 +109,6 @@ class _Directory(object):
 
             if not res.has_more:
                 stop = True
-
-    def read(self):
-        try:
-            return next(self)
-        except StopIteration:
-            return None
-
-    def readmany(self, size=None):
-        if size is None:
-            return list(self)
-        else:
-            return list(itertools.islice(self, size))
 
     def close(self):
         pass

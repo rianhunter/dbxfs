@@ -109,5 +109,23 @@ class FileSystem(object):
         return self._sub.rename_noreplace(self._convert_path(old_path),
                                           self._convert_path(new_path))
 
+    def create_watch(self, cb, *n, **kw):
+        def newcb(entries):
+            if entries == "reset":
+                return cb(entries)
+
+            toret = []
+            for entry in entries:
+                toret.append(
+                    entry._replace(
+                        path=[decode_name(p)
+                              for p in entry.path]
+                    )
+                )
+
+            return cb(toret)
+
+        return self._sub.create_watch(newcb, *n, **kw)
+
     def __getattr__(self, name):
         return getattr(self._sub, name)

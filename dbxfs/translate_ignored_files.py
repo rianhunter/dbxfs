@@ -88,7 +88,6 @@ class FileSystem(object):
         return self._sub.create_path(*tocreate)
 
     def open(self, path, *n, **kw):
-        print("translate open", path, *n)
         return self._sub.open(self._convert_path(path), *n, **kw)
 
     def open_directory(self, path, *n, **kw):

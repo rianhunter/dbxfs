@@ -59,6 +59,14 @@ class attr_merge(object):
                 attrs.add(name)
         self.attrs = list(attrs)
 
+    def _replace(self, **kw):
+        class Foo(object): pass
+        tomerge = Foo()
+        for (k, v) in kw.items():
+            setattr(tomerge, k, v)
+        tomerge.attrs = list(kw)
+        return attr_merge(self, tomerge)
+
     def __repr__(self):
         return 'attr_merge(' + ', '.join('%s=%r' % (k, getattr(self, k)) for k in self.attrs) + ')'
 

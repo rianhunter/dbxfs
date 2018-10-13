@@ -47,6 +47,7 @@ from block_tracing import block_tracing
 from dbxfs.dbxfs import FileSystem as DropboxFileSystem
 from dbxfs.cachingfs import FileSystem as CachingFileSystem
 from dbxfs.disable_quick_look import FileSystem as DisableQuickLookFileSystem
+from dbxfs.translate_ignored_files import FileSystem as TranslateIgnoredFilesFileSystem
 
 try:
     from dbxfs.safefs_glue import safefs_wrap_create_fs
@@ -314,6 +315,13 @@ def _main(argv=None):
 
     def create_fs():
         fs = CachingFileSystem(DropboxFileSystem(access_token), cache_folder=cache_folder)
+
+        # From a purity standpoint the following layer ideally would
+        # go between the caching fs and dropbox fs, but because the
+        # contract between those two is highly specialized, just put
+        # it on top
+        fs = TranslateIgnoredFilesFileSystem(fs)
+
         if sys.platform == 'darwin':
             fs = DisableQuickLookFileSystem(fs)
 

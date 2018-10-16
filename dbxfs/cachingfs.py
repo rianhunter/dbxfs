@@ -1001,8 +1001,10 @@ class CachedFile(object):
 LiveFileMetadata = collections.namedtuple('LiveFileMetadata',
                                           ["cached_file", "open_files"])
 
+class InvalidFileCacheGenError(Exception): pass
+
 class _File(PositionIO):
-    def __init__(self, fs, stat, mode):
+    def __init__(self, fs, stat, mode, fc_gen):
         PositionIO.__init__(self)
 
         self._fs = fs
@@ -1011,6 +1013,12 @@ class _File(PositionIO):
             try:
                 live_md = self._fs._open_files_by_id[stat.id]
             except KeyError:
+                # if a previously written file was closed during the
+                # time we retrieved the stat, that means the stat rev
+                # could be locally out of date so don't use it
+                if fc_gen != self._fs._open_files_by_id_gen:
+                    raise InvalidFileCacheGenError()
+
                 if stat.type == "file":
                     cached_file = CachedFile(fs, stat)
                 else:
@@ -1098,6 +1106,8 @@ class _File(PositionIO):
                     toclose = live_md.cached_file
                     popped = self._fs._open_files_by_id.pop(self._id)
                     assert popped is live_md
+                    if live_md.cached_file._sync_tag:
+                        self._fs._open_files_by_id_gen += 1
 
         if toclose is not None:
             toclose.close()
@@ -1140,6 +1150,7 @@ class FileSystem(object):
 
         self._file_cache_lock = threading.Lock()
         self._open_files_by_id = {}
+        self._open_files_by_id_gen = 0
 
         # watch file system and clear cache on any changes
         # NB: we need to use a 'db style' watch because we need the
@@ -1315,6 +1326,8 @@ class FileSystem(object):
                 toclose = live_md.cached_file
                 popped = self._open_files_by_id.pop(id_)
                 assert popped is live_md
+                if live_md.cached_file._sync_tag:
+                    self._open_files_by_id_gen += 1
 
         if toclose is not None:
             assert not toclose.is_dirty()
@@ -1434,9 +1447,18 @@ class FileSystem(object):
         return self._fs.file_name_norm(fn)
 
     def open(self, path, mode=os.O_RDONLY, directory=False):
-        st = self.stat(path, create_mode=mode & (os.O_CREAT | os.O_EXCL),
-                       directory=directory, only_cache=True)
-        return _File(self, st, mode)
+        while True:
+            with self._file_cache_lock:
+                fc_gen = self._open_files_by_id_gen
+
+            st = self.stat(path, create_mode=mode & (os.O_CREAT | os.O_EXCL),
+                           directory=directory, only_cache=True)
+
+            try:
+                return _File(self, st, mode, fc_gen)
+            except InvalidFileCacheGenError:
+                # see _File.__init__ for the explanation of this
+                pass
 
     def open_directory(self, path):
         return _Directory(self, path)

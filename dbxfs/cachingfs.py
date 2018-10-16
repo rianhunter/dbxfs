@@ -1435,7 +1435,7 @@ class FileSystem(object):
 
     def open(self, path, mode=os.O_RDONLY, directory=False):
         st = self.stat(path, create_mode=mode & (os.O_CREAT | os.O_EXCL),
-                       directory=directory)
+                       directory=directory, only_cache=True)
         return _File(self, st, mode)
 
     def open_directory(self, path):
@@ -1457,7 +1457,8 @@ class FileSystem(object):
             (stat_num,) = row
         return stat_num
 
-    def _stat_repeat(self, mutate, path, create_mode, directory):
+    def _stat_repeat(self, mutate, path, create_mode, directory,
+                     only_cache=False):
         DELETED = object()
 
         path_key = str(path.normed())
@@ -1553,7 +1554,7 @@ class FileSystem(object):
 
         if stat is None:
             raise OSError(errno.ENOENT, os.strerror(errno.ENOENT))
-        else:
+        elif not only_cache:
             # if the file is currently open, return the currently open stat instead
             with self._file_cache_lock:
                 try:
@@ -1565,11 +1566,12 @@ class FileSystem(object):
 
         return stat
 
-    def stat(self, path, create_mode=0, directory=False):
+    def stat(self, path, create_mode=0, directory=False, only_cache=False):
         mutate = False
 
         while True:
-            res = self._stat_repeat(mutate, path, create_mode, directory)
+            res = self._stat_repeat(mutate, path, create_mode, directory,
+                                    only_cache=only_cache)
             if res is MUST_MUTATE:
                 mutate = True
                 continue

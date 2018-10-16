@@ -361,7 +361,9 @@ DOWNLOAD_UNIT = 2 ** 16
 # File downloads start on first call to pread()
 class StreamingFile(object):
     def __init__(self, fs, stat):
-        assert stat.rev is not None
+        assert stat.rev is not None, (
+            "Empty stat rev for file: %r" % (stat,)
+        )
 
         self._real_fs = fs
         self.cache_folder = fs._cache_folder
@@ -781,7 +783,9 @@ class CachedDirectory(object):
     def __init__(self, fs, stat):
         self._fs = fs
         self._stat = stat
-        assert self._stat.type == 'directory'
+        assert self._stat.type == 'directory', (
+            "Bad stat for CachedDirectory: %r" % (stat,)
+        )
         self._file = self._fs._fs.x_open_by_id(stat.id)
 
         self.open_files = set()
@@ -819,7 +823,9 @@ class CachedFile(object):
         self._id = stat.id
         self._base_stat = stat
 
-        assert stat.type == "file"
+        assert stat.type == "file", (
+            "Bad stat for CachedFile: %r" % (stat,)
+        )
         self._file = SQLiteFrontFile(StreamingFile(fs, stat))
 
         self._upload_cond = threading.Condition()
@@ -1322,7 +1328,9 @@ class FileSystem(object):
             (md,) = row
             if md is not None:
                 st = json_to_stat(md)
-                assert st.type != "file" or st.rev is not None
+                assert st.type != "file" or st.rev is not None, (
+                    "File stat missing rev: %r" % (stat,)
+                )
 
     def _update_md(self, cursor, path_key, stat):
         if stat is None:
@@ -1343,7 +1351,9 @@ class FileSystem(object):
                         #       check mtime/size as well
                         getattr(json_to_stat(md), 'type', None) == 'directory'):
                         return
-            assert stat.type != "file" or stat.rev is not None
+            assert stat.type != "file" or stat.rev is not None, (
+                "File stat missing rev: %r" % (stat,)
+            )
             md_str = stat_to_json(stat)
 
         # This is just for debugging

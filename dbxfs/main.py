@@ -45,7 +45,7 @@ import sentry_sdk
 from block_tracing import block_tracing
 
 from dbxfs.dbxfs import FileSystem as DropboxFileSystem
-from dbxfs.cachingfs import FileSystem as CachingFileSystem
+from dbxfs.cachingfs import FileSystem as CachingFileSystem, check_runtime_requirements
 from dbxfs.disable_quick_look import FileSystem as DisableQuickLookFileSystem
 from dbxfs.translate_ignored_files import FileSystem as TranslateIgnoredFilesFileSystem
 
@@ -80,7 +80,13 @@ def parse_encrypted_folder_arg(string):
 
 def _main(argv=None):
     if sys.version_info < (3, 5):
-        print("Your version of Python is too old, 3.5+ is required: %d.%d.%d" % sys.version_info[:3])
+        print("Error: Your version of Python is too old, 3.5+ is required: %d.%d.%d" % sys.version_info[:3])
+        return -1
+
+    try:
+        check_runtime_requirements()
+    except RuntimeError as e:
+        print("Error: %s" % (e,))
         return -1
 
     # Protect access token and potentially encryption keys

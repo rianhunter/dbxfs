@@ -1112,10 +1112,13 @@ class _File(PositionIO):
         if toclose is not None:
             toclose.close()
 
+def check_runtime_requirements():
+    if sqlite3.sqlite_version_info < (3, 9, 0):
+        raise RuntimeError("Need sqlite version >= 3.9.0, you have: %r" % (sqlite3.sqlite_version,))
+
 class FileSystem(object):
     def __init__(self, fs, cache_folder=None):
-        if sqlite3.sqlite_version_info < (3, 9, 0):
-            raise Exception("Need sqlite version >= 3.9.0, you have: %r" % (sqlite3.sqlite_version,))
+        check_runtime_requirements()
 
         use_shared_cache = True
 

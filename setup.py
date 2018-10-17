@@ -42,7 +42,7 @@ setup(
         "userspacefs>=1.0.10,<2",
         "block_tracing>=1.0.1,<2",
         "privy>=6.0,<7",
-        "keyring>=15.1,<16",
+        "keyring>=13.2.1,<16",
         "sentry_sdk>=0.3,<1",
     ],
     extras_require={

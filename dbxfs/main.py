@@ -42,7 +42,7 @@ from keyring.errors import KeyringError
 
 import sentry_sdk
 
-from block_tracing import block_tracing
+from block_tracing import block_tracing, BLOCK_TRACING_INHERITS
 
 from dbxfs.dbxfs import FileSystem as DropboxFileSystem
 from dbxfs.cachingfs import FileSystem as CachingFileSystem, check_runtime_requirements
@@ -346,7 +346,8 @@ def _main(argv=None):
                 print("Unable to create mount point: %s" % (e,))
                 return -1
 
-    return userspacefs.simple_main(mount_point, "dbxfs", create_fs, args)
+    return userspacefs.simple_main(mount_point, "dbxfs", create_fs, args,
+                                   on_new_process=None if BLOCK_TRACING_INHERITS else block_tracing)
 
 def main(argv=None):
     try:

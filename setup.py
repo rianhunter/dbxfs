@@ -40,7 +40,7 @@ setup(
         "dropbox>=3.38",
         "appdirs>=1.4,<2",
         "userspacefs>=1.0.10,<2",
-        "block_tracing>=1.0,<2",
+        "block_tracing>=1.0.1,<2",
         "privy>=6.0,<7",
         "keyring>=15.1,<16",
         "sentry_sdk>=0.3,<1",

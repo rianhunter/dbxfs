@@ -398,12 +398,12 @@ class StreamingFile(object):
                     # Use offset to skip bytes if we already have them
                     with contextlib.closing(self.fs.x_read_stream(self._stat.rev, offset=amt)) as fsource:
                         while True:
-                            buf = fsource.read(DOWNLOAD_UNIT)
-                            if not buf: break
-
                             if self.stop_signal.is_set():
                                 log.debug("File download stopped early!")
                                 return
+
+                            buf = fsource.read(DOWNLOAD_UNIT)
+                            if not buf: break
 
                             self.cached_file.write(buf)
                             self.cached_file.flush()
@@ -527,6 +527,8 @@ class StreamingFile(object):
             self.is_closed = True
             if self._thread_has_started():
                 self.stop_signal.set()
+                if self.thread is not None:
+                    self.thread.join()
                 self.cached_file.close()
                 self.cached_file = None
 

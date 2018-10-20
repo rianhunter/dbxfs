@@ -869,7 +869,7 @@ class FileSystem(object):
                       space_usage.allocation.get_team()).allocated
         return quick_container(f_frsize=ALLOCATION_UNIT_SIZE,
                                f_blocks=allocation // ALLOCATION_UNIT_SIZE,
-                               f_bavail=(allocation - space_usage.used) // ALLOCATION_UNIT_SIZE)
+                               f_bavail=max(0, (allocation - space_usage.used) // ALLOCATION_UNIT_SIZE))
 
     def pread(self, handle, size, offset):
         return handle.pread(size, offset)

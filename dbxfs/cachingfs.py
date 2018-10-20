@@ -791,6 +791,7 @@ class CachedDirectory(object):
         self._file = self._fs._fs.x_open_by_id(stat.id)
 
         self.open_files = set()
+        self._sync_tag = 0
 
     def stat(self):
         return self._stat

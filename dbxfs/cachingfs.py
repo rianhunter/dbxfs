@@ -1283,8 +1283,11 @@ class FileSystem(object):
 
                 self._prune_event.wait(PRUNE_PERIOD)
                 self._prune_event.clear()
-            except Exception:
-                log.exception("Error pruning cache, sleeping...")
+            except Exception as e:
+                if not isinstance(e, OSError):
+                    log.exception("Error pruning cache, sleeping...")
+                else:
+                    log.warning("Error pruning cache, sleeping...", exc_info=True)
                 self._prune_event.wait(100)
 
     def _init_db(self):

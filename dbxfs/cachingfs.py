@@ -432,13 +432,25 @@ class StreamingFile(object):
                     self.stop_signal.wait(100)
                     self.eio = False
 
-        is_temp = self.cache_folder is None
-        if is_temp:
+        if self.cache_folder is not None:
+            try:
+                os.makedirs(self.cache_folder)
+            except OSError:
+                pass
+
+        if self.cache_folder is not None:
+            try:
+                fn = '%s.bin' % (self._stat.rev)
+                self.cached_file = open(os.path.join(self.cache_folder, fn), 'a+b')
+                # XXX: make sure no other process has `cached_file` open
+            except (IOError, OSError):
+                pass
+
+        if self.cached_file is None:
             self.cached_file = tempfile.TemporaryFile()
+            is_temp = True
         else:
-            fn = '%s.bin' % (self._stat.rev)
-            self.cached_file = open(os.path.join(self.cache_folder, fn), 'a+b')
-            # XXX: make sure no other process has `cached_file` open
+            is_temp = False
 
         # Restart a previous download
         # TODO: check integrity of file
@@ -894,6 +906,11 @@ class CachedFile(object):
                     new_stat = dbmd_to_stat(md)
 
                     if self._fs._cache_folder is not None:
+                        try:
+                            os.makedirs(self._fs.cache_folder)
+                        except OSError:
+                            pass
+
                         to_save = None
                         try:
                             to_save = tempfile.NamedTemporaryFile(dir=self._fs._cache_folder)

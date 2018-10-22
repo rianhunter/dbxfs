@@ -1434,9 +1434,14 @@ class FileSystem(object):
                 #       entries from the dropbox api (including
                 #       DeletedMetadata and FolderMetadata)
 
-                path_key = change.path_lower
                 normed_path = self.create_path(*([] if change.path_lower == "/" else change.path_lower[1:].split("/")))
-                name = change.name
+                self._invalidate_entry(cursor, normed_path)
+
+    def _invalidate_entry(self, cursor, normed_path):
+        # if True: if True: here to minimize the diff
+        if True:
+            if True:
+                path_key = str(normed_path.normed())
                 parent_path = normed_path.parent
                 parent_path_key = str(parent_path)
 
@@ -1594,6 +1599,10 @@ class FileSystem(object):
                                        "set counter = counter + 1 where "
                                        "path_key = ?",
                                        (parent_path_key,))
+                elif create_mode & os.O_CREAT:
+                    # If we possibly mutated the fs then we have to at
+                    # least invalidate the cache entry.
+                    self._invalidate_entry(cursor, path)
 
             stat = new_stat
         elif stat is DELETED:

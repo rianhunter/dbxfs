@@ -1367,7 +1367,7 @@ class FileSystem(object):
             if md is not None:
                 st = json_to_stat(md)
                 assert st.type != "file" or st.rev is not None, (
-                    "File stat missing rev: %r" % (stat,)
+                    "File stat missing rev: %r" % (st,)
                 )
 
     def _update_md(self, cursor, path_key, stat):

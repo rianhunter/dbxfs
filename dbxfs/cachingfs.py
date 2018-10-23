@@ -907,7 +907,7 @@ class CachedFile(object):
 
                     if self._fs._cache_folder is not None:
                         try:
-                            os.makedirs(self._fs.cache_folder)
+                            os.makedirs(self._fs._cache_folder)
                         except OSError:
                             pass
 

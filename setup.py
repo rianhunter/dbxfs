@@ -39,7 +39,7 @@ setup(
     install_requires=[
         "dropbox>=3.38",
         "appdirs>=1.4,<2",
-        "userspacefs>=1.0.12,<2",
+        "userspacefs>=1.0.13,<2",
         "block_tracing>=1.0.1,<2",
         "privy>=6.0,<7",
         "keyring>=13.2.1,<16",

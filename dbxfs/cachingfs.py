@@ -1151,8 +1151,12 @@ class FileSystem(object):
             # otherwise SQLite will do locking for us
             self._db_lock = SharedLock()
         else:
-            assert ("mode=memory" in self._db_file or
-                    ":memory:" in self._db_file)
+            assert ("mode=memory" not in self._db_file and
+                    ":memory:" not in self._db_file), (
+                        "In-memory database connections without " +
+                        "shared cache are distinct databases."
+                    )
+
             self._db_lock = None
 
         self._local = threading.local()

@@ -22,7 +22,7 @@ with open("README.rst", "r") as fh:
 
 setup(
     name="dbxfs",
-    version='1.0.37',
+    version='1.0.38',
     author="Rian Hunter",
     author_email="rian@alum.mit.edu",
     description="User-space file system for Dropbox",

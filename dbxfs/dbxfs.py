@@ -365,9 +365,9 @@ def new_files_upload_session_finish(client,
                                     ci):
     commit = dict(
         path=ci['path'],
-        mode=mode_to_json(ci['mode']),
-        autorename=ci['autorename'],
-        strict_conflict=ci['strict_conflict'],
+        mode=mode_to_json(ci.get('mode', dropbox.files.WriteMode.add)),
+        autorename=ci.get('autorename', False),
+        strict_conflict=ci.get('strict_conflict', False),
     )
     if 'client_modified' in ci:
         commit['client_modified'] = convert_to_dbx_timestamp(ci['client_modified'])

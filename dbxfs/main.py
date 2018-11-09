@@ -184,6 +184,9 @@ def _main(argv=None):
         except TypeError:
             print("Bad access token command: %r, " % (access_token_command,))
             return -1
+        # NB: access tokens never contain white-space and the access token
+        #     command often accidentally appends a newline character.
+        access_token = access_token.strip()
 
     if access_token is None:
         keyring_user = config.get("keyring_user", None)

@@ -30,7 +30,7 @@ Run the following command::
   $ pip3 install dbxfs
 
 On Arch Linux and derivatives, you can find it in the AUR as
-`python-dbxfs <https://aur.archlinux.org/packages/python-dbxfs>`_.
+`dbxfs <https://aur.archlinux.org/packages/dbxfs>`_.
 
 Usage
 -----

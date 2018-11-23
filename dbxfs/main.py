@@ -106,6 +106,8 @@ def _main(argv=None):
                         help="relative paths of encrypted folders, can be used multiple times. requires safefs")
     parser.add_argument("--print-default-config-file", action='store_true',
                         help="print default config file path to standard out and quit")
+    parser.add_argument("--no-cache", action='store_true',
+                        help="force dbxfs to run without a file cache")
     parser.add_argument("mount_point", nargs='?')
     args = parser.parse_args(argv[1:])
 
@@ -158,6 +160,8 @@ def _main(argv=None):
     mount_point = args.mount_point
     if mount_point is None:
         mount_point = config.get("mount_point")
+
+    cache_disabled = args.no_cache
 
     if not args.smb_no_mount and mount_point is None:
         parser.print_usage()
@@ -317,12 +321,16 @@ def _main(argv=None):
         except Exception:
             log.warning("Failed to initialize sentry", exc_info=True)
 
-    cache_folder = os.path.join(appdirs.user_cache_dir(APP_NAME), "file_cache")
-    try:
-        os.makedirs(cache_folder, exist_ok=True)
-    except OSError:
-        log.warning("Failed to create cache folder, running without file cache")
+    if cache_disabled:
+        log.warning("Cache folder is disabled by config, running without file cache")
         cache_folder = None
+    else:
+        cache_folder = os.path.join(appdirs.user_cache_dir(APP_NAME), "file_cache")
+        try:
+            os.makedirs(cache_folder, exist_ok=True)
+        except OSError:
+            log.warning("Failed to create cache folder, running without file cache")
+            cache_folder = None
 
     def create_fs():
         fs = CachingFileSystem(DropboxFileSystem(access_token), cache_folder=cache_folder)

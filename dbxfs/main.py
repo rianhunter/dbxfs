@@ -107,6 +107,8 @@ def _main(argv=None):
     parser.add_argument("--print-default-config-file", action='store_true',
                         help="print default config file path to standard out and quit")
     parser.add_argument("mount_point", nargs='?')
+    parser.add_argument("--cache-dir",
+                        help="dir where dbxfs will store cached content before saving to mount_point")
     args = parser.parse_args(argv[1:])
 
     try:
@@ -154,6 +156,12 @@ def _main(argv=None):
         except ValueError as e:
             print("Config file %r is not valid json: %s" % (config_file, e))
             return -1
+
+    cache_dir = args.cache_dir
+    if cache_dir is None:
+        cache_dir = config.get("cache_dir")
+    else:
+        save_cache_dir = True
 
     mount_point = args.mount_point
     if mount_point is None:
@@ -299,6 +307,10 @@ def _main(argv=None):
         config['asked_send_error_reports'] = True
         save_config = True
 
+    if save_cache_dir:
+        config['cache_dir'] = cache_dir
+        save_config = True
+
     if save_access_token and yes_no_input("Do you want \"%s\" to be the default mount point?" % (mount_point,), default_yes=True):
         config['mount_point'] = mount_point
         save_config = True
@@ -317,12 +329,17 @@ def _main(argv=None):
         except Exception:
             log.warning("Failed to initialize sentry", exc_info=True)
 
-    cache_folder = os.path.join(appdirs.user_cache_dir(APP_NAME), "file_cache")
-    try:
-        os.makedirs(cache_folder, exist_ok=True)
-    except OSError:
-        log.warning("Failed to create cache folder, running without file cache")
-        cache_folder = None
+    if cache_dir is not None and os.path.exists(cache_dir) and os.path.isdir(cache_dir):
+        cache_folder = cache_dir
+        log.info("Using custom cache path %s", cache_folder)
+    else:
+        cache_folder = os.path.join(appdirs.user_cache_dir(APP_NAME), "file_cache")
+        log.info("Using default cache path %s", cache_folder)
+        try:
+            os.makedirs(cache_folder, exist_ok=True)
+        except OSError:
+            log.warning("Failed to create cache folder, running without file cache")
+            cache_folder = None
 
     def create_fs():
         fs = CachingFileSystem(DropboxFileSystem(access_token), cache_folder=cache_folder)

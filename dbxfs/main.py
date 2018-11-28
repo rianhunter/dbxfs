@@ -106,6 +106,8 @@ def _main(argv=None):
                         help="relative paths of encrypted folders, can be used multiple times. requires safefs")
     parser.add_argument("--print-default-config-file", action='store_true',
                         help="print default config file path to standard out and quit")
+    parser.add_argument("--cache-dir",
+                        help="file cache directory")
     parser.add_argument("mount_point", nargs='?')
     args = parser.parse_args(argv[1:])
 
@@ -154,6 +156,10 @@ def _main(argv=None):
         except ValueError as e:
             print("Config file %r is not valid json: %s" % (config_file, e))
             return -1
+
+    cache_folder = args.cache_dir
+    if cache_folder is None:
+        cache_folder = config.get("cache_dir")
 
     mount_point = args.mount_point
     if mount_point is None:
@@ -317,12 +323,19 @@ def _main(argv=None):
         except Exception:
             log.warning("Failed to initialize sentry", exc_info=True)
 
-    cache_folder = os.path.join(appdirs.user_cache_dir(APP_NAME), "file_cache")
-    try:
-        os.makedirs(cache_folder, exist_ok=True)
-    except OSError:
-        log.warning("Failed to create cache folder, running without file cache")
-        cache_folder = None
+    if cache_folder is None:
+        cache_folder = os.path.join(appdirs.user_cache_dir(APP_NAME), "file_cache")
+        try:
+            os.makedirs(cache_folder, exist_ok=True)
+        except OSError:
+            log.warning("Failed to create cache folder, running without file cache")
+            cache_folder = None
+        log.debug("Using default cache path %s", cache_folder)
+    else:
+        if not os.path.isdir(cache_folder):
+            print("User-provided \"cache_dir\" setting doesn't refer to a directory: \"%s\"" % (cache_folder,))
+            return 1
+        log.debug("Using custom cache path %s", cache_folder)
 
     def create_fs():
         fs = CachingFileSystem(DropboxFileSystem(access_token), cache_folder=cache_folder)

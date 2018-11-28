@@ -179,6 +179,7 @@ def _main(argv=None):
 
     access_token = None
     save_access_token = False
+    save_cache_dir = False
     save_config = False
 
     access_token_command = config.get("access_token_command", None)

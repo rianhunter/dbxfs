@@ -485,10 +485,10 @@ class StreamingFile(object):
                 assert self.cached_file is not None
 
                 if self.stored >= offset + size or self.eof is not None:
-                    return
+                    return False
 
                 if self.eio:
-                    raise OSError(errno.EIO, os.strerror(errno.EIO))
+                    return True
 
                 self.cond.wait()
 
@@ -546,7 +546,9 @@ class StreamingFile(object):
                     finally:
                         log.debug("Done bypassing file cache %r", (offset, size))
 
-                self._wait_for_range(offset, size)
+                redo = self._wait_for_range(offset, size)
+                if redo:
+                    continue
 
                 # TODO: port to windows, can use ReadFile
                 return os.pread(self.cached_file.fileno(), size, offset)

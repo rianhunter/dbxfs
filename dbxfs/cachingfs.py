@@ -395,6 +395,9 @@ class StreamingFile(object):
         def stream_file(is_temp, amt):
             while not self.stop_signal.is_set():
                 try:
+                    if not is_temp:
+                        self._real_fs._check_space(self._stat.size - amt)
+
                     # Use offset to skip bytes if we already have them
                     with contextlib.closing(self.fs.x_read_stream(self._stat.rev, offset=amt)) as fsource:
                         while True:
@@ -1266,6 +1269,27 @@ class FileSystem(object):
         self._refresh_queue.put(None)
         self._refresh_thread.join()
         self._fs.close()
+
+    def _check_space(self, size):
+        try:
+            vfs_stat = os.statvfs(self._cache_folder)
+            free_space = vfs_stat.f_bsize * vfs_stat.f_bavail
+
+            cache_entries = []
+            for name in os.listdir(self._cache_folder):
+                cache_entries.append((name, os.lstat(os.path.join(self._cache_folder, name))))
+        except Exception as e:
+            if not isinstance(e, OSError):
+                log.exception("Error while checking space")
+                return
+
+        cache_size = sum(st.st_size for (_, st) in cache_entries)
+
+        # % of free space that cache is allowed to take up
+        N = 0.10
+
+        if (cache_size + size) / (cache_size + free_space) > N:
+            raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC))
 
     def _prune_thread(self):
         if not self._cache_folder:

@@ -424,13 +424,24 @@ class StreamingFile(object):
 
                         log.debug("Done downloading %r", self._stat.rev)
                     break
-                except Exception:
-                    log.exception("Error downloading file, sleeping...")
+                except Exception as e:
                     with self.cond:
                         self.eio = True
                         self.cond.notify_all()
+                    # If we hit an out-of-space condition, then
+                    # stop downloading, redirect future requests to network
+                    if isinstance(e, OSError) and e.errno == errno.ENOSPC:
+                        break
+                    log.exception("Error downloading file, sleeping...")
                     self.stop_signal.wait(100)
                     self.eio = False
+
+            with self.reset_lock:
+                self.cached_file.close()
+                self.cached_file = None
+                if not is_temp:
+                    # prune cache immediately if there was no more space
+                    self._real_fs._prune_event.set()
 
         if self.cache_folder is not None:
             try:
@@ -471,6 +482,8 @@ class StreamingFile(object):
     def _wait_for_range(self, offset, size):
         with self.cond:
             while True:
+                assert self.cached_file is not None
+
                 if self.stored >= offset + size or self.eof is not None:
                     return
 
@@ -481,6 +494,9 @@ class StreamingFile(object):
 
     def _should_wait(self, offset, size):
         with self.cond:
+            if self.cached_file is None:
+                return False
+
             # we already have the data, so we can "wait"
             if self.stored >= offset + size or self.eof is not None:
                 return True
@@ -512,6 +528,9 @@ class StreamingFile(object):
 
                     self._start_thread()
 
+                    # in case we loop again below
+                    ctx = self.reset_lock.shared_context()
+
                 if not size:
                     return b''
 
@@ -533,16 +552,16 @@ class StreamingFile(object):
                 return os.pread(self.cached_file.fileno(), size, offset)
 
     def close(self):
+        th = None
         with self.reset_lock:
             if self.is_closed:
                 return
             self.is_closed = True
             if self._thread_has_started():
                 self.stop_signal.set()
-                if self.thread is not None:
-                    self.thread.join()
-                self.cached_file.close()
-                self.cached_file = None
+                th = self.thread
+        if th is not None:
+            th.join()
 
 class NullFile(object):
     def __init__(self, id_):

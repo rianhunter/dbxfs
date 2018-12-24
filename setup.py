@@ -41,7 +41,7 @@ setup(
         "userspacefs>=1.0.13,<2",
         "block_tracing>=1.0.1,<2",
         "privy>=6.0,<7",
-        "keyring>=15.1.0,<17",
+        "keyring>=15.1.0",
         "keyrings.alt>=3.1,<4",
         "sentry_sdk>=0.3,<1",
     ],

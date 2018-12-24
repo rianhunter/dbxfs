@@ -289,8 +289,9 @@ ApiError = dropbox.exceptions.ApiError
 def dbrequest(client, namespace, route, f, arg):
     host = route.attrs['host'] or 'api'
     route_name = namespace + '/' + route.name
-    if route.version > 1:
-        route_name += '_v{}'.format(route.version)
+    route_version = getattr(route, 'version', 1)
+    if route_version > 1:
+        route_name += '_v{}'.format(route_version)
     route_style = route.attrs['style'] or 'rpc'
 
     res = client.request_json_string_with_retry(host,

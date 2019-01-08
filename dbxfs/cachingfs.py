@@ -1041,7 +1041,7 @@ LiveFileMetadata = collections.namedtuple('LiveFileMetadata',
 class InvalidFileCacheGenError(Exception): pass
 
 class _File(PositionIO):
-    def __init__(self, fs, stat, mode, fc_gen):
+    def __init__(self, fs, stat, mode):
         PositionIO.__init__(self)
 
         self._fs = fs
@@ -1050,12 +1050,6 @@ class _File(PositionIO):
             try:
                 live_md = self._fs._open_files_by_id[stat.id]
             except KeyError:
-                # if a previously written file was closed during the
-                # time we retrieved the stat, that means the stat rev
-                # could be locally out of date so don't use it
-                if fc_gen != self._fs._open_files_by_id_gen:
-                    raise InvalidFileCacheGenError()
-
                 if stat.type == "file":
                     cached_file = CachedFile(fs, stat)
                 else:
@@ -1137,14 +1131,13 @@ class _File(PositionIO):
             toclose = None
             with self._fs._file_cache_lock:
                 live_md.open_files.remove(self)
-                if (not live_md.open_files and
+                if (not self._fs._openners and
+                    not live_md.open_files and
                     # keep file around as long as its syncing
                     not live_md.cached_file.queue_sync()):
                     toclose = live_md.cached_file
                     popped = self._fs._open_files_by_id.pop(self._id)
                     assert popped is live_md
-                    if live_md.cached_file._sync_tag:
-                        self._fs._open_files_by_id_gen += 1
 
         if toclose is not None:
             toclose.close()
@@ -1194,7 +1187,7 @@ class FileSystem(object):
 
         self._file_cache_lock = threading.Lock()
         self._open_files_by_id = {}
-        self._open_files_by_id_gen = 0
+        self._openners = 0
 
         # watch file system and clear cache on any changes
         # NB: we need to use a 'db style' watch because we need the
@@ -1388,14 +1381,13 @@ class FileSystem(object):
                 # NB: file wasn't open
                 return
 
-            if (not live_md.open_files and
+            if (not self._openners and
+                not live_md.open_files and
                 # keep file around as long as its syncing
                 not live_md.cached_file.queue_sync()):
                 toclose = live_md.cached_file
                 popped = self._open_files_by_id.pop(id_)
                 assert popped is live_md
-                if live_md.cached_file._sync_tag:
-                    self._open_files_by_id_gen += 1
 
         if toclose is not None:
             assert not toclose.is_dirty()
@@ -1520,18 +1512,31 @@ class FileSystem(object):
         return self._fs.file_name_norm(fn)
 
     def open(self, path, mode=os.O_RDONLY, directory=False):
-        while True:
-            with self._file_cache_lock:
-                fc_gen = self._open_files_by_id_gen
-
+        with self._file_cache_lock:
+            self._openners += 1
+        try:
             st = self.stat(path, create_mode=mode & (os.O_CREAT | os.O_EXCL),
-                           directory=directory, only_cache=True)
+                           directory=directory)
 
-            try:
-                return _File(self, st, mode, fc_gen)
-            except InvalidFileCacheGenError:
-                # see _File.__init__ for the explanation of this
-                pass
+            return _File(self, st, mode)
+        finally:
+            to_close = []
+            with self._file_cache_lock:
+                self._openners -= 1
+
+                # close files that have no references
+                if not self._openners:
+                    for it in self._open_files_by_id.items():
+                        (_, live_md) = it
+                        if (not live_md.open_files and
+                            not live_md.cached_file.queue_sync()):
+                            to_close.append(it)
+
+                    for (id_, live_md) in to_close:
+                        popped = self._open_files_by_id.pop(id_)
+                        assert live_md is popped
+            for (_, live_md) in to_close:
+                live_md.cached_file.close()
 
     def open_directory(self, path):
         return _Directory(self, path)

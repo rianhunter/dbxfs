@@ -1314,8 +1314,7 @@ class FileSystem(object):
                 cache_size = sum(st.st_size for (_, st) in cache_entries)
 
                 # sort by ascending atime, descending size
-                cache_entries.sort(key=lambda name_st_pair: (name_st_pair[1].st_atime,
-                                                             -name_st_pair[1].st_size))
+                cache_entries.sort(key=lambda name_st_pair: -name_st_pair[1].st_size)
 
                 # P: `cache / (cache + free_space)`
                 # N: configurable value from [0, 1]
@@ -1328,9 +1327,12 @@ class FileSystem(object):
                     if cache_size / potential_free_space <= N:
                         break
 
-                    os.unlink(os.path.join(self._cache_folder, name))
-
-                    cache_size -= st.st_size
+                    try:
+                        os.unlink(os.path.join(self._cache_folder, name))
+                        cache_size -= st.st_size
+                    except Exception:
+                        log.exception("Error unlinking file: %r",
+                                      os.path.join(self._cache_folder, name))
 
                 self._prune_event.wait(PRUNE_PERIOD)
                 self._prune_event.clear()

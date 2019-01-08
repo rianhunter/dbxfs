@@ -448,9 +448,17 @@ class StreamingFile(object):
 
         if self.cache_folder is not None:
             try:
+                with tempfile.NamedTemporaryFile(dir=self.cache_folder,
+                                                 delete=False) as f:
+                    temp_path = f.name
+
                 fn = '%s.bin' % (self._stat.rev)
-                self.cached_file = open(os.path.join(self.cache_folder, fn), 'a+b')
-                # XXX: make sure no other process has `cached_file` open
+                # NB: make sure no other process uses the cached file if it exists
+                try:
+                    os.rename(os.path.join(self.cache_folder, fn), temp_path)
+                except FileNotFoundError:
+                    pass
+                self.cached_file = open(temp_path, 'a+b')
             except (IOError, OSError):
                 pass
 
@@ -560,6 +568,13 @@ class StreamingFile(object):
                 if self.thread is not None:
                     self.thread.join()
                 self.cached_file.close()
+                if isinstance(getattr(self.cached_file, 'name', None), str):
+                    try:
+                        fn = os.path.join(self.cache_folder,
+                                          '%s.bin' % (self._stat.rev))
+                        os.rename(self.cached_file.name, fn)
+                    except Exception:
+                        log.exception("Unexpected failure to unlink lock file")
                 self.cached_file = None
 
 class NullFile(object):

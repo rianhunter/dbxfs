@@ -432,19 +432,13 @@ class StreamingFile(object):
                         self.eio = True
                         self.cond.notify_all()
                     # If we hit an out-of-space condition, then
-                    # stop downloading, redirect future requests to network
+                    # stop downloading, redirect future requests to network (via self.eio)
                     if isinstance(e, OSError) and e.errno == errno.ENOSPC:
                         break
                     log.exception("Error downloading file, sleeping...")
                     self.stop_signal.wait(100)
-                    self.eio = False
-
-            with self.reset_lock:
-                self.cached_file.close()
-                self.cached_file = None
-                if not is_temp:
-                    # prune cache immediately if there was no more space
-                    self._real_fs._prune_event.set()
+                    with self.cond:
+                        self.eio = False
 
         if self.cache_folder is not None:
             try:
@@ -497,8 +491,7 @@ class StreamingFile(object):
 
     def _should_wait(self, offset, size):
         with self.cond:
-            if self.cached_file is None:
-                return False
+            assert self.cached_file is not None
 
             # we already have the data, so we can "wait"
             if self.stored >= offset + size or self.eof is not None:
@@ -564,9 +557,10 @@ class StreamingFile(object):
             self.is_closed = True
             if self._thread_has_started():
                 self.stop_signal.set()
-                th = self.thread
-        if th is not None:
-            th.join()
+                if self.thread is not None:
+                    self.thread.join()
+                self.cached_file.close()
+                self.cached_file = None
 
 class NullFile(object):
     def __init__(self, id_):

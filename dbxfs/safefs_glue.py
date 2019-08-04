@@ -90,9 +90,12 @@ class SubFileSystem(object):
             self.x_f_set_file_times = x_f_set_file_times
 
     def close(self):
+        if self._fs is None:
+            return
         for subfs in self._subfs.values():
             subfs.close()
         self._fs.close()
+        self._fs = None
 
     def create_path(self, *args):
         return Path(args, fn_norm=self._fs.file_name_norm)

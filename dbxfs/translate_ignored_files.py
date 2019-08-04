@@ -75,7 +75,10 @@ class _Directory(IterableDirectory):
         return self._curiter
 
     def close(self):
+        if self._dir is None:
+            return
         self._dir.close()
+        self._dir = None
 
 class FileSystem(object):
     def __init__(self, backing_fs):

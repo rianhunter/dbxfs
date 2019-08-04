@@ -51,6 +51,7 @@ class QLDir(object):
     def close(self):
         for dir_ in self._dirs:
             dir_.close()
+        self._dirs = ()
 
 class QLFile(object):
     def __init__(self, f):
@@ -68,7 +69,10 @@ class FileSystem(object):
         self._fs = backing_fs
 
     def close(self):
+        if self._fs is None:
+            return
         self._fs.close()
+        self._fs = None
 
     def _filter(self, path):
         if (path.name.lower() == ".ds_store" or

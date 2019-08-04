@@ -669,12 +669,15 @@ class SQLiteFrontFile(PositionIO):
                     **stat_dict)
 
     def close(self):
+        if self.closed:
+            return
         try:
             os.unlink(self._file_path)
         except Exception:
             log.warning("Error unlinking dirty cache file",
                         exc_info=True)
         self._backfile.close()
+        super().close()
 
     def _init_db(self):
         conn = self._get_db_conn()
@@ -1069,6 +1072,8 @@ class CachedFile(object):
 
     def close(self):
         with self._upload_cond:
+            if self._closed:
+                return
             self._queue_sync(final=True)
         if threading.current_thread() is not self._thread:
             self._thread.join()
@@ -1160,6 +1165,9 @@ class _File(PositionIO):
             return self._live_md.cached_file.ptruncate(offset)
 
     def close(self):
+        if self.closed:
+            return
+
         with self._lock:
             if self._live_md is None:
                 return
@@ -1179,6 +1187,8 @@ class _File(PositionIO):
 
         if toclose is not None:
             toclose.close()
+
+        super().close()
 
 def check_runtime_requirements():
     if sqlite3.sqlite_version_info < (3, 9, 0):
@@ -1284,6 +1294,8 @@ class FileSystem(object):
             self._statvfs_event.clear()
 
     def close(self):
+        if self._close_prune_thread:
+            return
         self._close_prune_thread = True
         self._prune_event.set()
         self._conn_thread_stop.set()

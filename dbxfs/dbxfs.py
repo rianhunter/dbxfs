@@ -275,12 +275,15 @@ class _ReadStream(io.RawIOBase):
         return True
 
     def close(self):
+        if self.closed:
+            return
         with self._lock:
             if self._read_conn is not None:
                 self._read_conn.close()
             self._read_conn = None
             # Set path to none to signal closed
             self._path = None
+        super().close()
 
 from dropbox.dropbox import RouteResult, RouteErrorResult
 from dropbox import stone_serializers, files

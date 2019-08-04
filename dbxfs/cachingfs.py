@@ -634,6 +634,23 @@ class SQLiteFrontFile(PositionIO):
         cursor.executemany("INSERT OR REPLACE INTO md (name, value) VALUES (?, ?)",
                            toupdate)
 
+    def replace_underlying(self, new_backfile):
+        stat = self.stat()
+        new_stat = new_backfile.stat()
+
+        # basic sanity check
+        assert stat.size == new_stat.size
+
+        conn = self._get_db_conn()
+
+        with trans(conn, self._db_lock, is_exclusive=True), \
+             contextlib.closing(conn.cursor()) as cursor:
+            self._update_write_md(cursor, new_stat.size, new_stat.ctime, new_stat.mtime)
+
+            oldbackfile = self._backfile
+            self._backfile = new_backfile
+            oldbackfile.close()
+
     def stat(self):
         conn = self._get_db_conn()
 
@@ -975,6 +992,7 @@ class CachedFile(object):
                     self._complete_tag = sync_tag
                     self._upload_now = None
                     self._upload_cond.notify_all()
+                    self._file.replace_underlying(StreamingFile(self._fs, new_stat))
 
                 self._fs._submit_write(self._id, md)
             except Exception:

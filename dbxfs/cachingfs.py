@@ -1861,9 +1861,18 @@ def main(argv):
         with contextlib.closing(fs.open(fs.create_path("bar"), os.O_RDWR)) as f:
             f.read()
             f.write(b"hi")
+            fs.fsync(f)
+            f.seek(0)
+            contents = f.read()
+            if contents != b"fhi":
+                print("Contents of bar:", contents, "(should be 'fhi')")
+                return 1
 
         with contextlib.closing(fs.open(fs.create_path("bar"))) as f:
-            print("Contents of bar:", f.read(), "(should be 'fhi')")
+            contents = f.read()
+            if contents != b"fhi":
+                print("Contents of bar:", contents, "(should be 'fhi')")
+                return 1
 
         # now create new file
         with contextlib.closing(fs.open(fs.create_path("newcrazy"),

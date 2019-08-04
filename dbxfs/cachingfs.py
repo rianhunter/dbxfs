@@ -1819,6 +1819,7 @@ def main(argv):
                                    ("bar", {"type": "file", "data": b"f"})])
 
     tmp_dir = tempfile.mkdtemp()
+    fs = None
     try:
         fs = FileSystem(backing_fs, cache_folder=tmp_dir)
 
@@ -1948,6 +1949,8 @@ def main(argv):
         fs.unlink(file_path_5)
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+        if fs is not None:
+            fs.close()
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv))

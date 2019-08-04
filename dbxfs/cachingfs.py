@@ -868,13 +868,13 @@ class CachedDirectory(object):
         pass
 
     def pwrite(self, *n, **kw):
-        raise OSError(errno.EBADF, os.strerror(errno.EBADF))
+        raise OSError(errno.EISDIR, os.strerror(errno.EISDIR))
 
     def pread(self, *n, **kw):
-        raise OSError(errno.EBADF, os.strerror(errno.EBADF))
+        raise OSError(errno.EISDIR, os.strerror(errno.EISDIR))
 
     def ptruncate(self, *n, **kw):
-        raise OSError(errno.EBADF, os.strerror(errno.EBADF))
+        raise OSError(errno.EISDIR, os.strerror(errno.EISDIR))
 
     def is_dirty(self):
         return False

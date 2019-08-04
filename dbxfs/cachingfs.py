@@ -669,7 +669,11 @@ class SQLiteFrontFile(PositionIO):
                     **stat_dict)
 
     def close(self):
-        os.unlink(self._file_path)
+        try:
+            os.unlink(self._file_path)
+        except Exception:
+            log.warning("Error unlinking dirty cache file",
+                        exc_info=True)
         self._backfile.close()
 
     def _init_db(self):

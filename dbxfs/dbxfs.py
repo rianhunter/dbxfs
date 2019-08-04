@@ -384,7 +384,7 @@ def new_files_upload_session_finish(client,
     ))
     return dbrequest(client, 'files', files.upload_session_finish, buf, arg)
 
-BUF_SIZE = 150 * 1024 * 1024
+BUF_SIZE = 4 * 1024 * 1024
 class _WriteStream(object):
     def __init__(self, fs):
         self._fs = fs

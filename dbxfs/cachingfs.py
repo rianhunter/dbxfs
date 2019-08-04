@@ -917,6 +917,7 @@ class CachedFile(object):
                             self._file.close()
                             return
                         self._upload_cond.wait()
+                    assert self._upload_next is None or self._upload_next is self._file
                     if self._upload_next is not None:
                         self._upload_now = self._upload_next
                         self._upload_next = None
@@ -1026,8 +1027,8 @@ class CachedFile(object):
         return st._replace(mtime=st.mtime.replace(microsecond=0))
 
     def _queue_sync(self, final=False):
-        if self._file.is_dirty():
-            assert self._upload_next is None or self._upload_next is self._file
+        assert self._upload_next is None or self._upload_next is self._file
+        if self._file.is_dirty() and self._upload_next is None:
             self._upload_next = self._file
             self._sync_tag += 1
 

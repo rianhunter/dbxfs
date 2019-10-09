@@ -277,6 +277,9 @@ def _main(argv=None):
     if save_access_token and yes_no_input("We're all connected. Do you want to save your credentials for future runs?", default_yes=True):
         keyring_user = ''.join([random.choice("asdfghjklzxcvbnmqwertyuiop")
                                 for _ in range(24)])
+        if not yes_no_input("Do you want to encrypt your credentials with a password?", default_yes=True):
+            from keyrings.alt.file import PlaintextKeyring
+            keyring.set_keyring(PlaintextKeyring())
         try:
             keyring.set_password(APP_NAME, keyring_user, access_token)
         except (KeyringError, RuntimeError) as e:

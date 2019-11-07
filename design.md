@@ -103,7 +103,7 @@ with the native VFS. The localhost SMB server can also support Windows.
 The "backend" is an implementation of a file system object that
 represents the user's Dropbox. Ideally the backend contains minimal
 logic (such as caching policies, etc.) and simply serves as a
-straighforward translation layer between our FS API and the Dropbox
+straightforward translation layer between our FS API and the Dropbox
 servers. We use the Dropbox [Core
 API](https://www.dropbox.com/developers/core).
 

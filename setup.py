@@ -42,7 +42,7 @@ setup(
         "block_tracing>=1.0.1,<2",
         "privy>=6.0,<7",
         "keyring>=15.1.0",
-        "keyrings.alt>=3.1,<4",
+        "keyrings.alt>=3.1,<5",
         "sentry_sdk>=0.3,<1",
     ],
     extras_require={

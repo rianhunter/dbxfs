@@ -36,7 +36,11 @@ setup(
     ],
     packages=["dbxfs"],
     install_requires=[
-        "dropbox>=3.38",
+        # dropbox changes so often that we
+        # just put a lower bound to avoid
+        # dbxfs being uninstallable in the future
+        # if dropbox=11 goes away.
+        "dropbox>=11",
         "appdirs>=1.4,<2",
         "userspacefs>=1.0.13,<2",
         "block_tracing>=1.0.1,<2",

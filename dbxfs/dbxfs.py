@@ -285,50 +285,7 @@ class _ReadStream(io.RawIOBase):
             self._path = None
         super().close()
 
-from dropbox.dropbox import RouteResult, RouteErrorResult
-from dropbox import stone_serializers, files
 ApiError = dropbox.exceptions.ApiError
-
-def dbrequest(client, namespace, route, f, arg):
-    host = route.attrs['host'] or 'api'
-    route_name = namespace + '/' + route.name
-    route_version = getattr(route, 'version', 1)
-    if route_version > 1:
-        route_name += '_v{}'.format(route_version)
-    route_style = route.attrs['style'] or 'rpc'
-
-    res = client.request_json_string_with_retry(host,
-                                                route_name,
-                                                route_style,
-                                                arg,
-                                                f)
-
-    decoded_obj_result = json.loads(res.obj_result)
-    if isinstance(res, RouteResult):
-        returned_data_type = route.result_type
-        obj = decoded_obj_result
-    elif isinstance(res, RouteErrorResult):
-        returned_data_type = route.error_type
-        obj = decoded_obj_result['error']
-        user_message = decoded_obj_result.get('user_message')
-        user_message_text = user_message and user_message.get('text')
-        user_message_locale = user_message and user_message.get('locale')
-    else:
-        raise AssertionError('Expected RouteResult or RouteErrorResult, '
-                             'but res is %s' % type(res))
-
-    deserialized_result = stone_serializers.json_compat_obj_decode(
-        returned_data_type, obj, strict=False)
-
-    if isinstance(res, RouteErrorResult):
-        raise ApiError(res.request_id,
-                       deserialized_result,
-                       user_message_text,
-                       user_message_locale)
-    elif route_style == client._ROUTE_STYLE_DOWNLOAD:
-        return (deserialized_result, res.http_resp)
-    else:
-        return deserialized_result
 
 def mode_to_json(mode):
     if mode.is_add():
@@ -346,23 +303,15 @@ def mode_to_json(mode):
 def convert_to_dbx_timestamp(dt):
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-# NB: have to hack this in because official API client
-#     hasn't been updated to support strict_conflict
 def new_files_upload(client, f, path,
                      mode=dropbox.files.WriteMode.add,
                      autorename=False,
                      strict_conflict=False,
                      client_modified=None):
-    arg = dict(
-        path=str(path),
-        mode=mode_to_json(mode),
-        autorename=autorename,
-        strict_conflict=strict_conflict,
-    )
-    if client_modified is not None:
-        arg['client_modified'] = convert_to_dbx_timestamp(client_modified)
-    arg = json.dumps(arg)
-    return dbrequest(client, 'files', files.upload, f, arg)
+    return client.files_upload(f, path,
+                               mode=mode, autorename=autorename,
+                               strict_conflict=strict_conflict,
+                               client_modified=client_modified)
 
 def new_files_upload_session_finish(client,
                                     buf, cursor,
@@ -375,14 +324,9 @@ def new_files_upload_session_finish(client,
     )
     if 'client_modified' in ci:
         commit['client_modified'] = convert_to_dbx_timestamp(ci['client_modified'])
-    arg = json.dumps(dict(
-        cursor=dict(
-            session_id=cursor.session_id,
-            offset=cursor.offset,
-        ),
-        commit=commit,
-    ))
-    return dbrequest(client, 'files', files.upload_session_finish, buf, arg)
+    return client.files_upload_session_finish(
+        buf, cursor, dropbox.files.CommitInfo(**commit),
+    )
 
 BUF_SIZE = 4 * 1024 * 1024
 class _WriteStream(object):

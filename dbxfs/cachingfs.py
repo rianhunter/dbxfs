@@ -128,6 +128,9 @@ def register_deterministic_function(conn, name, num_params, func):
     if not isinstance(conn, sqlite3.Connection):
         raise Exception("Bad connection object: %r" % (conn,))
 
+    if sys.version_info >= (3, 8):
+        return conn.create_function(name, num_params, func, deterministic=True)
+
     # This is a hack, oh well this is how I roll
     # TODO: submit patch to pysqlite to do this natively
 

@@ -122,17 +122,7 @@ def wrap_show_exc(fn):
             raise
     return fn2
 
-_hold_ref_lock = threading.Lock()
-_hold_ref = weakref.WeakKeyDictionary()
-def register_deterministic_function(conn, name, num_params, func):
-    if not isinstance(conn, sqlite3.Connection):
-        raise Exception("Bad connection object: %r" % (conn,))
-
-    if sys.version_info >= (3, 8):
-        return conn.create_function(name, num_params, func, deterministic=True)
-
-    # This is a hack, oh well this is how I roll
-
+try:
     # NB: the sqlite3 library should already be loaded
     #     but we specify noload just in case
     if sys.platform == "darwin":
@@ -143,6 +133,41 @@ def register_deterministic_function(conn, name, num_params, func):
         RTLD_NOLOAD = 0
 
     pysqlite_dll = ctypes.PyDLL(_sqlite3.__file__, ctypes.RTLD_GLOBAL | RTLD_NOLOAD)
+
+    sqlite3_close_proto = ctypes.CFUNCTYPE(
+        ctypes.c_int, # return code
+        ctypes.c_void_p, # db argument
+    )
+
+    try:
+        sqlite3_close = sqlite3_close_proto(("sqlite3_close_v2",
+                                             pysqlite_dll))
+    except Exception:
+        sqlite3_close = sqlite3_close_proto(("sqlite3_close",
+                                             pysqlite_dll))
+except Exception:
+    pysqlite_dll = None
+    sqlite3_close = None
+
+def get_dbpp(conn):
+    return ctypes.cast(id(conn) +
+                       ctypes.sizeof(ctypes.c_ssize_t) +
+                       ctypes.sizeof(ctypes.c_void_p),
+                       ctypes.POINTER(ctypes.c_void_p))
+
+_hold_ref_lock = threading.Lock()
+_hold_ref = weakref.WeakKeyDictionary()
+def register_deterministic_function(conn, name, num_params, func):
+    if not isinstance(conn, sqlite3.Connection):
+        raise Exception("Bad connection object: %r" % (conn,))
+
+    if sys.version_info >= (3, 8):
+        return conn.create_function(name, num_params, func, deterministic=True)
+
+    if pysqlite_dll is None:
+        raise Exception("can't create function")
+
+    # This is a hack, oh well this is how I roll
 
     sqlite3_create_function_proto = ctypes.CFUNCTYPE(ctypes.c_int,
                                                      ctypes.c_void_p, # db
@@ -156,12 +181,8 @@ def register_deterministic_function(conn, name, num_params, func):
 
     sqlite3_create_function = sqlite3_create_function_proto(("sqlite3_create_function",
                                                              pysqlite_dll))
-
     # get dp pointer from connection object
-    dbp = ctypes.cast(id(conn) +
-                      ctypes.sizeof(ctypes.c_ssize_t) +
-                      ctypes.sizeof(ctypes.c_void_p),
-                      ctypes.POINTER(ctypes.c_void_p)).contents
+    dbp = get_dbpp(conn).contents
 
     SQLITE_DETERMINISTIC = 0x800
     SQLITE_UTF8 = 0x1
@@ -205,7 +226,55 @@ MUST_MUTATE = object()
 EMPTY_DIR_ENT = "/empty/"
 
 class WeakrefableConnection(sqlite3.Connection):
-    pass
+    def __init__(self, *n, **kw):
+        # we call close() in __del__ which might happen on a different thread
+        kw['check_same_thread'] = False
+        sqlite3.Connection.__init__(self, *n, **kw)
+        self.funcs = []
+
+    def create_function(self, name, num_params, func, **kw):
+        toret = sqlite3.Connection.create_function(self, name, num_params, func, **kw)
+        # NB: since we call sqlite3_close outside of GIL, we don't want
+        #     it to trigger deallocation of the function objects. instead
+        #     make that happen when the connection object is deallocated
+        #     by adding an extra reference to the connection object itself
+        self.funcs.append(func)
+        return toret
+
+    def close(self):
+        # Current versions of pysqlite call sqlite3_close() on dealloc or close()
+        # without releasing the GIL. This causes a deadlock if it tries to grab lock
+        # that is internal to sqlite3 that another thread already has.
+        # The correct fix is to release the gil before calling sqlite3_close()
+        # but since we cannot change the _sqlite module our workaround is to use a
+        # special ctypes version of close.
+        if sqlite3_close is None:
+            return sqlite3.Connection.close(self)
+
+        # get dp pointer from connection object
+        dbpp = get_dbpp(self)
+
+        # get db pointer
+        db_ptr = dbpp.contents
+
+        # we need to call call base method
+        # to finalize all statements before closing database
+        # but we have to set database pointer to null so it doesn't
+        # call sqlite3_close() on our database without first
+        dbpp[0] = ctypes.c_void_p()
+        try:
+            sqlite3.Connection.close(self)
+        except Exception:
+            dbpp[0] = db_ptr
+            raise
+
+        if db_ptr:
+            rc = sqlite3_close(dbptr)
+            if rc:
+                raise Exception("Error while creating function: %r" % (rc,))
+
+    def __del__(self):
+        self.close()
 
 class _Directory(IterableDirectory):
     def _get_to_iter(self, mutate, fs, path):

@@ -354,7 +354,7 @@ def _main(argv=None):
     if safefs_wrap_create_fs is not None:
         create_fs = safefs_wrap_create_fs(create_fs, encrypted_folders)
 
-    if not os.path.exists(mount_point):
+    if mount_point is not None and not os.path.exists(mount_point):
         if yes_no_input("Mount point \"%s\" doesn't exist, do you want to create it?" % (mount_point,), default_yes=True):
             try:
                 os.makedirs(mount_point, exist_ok=True)

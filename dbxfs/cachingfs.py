@@ -132,7 +132,6 @@ def register_deterministic_function(conn, name, num_params, func):
         return conn.create_function(name, num_params, func, deterministic=True)
 
     # This is a hack, oh well this is how I roll
-    # TODO: submit patch to pysqlite to do this natively
 
     # NB: the sqlite3 library should already be loaded
     #     but we specify noload just in case

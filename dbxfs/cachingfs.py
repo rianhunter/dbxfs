@@ -149,10 +149,13 @@ except Exception:
     pysqlite_dll = None
     sqlite3_close = None
 
+class pysqlite_Connection_header(ctypes.Structure):
+    _fields_ = [("a", ctypes.c_ssize_t),
+                ("b", ctypes.c_void_p)]
+
 def get_dbpp(conn):
     return ctypes.cast(id(conn) +
-                       ctypes.sizeof(ctypes.c_ssize_t) +
-                       ctypes.sizeof(ctypes.c_void_p),
+                       ctypes.sizeof(pysqlite_Connection_header),
                        ctypes.POINTER(ctypes.c_void_p))
 
 _hold_ref_lock = threading.Lock()

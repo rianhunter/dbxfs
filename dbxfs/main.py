@@ -136,8 +136,6 @@ def create_fs(fs_args):
 
     if safefs_wrap_create_fs is not None:
         sub_create_fs = safefs_wrap_create_fs(sub_create_fs, fs_args)
-    elif encrypted_folders:
-        raise Exception("can't mount encrypted folders!")
 
     return sub_create_fs()
 

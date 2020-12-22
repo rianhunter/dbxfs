@@ -682,7 +682,7 @@ class SQLiteFrontFile(PositionIO):
 
         use_shared_cache = True
         if use_shared_cache:
-            self._db_file += "&cache=shared"
+            self._db_file += "?cache=shared"
             # Application locking is only necessary in shared cache mode
             # otherwise SQLite will do locking for us
             self._db_lock = SharedLock()

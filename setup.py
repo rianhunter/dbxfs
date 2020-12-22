@@ -42,7 +42,7 @@ setup(
         # if dropbox=11 goes away.
         "dropbox>=11",
         "appdirs>=1.4,<2",
-        "userspacefs>=1.0.13,<2",
+        "userspacefs>=2.0.0,<3",
         "block_tracing>=1.0.1,<2",
         "privy>=6.0,<7",
         "keyring>=15.1.0",

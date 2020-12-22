@@ -15,10 +15,12 @@
 # You should have received a copy of the GNU General Public License
 # along with dbxfs.  If not, see <http://www.gnu.org/licenses/>.
 
+import base64
 import collections
 import contextlib
 import errno
 import os
+import json
 import subprocess
 
 from userspacefs.path_common import Path
@@ -199,12 +201,12 @@ class EncryptedFSFactory(object):
 
         return SubFileSystem(fs, subs)
 
-def safefs_wrap_create_fs(create_fs, encrypted_folders):
+def safefs_add_fs_args(fs, encrypted_folders, fs_args):
     if not encrypted_folders:
-        return create_fs
+        return
 
     keys = []
-    with contextlib.closing(create_fs()) as fs:
+    if True:
         # if any of the encrypted folders is a descendent of
         # another one, then fail
         folders = set()
@@ -249,5 +251,24 @@ def safefs_wrap_create_fs(create_fs, encrypted_folders):
             if key is None:
                 continue
             keys.append((enc_folder, key))
+
+    def encode_bytes(obj):
+        if not isinstance(obj, bytes):
+            raise TypeError()
+
+        return {'__bytes__': True, 'data': base64.b64encode(obj).decode("utf-8")}
+
+    fs_args['safefs_keys'] = json.dumps(keys, default=encode_bytes)
+
+def safefs_wrap_create_fs(create_fs, fs_args):
+    def as_bytes(dct):
+        if '__bytes__' in dct:
+            return base64.b64decode(dct['data'])
+        return dct
+
+    keys = json.loads(fs_args.get('safefs_keys', '[]'), object_hook=as_bytes)
+
+    if not keys:
+        return create_fs
 
     return EncryptedFSFactory(create_fs, keys)

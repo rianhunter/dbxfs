@@ -18,6 +18,7 @@
 import argparse
 import contextlib
 import errno
+import functools
 import getpass
 import pkg_resources
 import io
@@ -27,6 +28,7 @@ import os
 import random
 import subprocess
 import sys
+import syslog
 import urllib.request
 
 import appdirs
@@ -50,9 +52,10 @@ from dbxfs.disable_quick_look import FileSystem as DisableQuickLookFileSystem
 from dbxfs.translate_ignored_files import FileSystem as TranslateIgnoredFilesFileSystem
 
 try:
-    from dbxfs.safefs_glue import safefs_wrap_create_fs
+    from dbxfs.safefs_glue import safefs_wrap_create_fs, safefs_add_fs_args
 except ImportError:
     safefs_wrap_create_fs = None
+    safefs_add_fs_args = None
 
 log = logging.getLogger(__name__)
 
@@ -78,6 +81,121 @@ def yes_no_input(message=None, default_yes=False):
 def parse_encrypted_folder_arg(string):
     return dict(path=string)
 
+def base_create_fs(access_token, cache_folder):
+    fs = CachingFileSystem(DropboxFileSystem(access_token), cache_folder=cache_folder)
+
+    # From a purity standpoint the following layer ideally would
+    # go between the caching fs and dropbox fs, but because the
+    # contract between those two is highly specialized, just put
+    # it on top
+    fs = TranslateIgnoredFilesFileSystem(fs)
+
+    if sys.platform == 'darwin':
+        fs = DisableQuickLookFileSystem(fs)
+
+    return fs
+
+class RealSysLogHandler(logging.Handler):
+    def __init__(self, *n, **kw):
+        super().__init__()
+        syslog.openlog(*n, **kw)
+
+    def _map_priority(self, levelname):
+        return {
+            logging.DEBUG:    syslog.LOG_DEBUG,
+            logging.INFO:     syslog.LOG_INFO,
+            logging.ERROR:    syslog.LOG_ERR,
+            logging.WARNING:  syslog.LOG_WARNING,
+            logging.CRITICAL: syslog.LOG_CRIT,
+            }[levelname]
+
+    def emit(self, record):
+        msg = self.format(record)
+        priority = self._map_priority(record.levelno)
+        syslog.syslog(priority, msg)
+
+def on_new_process(proc_args):
+    # Protect access token and potentially encryption keys
+    if not BLOCK_TRACING_INHERITS:
+        block_tracing()
+
+    display_name = proc_args['display_name']
+    verbose = int(proc_args['verbose'])
+
+    format_ = '%(levelname)s:%(name)s:%(message)s'
+    logging_stream = RealSysLogHandler(display_name, syslog.LOG_PID)
+
+    level = [logging.WARNING, logging.INFO, logging.DEBUG][min(2, verbose)]
+    logging.basicConfig(level=level, handlers=[logging_stream], format=format_)
+
+def create_fs(fs_args):
+    access_token = fs_args['access_token']
+    cache_folder = fs_args['cache_folder']
+
+    sub_create_fs = functools.partial(base_create_fs, access_token, cache_folder)
+
+    if safefs_wrap_create_fs is not None:
+        sub_create_fs = safefs_wrap_create_fs(sub_create_fs, fs_args)
+    elif encrypted_folders:
+        raise Exception("can't mount encrypted folders!")
+
+    return sub_create_fs()
+
+class FUSEOption(argparse.Action):
+    def __init__(self, **kw):
+        super(FUSEOption, self).__init__(**kw)
+
+    def __call__(self, parser, ns, values, option_string):
+        if ns.o is None:
+            ns.o = {}
+        for kv in values.split(","):
+            ret = kv.split("=", 1)
+            if len(ret) == 2:
+                ns.o[ret[0]] = ret[1]
+            else:
+                ns.o[ret[0]] = True
+
+def add_cli_arguments(parser):
+    def ensure_listen_address(string):
+        try:
+            (host, port) = string.split(":", 1)
+        except ValueError:
+            try:
+                port = int(string)
+                if not (0 < port < 65536):
+                    raise ValueError()
+            except ValueError:
+                host = string
+                port = None
+            else:
+                host = ''
+        else:
+            if port:
+                port = int(port)
+                if not (0 < port < 65536):
+                    raise argparse.ArgumentTypeError("%r is not a valid TCP port" % (port,))
+            else:
+                port = None
+
+        if not host:
+            host = "127.0.0.1"
+
+        return (host, port)
+
+    parser.add_argument("-f", "--foreground", action="store_true",
+                        help="keep filesystem server in foreground")
+    parser.add_argument("-v", "--verbose", action="count", default=0,
+                        help="show log messages, use twice for maximum verbosity")
+    parser.add_argument("-s", "--smb", action="store_true",
+                        help="force mounting via SMB")
+    parser.add_argument("-n", "--smb-no-mount", action="store_true",
+                        help="export filesystem via SMB but don't mount it")
+    parser.add_argument("-l", "--smb-listen-address", default="127.0.0.1",
+                        type=ensure_listen_address,
+                        help="address that SMB service should listen on, append colon to specify port")
+    parser.add_argument("-o", metavar='opt,[opt...]', action=FUSEOption,
+                        help="FUSE options, e.g. -o uid=1000,allow_other")
+
 def _main(argv=None):
     if sys.version_info < (3, 5):
         print("Error: Your version of Python is too old, 3.5+ is required: %d.%d.%d" % sys.version_info[:3])
@@ -96,7 +214,7 @@ def _main(argv=None):
         argv = sys.argv
 
     parser = argparse.ArgumentParser()
-    userspacefs.add_cli_arguments(parser)
+    add_cli_arguments(parser)
     parser.add_argument("-c", "--config-file",
                         help="config file path")
     parser.add_argument("-e", "--encrypted-folder",
@@ -110,6 +228,12 @@ def _main(argv=None):
                         help="file cache directory")
     parser.add_argument("mount_point", nargs='?')
     args = parser.parse_args(argv[1:])
+
+    format_ = '%(asctime)s:%(levelname)s:%(name)s:%(message)s'
+    logging_stream = logging.StreamHandler()
+
+    level = [logging.WARNING, logging.INFO, logging.DEBUG][min(2, args.verbose)]
+    logging.basicConfig(level=level, handlers=[logging_stream], format=format_)
 
     try:
         version = pkg_resources.require("dbxfs")[0].version
@@ -171,9 +295,6 @@ def _main(argv=None):
         return 1
 
     encrypted_folders = config.get("encrypted_folders", []) + args.encrypted_folders
-    if safefs_wrap_create_fs is None and encrypted_folders:
-        print("safefs not installed, can't transparently decrypt encrypted folders")
-        return 1
 
     access_token = None
     save_access_token = False
@@ -337,22 +458,17 @@ def _main(argv=None):
             return 1
         log.debug("Using custom cache path %s", cache_folder)
 
-    def create_fs():
-        fs = CachingFileSystem(DropboxFileSystem(access_token), cache_folder=cache_folder)
+    fs_args = {}
 
-        # From a purity standpoint the following layer ideally would
-        # go between the caching fs and dropbox fs, but because the
-        # contract between those two is highly specialized, just put
-        # it on top
-        fs = TranslateIgnoredFilesFileSystem(fs)
+    fs_args['access_token'] = access_token
+    fs_args['cache_folder'] = cache_folder
 
-        if sys.platform == 'darwin':
-            fs = DisableQuickLookFileSystem(fs)
-
-        return fs
-
-    if safefs_wrap_create_fs is not None:
-        create_fs = safefs_wrap_create_fs(create_fs, encrypted_folders)
+    if safefs_add_fs_args is not None:
+        with contextlib.closing(base_create_fs(access_token, cache_folder)) as fs:
+            safefs_add_fs_args(fs, encrypted_folders, fs_args)
+    elif encrypted_folders:
+        print("safefs not installed, can't transparently decrypt encrypted folders")
+        return 1
 
     if mount_point is not None and not os.path.exists(mount_point):
         if yes_no_input("Mount point \"%s\" doesn't exist, do you want to create it?" % (mount_point,), default_yes=True):
@@ -362,8 +478,20 @@ def _main(argv=None):
                 print("Unable to create mount point: %s" % (e,))
                 return -1
 
-    return userspacefs.simple_main(mount_point, "dbxfs", create_fs, args,
-                                   on_new_process=None if BLOCK_TRACING_INHERITS else block_tracing)
+    display_name = 'dbxfs'
+
+    proc_args = {}
+    proc_args['display_name'] = display_name
+    proc_args['verbose'] = str(args.verbose)
+
+    return userspacefs.simple_main(mount_point, display_name,
+                                   ('dbxfs.main.create_fs', fs_args),
+                                   on_new_process=('dbxfs.main.on_new_process', proc_args),
+                                   foreground=args.foreground,
+                                   smb_only=args.smb,
+                                   smb_no_mount=args.smb_no_mount,
+                                   smb_listen_address=args.smb_listen_address,
+                                   fuse_options=args.o)
 
 def main(argv=None):
     try:

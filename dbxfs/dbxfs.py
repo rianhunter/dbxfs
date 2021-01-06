@@ -287,19 +287,6 @@ class _ReadStream(io.RawIOBase):
 
 ApiError = dropbox.exceptions.ApiError
 
-def mode_to_json(mode):
-    if mode.is_add():
-        jmode = 'add'
-    elif mode.is_overwrite():
-        jmode = 'overwrite'
-    else:
-        assert mode.is_update()
-        jmode = {
-            '.tag': 'update',
-            'update': mode.get_update(),
-        }
-    return jmode
-
 def convert_to_dbx_timestamp(dt):
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -318,7 +305,7 @@ def new_files_upload_session_finish(client,
                                     ci):
     commit = dict(
         path=ci['path'],
-        mode=mode_to_json(ci.get('mode', dropbox.files.WriteMode.add)),
+        mode=ci.get('mode', dropbox.files.WriteMode.add),
         autorename=ci.get('autorename', False),
         strict_conflict=ci.get('strict_conflict', False),
     )

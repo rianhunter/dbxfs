@@ -287,9 +287,6 @@ class _ReadStream(io.RawIOBase):
 
 ApiError = dropbox.exceptions.ApiError
 
-def convert_to_dbx_timestamp(dt):
-    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-
 def new_files_upload(client, f, path,
                      mode=dropbox.files.WriteMode.add,
                      autorename=False,
@@ -310,7 +307,7 @@ def new_files_upload_session_finish(client,
         strict_conflict=ci.get('strict_conflict', False),
     )
     if 'client_modified' in ci:
-        commit['client_modified'] = convert_to_dbx_timestamp(ci['client_modified'])
+        commit['client_modified'] = ci['client_modified']
     return client.files_upload_session_finish(
         buf, cursor, dropbox.files.CommitInfo(**commit),
     )

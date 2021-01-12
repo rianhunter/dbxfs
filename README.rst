@@ -64,7 +64,7 @@ running the following command::
 The config file is a JSON encoded file. Add the following JSON key to
 the top-level JSON object in that file::
 
-  "access_token_command": ["gpg", "--decrypt", "/path/to/access/token/file.gpg"]
+  "access_token_command": ["gpg", "--decrypt", "--for-your-eyes-only", "/path/to/access/token/file.gpg"]
 
 Adapt it to a decryption program of your choice. This configuration
 works great for storing the access token using a OpenPGP card.
